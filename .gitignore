@@ -44,6 +44,9 @@ nul
 # Code review (local only)
 CODE-REVIEW.md
 
+# Fork-private notes (VOCSAP fork)
+docs/dev-notes/
+
 # Internal documents (not for public)
 docs/posts/
 FUTURE.md
