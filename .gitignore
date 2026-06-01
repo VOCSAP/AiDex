@@ -64,6 +64,8 @@ aidex-init-all.bat
 aidex-scan.bat
 npm-publish.bat
 server.json
+.claude/settings.json
+.kleos-space
 
 # Handle-Messreihen (Task #89) — Rohdaten, lokal
 scripts/measurements/
