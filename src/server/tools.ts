@@ -793,14 +793,14 @@ export function registerTools(): Tool[] {
         },
         {
             name: `${TOOL_PREFIX}log`,
-            description: `Universal Log Hub — receive and query logs from any external program (C#, Python, Node, etc.) via HTTP. Zero-cost when not used. Actions: init (start HTTP server), free (stop server), status (show stats), query (search logs), clear (reset buffer), write (inject entry as "claude").`,
+            description: `Universal Log Hub — receive and query logs from any external program (C#, Python, Node, etc.) via HTTP. Zero-cost when not used. Actions: init (start HTTP server), free (stop server), status (show stats), query (search logs), clear (reset buffer), write (inject entry as "claude"), control_get (read all interactive dashboard control values), control_set (change one control — same set-point the user's dashboard slider drives, so the AI can tune live).`,
             inputSchema: {
                 type: 'object',
                 properties: {
                     action: {
                         type: 'string',
-                        enum: ['init', 'free', 'status', 'query', 'clear', 'write'],
-                        description: 'init: start server | free: stop server | status: stats | query: search logs | clear: reset buffer | write: inject entry',
+                        enum: ['init', 'free', 'status', 'query', 'clear', 'write', 'control_get', 'control_set'],
+                        description: 'init: start server | free: stop server | status: stats | query: search logs | clear: reset buffer | write: inject entry | control_get: read all control values | control_set: set one control (id+value)',
                     },
                     port: {
                         type: 'number',
@@ -850,6 +850,14 @@ export function registerTools(): Tool[] {
                     data: {
                         type: 'string',
                         description: 'Optional JSON data (write)',
+                    },
+                    id: {
+                        type: 'string',
+                        description: 'Control id to change (required for control_set). The source defines which controls exist.',
+                    },
+                    value: {
+                        type: ['number', 'string'],
+                        description: 'New control value (required for control_set)',
                     },
                 },
                 required: ['action'],
@@ -2615,6 +2623,32 @@ function handleGlobalSignatures(args: Record<string, unknown>): { content: Array
 }
 
 /**
+ * Derive a one-line summary from a guideline's full text for the `list` view.
+ * Picks the first non-empty, non-decorative line (skips markdown headings that
+ * only repeat the key, separator rules, and block markers), strips markdown
+ * noise, and truncates to keep the listing scannable.
+ */
+function summarizeGuideline(key: string, value: string): string {
+    const lines = value.split('\n');
+    for (const raw of lines) {
+        let line = raw.trim();
+        if (!line) continue;
+        // Skip horizontal rules and decorative separators (---, ===, ──, ##).
+        if (/^[#=\-─━*_>\s]*$/.test(line)) continue;
+        // Strip leading markdown heading hashes / blockquote / list markers.
+        line = line.replace(/^#{1,6}\s+/, '').replace(/^>\s+/, '').replace(/^[-*]\s+/, '');
+        // Strip inline bold/italic/code markers.
+        line = line.replace(/[*_`]/g, '').trim();
+        if (!line) continue;
+        // Skip a heading that just repeats the key (case-insensitive).
+        if (line.toLowerCase() === key.toLowerCase()) continue;
+        const max = 100;
+        return line.length > max ? line.slice(0, max - 1).trimEnd() + '…' : line;
+    }
+    return '(no description)';
+}
+
+/**
  * Handle global refresh
  */
 function handleGlobalGuideline(args: Record<string, unknown>): { content: Array<{ type: string; text: string }> } {
@@ -2650,10 +2684,14 @@ function handleGlobalGuideline(args: Record<string, unknown>): { content: Array<
             if (rows.length === 0) {
                 return { content: [{ type: 'text', text: 'No guidelines found.' }] };
             }
-            let msg = `# Guidelines (${rows.length})\n\n`;
+            // Keys + one-line summary only — the full text can be huge and
+            // overflow the tool result. Fetch a guideline's body with `get`.
+            let msg = `# Guidelines (${rows.length}) — keys + summary\n\n`;
+            msg += `Use \`get\` with a key to read the full text.\n\n`;
             for (const g of rows) {
-                const updated = new Date(g.updated_at).toLocaleString();
-                msg += `## ${g.key}\n${g.value}\n\n*Updated: ${updated}*\n\n---\n\n`;
+                const summary = summarizeGuideline(g.key, g.value);
+                const updated = new Date(g.updated_at).toLocaleDateString();
+                msg += `- **${g.key}** — ${summary}  _(updated ${updated})_\n`;
             }
             return { content: [{ type: 'text', text: msg.trimEnd() }] };
         }
@@ -2743,6 +2781,8 @@ async function handleLog(args: Record<string, unknown>): Promise<{ content: Arra
         consume: args.consume as boolean | undefined,
         message: args.message as string | undefined,
         data: args.data as string | undefined,
+        id: args.id as string | undefined,
+        value: args.value as number | string | undefined,
     });
 
     if (!result.success && result.error) {
@@ -2814,6 +2854,21 @@ async function handleLog(args: Record<string, unknown>): Promise<{ content: Arra
                 return { content: [{ type: 'text', text: `✓ Log entry #${e.id} written (${e.level}: ${e.message})` }] };
             }
             return { content: [{ type: 'text', text: '✓ Entry written' }] };
+        }
+
+        case 'control_get':
+        case 'control_set': {
+            const controls = result.controls ?? {};
+            const keys = Object.keys(controls);
+            const setPrefix = action === 'control_set'
+                ? `✓ Set ${args.id} = ${String(args.value)}\n\n`
+                : '';
+            if (keys.length === 0) {
+                return { content: [{ type: 'text', text: setPrefix + 'No controls defined yet (the source defines them).' }] };
+            }
+            let msg = setPrefix + `# Controls (${keys.length})\n\n`;
+            for (const k of keys.sort()) msg += `- \`${k}\` = ${String(controls[k])}\n`;
+            return { content: [{ type: 'text', text: msg.trimEnd() }] };
         }
 
         default:

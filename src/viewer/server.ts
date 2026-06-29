@@ -11,7 +11,7 @@
 import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
-import { exec } from 'child_process';
+import { spawn } from 'child_process';
 import path from 'path';
 import { existsSync, readFileSync, statSync } from 'fs';
 import chokidar, { FSWatcher } from 'chokidar';
@@ -23,6 +23,13 @@ import { PRODUCT_NAME, INDEX_DIR } from '../constants.js';
 import Database from 'better-sqlite3';
 
 const PORT = 3333;
+
+// Per-client send-queue cap. Above this, broadcast frames are dropped rather
+// than buffered. Without this guard ws's internal queue grows without bound
+// when a client is slow/idle while logs stream in — seen producing 100+ GB
+// of committed memory during continuous logging.
+const WS_BACKPRESSURE_BYTES = 1_048_576;
+const wsDropCounts = new WeakMap<WebSocket, number>();
 
 let server: ReturnType<typeof createServer> | null = null;
 let wss: WebSocketServer | null = null;
@@ -88,7 +95,7 @@ interface SessionChangeInfo {
     new: Set<string>;
 }
 
-export async function startViewer(projectPath: string, initialTab?: string): Promise<string> {
+export async function startViewer(projectPath: string, initialTab?: string, options?: { exitOnLastClientClose?: boolean }): Promise<string> {
     const hash = initialTab ? `#tab=${encodeURIComponent(initialTab)}` : '';
 
     // Check if already running — broadcast a focus message + reopen browser at the hash URL.
@@ -136,6 +143,16 @@ export async function startViewer(projectPath: string, initialTab?: string): Pro
     server = createServer(app);
     wss = new WebSocketServer({ server });
 
+    // Swallow ws errors that bubble up from the attached HTTP server (e.g. EADDRINUSE).
+    // The HTTP server's own 'error' handler below resolves the start-promise with a
+    // friendly "already running" message — without this listener the error would
+    // crash the process via an uncaught 'error' event.
+    wss.on('error', (err: NodeJS.ErrnoException) => {
+        if (err.code !== 'EADDRINUSE') {
+            console.error('[Viewer] WebSocket server error:', err);
+        }
+    });
+
     // File watcher for live reload
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
     const pendingChanges: Set<string> = new Set();  // Files changed since last broadcast
@@ -173,14 +190,29 @@ export async function startViewer(projectPath: string, initialTab?: string): Pro
         const allTree = await buildTree(freshDb.getDb(), projectPath, 'all', viewerSessionChanges, cachedGitInfo);
         freshDb.close();
 
-        // Broadcast to all connected clients
+        // Broadcast to all connected clients. Tree payloads are large (full
+        // code + all trees), so a slow client must not be allowed to back up
+        // ws's internal send-queue — that was the dominant memory leak (50+ GB)
+        // on actively-changing projects where chokidar fires often.
+        const refreshPayload = JSON.stringify({ type: 'refresh', codeTree, allTree });
+        let sent = 0;
+        let dropped = 0;
         wss.clients.forEach((client) => {
-            if (client.readyState === WebSocket.OPEN) {
-                client.send(JSON.stringify({ type: 'refresh', codeTree, allTree }));
+            if (client.readyState !== WebSocket.OPEN) return;
+            if (client.bufferedAmount > WS_BACKPRESSURE_BYTES) {
+                const n = (wsDropCounts.get(client) ?? 0) + 1;
+                wsDropCounts.set(client, n);
+                if (n === 1 || n % 1000 === 0) {
+                    console.error(`[Viewer] WS backpressure — dropped ${n} tree-refresh frame(s) for slow client (buffered=${client.bufferedAmount})`);
+                }
+                dropped++;
+                return;
             }
+            client.send(refreshPayload);
+            sent++;
         });
 
-        console.error('[Viewer] Broadcast tree update to', wss.clients.size, 'clients');
+        console.error('[Viewer] Broadcast tree update — sent:', sent, 'dropped:', dropped);
     };
 
     // Use chokidar for reliable cross-platform file watching
@@ -252,6 +284,16 @@ export async function startViewer(projectPath: string, initialTab?: string): Pro
                 }
             }, 50);
         }
+
+        // Send the current debug-dashboard snapshot so a freshly-connected (or
+        // reloaded) browser shows all live widgets immediately. Dynamic import
+        // avoids a top-level cycle (log-server already imports from this file).
+        import('../loghub/log-server.js').then(({ getPanelStore }) => {
+            const store = getPanelStore();
+            if (store && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'panelSnapshot', widgets: store.snapshot() }));
+            }
+        }).catch(() => { /* loghub not running — no dashboard yet */ });
 
         ws.on('message', async (data: Buffer) => {
             try {
@@ -416,6 +458,23 @@ export async function startViewer(projectPath: string, initialTab?: string): Pro
 
         ws.on('close', () => {
             console.error('[Viewer] Client disconnected');
+
+            // Auto-shutdown when the last browser tab closes (CLI mode).
+            // Browsers send a close frame immediately on tab close, so we add a small
+            // grace period to allow page reloads (which momentarily drop the connection).
+            if (options?.exitOnLastClientClose && wss) {
+                setTimeout(() => {
+                    if (!wss) return;
+                    const remaining = Array.from(wss.clients).filter(
+                        c => c.readyState === WebSocket.OPEN || c.readyState === WebSocket.CONNECTING
+                    ).length;
+                    if (remaining === 0) {
+                        console.error('[Viewer] Last client closed — shutting down.');
+                        try { stopViewer(); } catch { /* ignore */ }
+                        process.exit(0);
+                    }
+                }, 2000);
+            }
         });
 
         // Send initial tree (code files only)
@@ -438,7 +497,9 @@ export async function startViewer(projectPath: string, initialTab?: string): Pro
 
         server!.on('error', (err: NodeJS.ErrnoException) => {
             if (err.code === 'EADDRINUSE') {
-                resolve(`Port ${PORT} already in use - viewer may already be running at http://localhost:${PORT}`);
+                const url = `http://localhost:${PORT}${hash}`;
+                try { openBrowser(url); } catch { /* ignore */ }
+                resolve(`Port ${PORT} already in use - opened browser at existing viewer (${url})`);
             } else {
                 reject(err);
             }
@@ -517,10 +578,11 @@ export function broadcastFocusTab(tab: string): void {
     // Also try a live broadcast for the case where the browser is already
     // connected to *this* module instance.
     if (wss) {
+        const focusPayload = JSON.stringify({ type: 'focusTab', tab });
         wss.clients.forEach((client) => {
-            if (client.readyState === WebSocket.OPEN) {
-                client.send(JSON.stringify({ type: 'focusTab', tab }));
-            }
+            if (client.readyState !== WebSocket.OPEN) return;
+            if (client.bufferedAmount > WS_BACKPRESSURE_BYTES) return; // skip slow client
+            client.send(focusPayload);
         });
     }
 }
@@ -533,28 +595,71 @@ export function broadcastTaskUpdate(): void {
         const taskData = getTasksFromDb(freshDb.getDb());
         freshDb.close();
 
+        const payload = JSON.stringify({ type: 'tasks', data: taskData });
+        let sent = 0;
+        let dropped = 0;
         wss.clients.forEach((client) => {
-            if (client.readyState === WebSocket.OPEN) {
-                client.send(JSON.stringify({ type: 'tasks', data: taskData }));
-            }
+            if (client.readyState !== WebSocket.OPEN) return;
+            if (client.bufferedAmount > WS_BACKPRESSURE_BYTES) { dropped++; return; }
+            client.send(payload);
+            sent++;
         });
-        console.error('[Viewer] Broadcast task update to', wss.clients.size, 'clients');
+        console.error('[Viewer] Broadcast task update — sent:', sent, 'dropped:', dropped);
     } catch (err) {
         console.error('[Viewer] Failed to broadcast task update:', err);
     }
 }
 
-/**
- * Broadcast a log entry to all connected viewer clients.
- * Called from log-server.ts on each new entry.
- */
 export function broadcastLogEntry(entry: import('../loghub/log-types.js').LogEntry): void {
     if (!wss) return;
 
+    const payload = JSON.stringify({ type: 'log', entry });
     wss.clients.forEach((client) => {
-        if (client.readyState === WebSocket.OPEN) {
-            client.send(JSON.stringify({ type: 'log', entry }));
+        if (client.readyState !== WebSocket.OPEN) return;
+        if (client.bufferedAmount > WS_BACKPRESSURE_BYTES) {
+            const dropped = (wsDropCounts.get(client) ?? 0) + 1;
+            wsDropCounts.set(client, dropped);
+            // Log once per 1000 drops so a stuck client doesn't itself spam stderr.
+            if (dropped === 1 || dropped % 1000 === 0) {
+                console.error(`[Viewer] WS backpressure — dropped ${dropped} log frame(s) for slow client (buffered=${client.bufferedAmount})`);
+            }
+            return;
         }
+        client.send(payload);
+    });
+}
+
+/**
+ * Broadcast a single debug-dashboard widget update. Same backpressure guard as
+ * the log path — plot widgets can fire at audio rates, so a slow client must
+ * not be allowed to back up ws's internal send-queue.
+ */
+export function broadcastPanelUpdate(widget: import('../loghub/panel-types.js').PanelWidget): void {
+    if (!wss) return;
+
+    const payload = JSON.stringify({ type: 'panel', widget });
+    wss.clients.forEach((client) => {
+        if (client.readyState !== WebSocket.OPEN) return;
+        if (client.bufferedAmount > WS_BACKPRESSURE_BYTES) {
+            const dropped = (wsDropCounts.get(client) ?? 0) + 1;
+            wsDropCounts.set(client, dropped);
+            if (dropped === 1 || dropped % 1000 === 0) {
+                console.error(`[Viewer] WS backpressure — dropped ${dropped} panel frame(s) for slow client (buffered=${client.bufferedAmount})`);
+            }
+            return;
+        }
+        client.send(payload);
+    });
+}
+
+/** Broadcast a widget removal (id) or full dashboard clear (no id). */
+export function broadcastPanelClear(id?: string): void {
+    if (!wss) return;
+    const payload = JSON.stringify({ type: 'panelClear', id: id ?? null });
+    wss.clients.forEach((client) => {
+        if (client.readyState !== WebSocket.OPEN) return;
+        if (client.bufferedAmount > WS_BACKPRESSURE_BYTES) return; // rare, just skip
+        client.send(payload);
     });
 }
 
@@ -576,19 +681,29 @@ export function stopViewer(): string {
 
 function openBrowser(url: string) {
     const platform = process.platform;
-    let cmd: string;
 
-    if (platform === 'win32') {
-        cmd = `start "" "${url}"`;
-    } else if (platform === 'darwin') {
-        cmd = `open "${url}"`;
-    } else {
-        cmd = `xdg-open "${url}"`;
+    // Use detached + unref so the browser launch survives even if this Node
+    // process exits immediately afterwards (relevant in the "already in use"
+    // CLI path where the launcher exits right after opening the browser).
+    try {
+        let child;
+        if (platform === 'win32') {
+            // `start` is a cmd.exe builtin — invoke via cmd /c, detached, with no inherited stdio.
+            child = spawn('cmd', ['/c', 'start', '""', url], {
+                detached: true,
+                stdio: 'ignore',
+                windowsHide: true,
+            });
+        } else if (platform === 'darwin') {
+            child = spawn('open', [url], { detached: true, stdio: 'ignore' });
+        } else {
+            child = spawn('xdg-open', [url], { detached: true, stdio: 'ignore' });
+        }
+        child.on('error', (err) => console.error('[Viewer] Failed to open browser:', err));
+        child.unref();
+    } catch (err) {
+        console.error('[Viewer] Failed to spawn browser opener:', err);
     }
-
-    exec(cmd, (err) => {
-        if (err) console.error('[Viewer] Failed to open browser:', err);
-    });
 }
 
 /**
@@ -1011,6 +1126,9 @@ function escapeHtml(str: string): string {
 
 function getViewerHTML(projectPath: string): string {
     const projectName = escapeHtml(path.basename(projectPath));
+    // Absolute, copy-paste-safe demo command (relative paths fail from other dirs).
+    const demoScript = path.join(path.resolve(projectPath), 'scripts', 'demo-dashboard.mjs');
+    const demoCommandJson = JSON.stringify(`node "${demoScript}"`);
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -1971,6 +2089,155 @@ function getViewerHTML(projectPath: string): string {
             line-height: 1.5;
         }
         .settings-update-banner strong { color: var(--accent-cyan); }
+
+        /* ===== Debug Dashboard ===== */
+        .debug-container { padding: 16px 20px; }
+        .debug-toolbar {
+            display: flex; align-items: center; justify-content: space-between;
+            margin-bottom: 18px; padding-bottom: 12px;
+            border-bottom: 1px solid var(--border);
+        }
+        .debug-toolbar h2 {
+            margin: 0; font-size: 1.15em; letter-spacing: 0.04em;
+            color: var(--text-primary); text-transform: uppercase;
+        }
+        .debug-actions { display: flex; gap: 8px; }
+        .debug-btn {
+            background: var(--bg-tertiary); color: var(--text-secondary);
+            border: 1px solid var(--border); border-radius: 6px;
+            padding: 5px 12px; font-size: 0.8em; cursor: pointer;
+            font-family: inherit; transition: all 0.15s;
+        }
+        .debug-btn:hover { color: var(--accent); border-color: var(--accent); }
+        .debug-container .hint { color: var(--text-muted); font-size: 0.85em; margin-top: 8px; }
+        .debug-container .hint code {
+            background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px;
+            color: var(--accent-cyan); font-size: 0.95em;
+        }
+
+        .debug-group { margin-bottom: 22px; }
+        .debug-group-header {
+            font-size: 0.8em; font-weight: 700; letter-spacing: 0.14em;
+            text-transform: uppercase; color: var(--accent-cyan);
+            margin-bottom: 10px; padding-left: 2px;
+            display: flex; align-items: center; gap: 8px;
+        }
+        .debug-group-header::after {
+            content: ''; flex: 1; height: 1px;
+            background: linear-gradient(90deg, var(--border), transparent);
+        }
+        .debug-grid {
+            display: grid; gap: 12px;
+            grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+            /* Stable row baseline so a value change inside one card can't reflow
+               the rows below it (no flicker on latency spikes / number growth). */
+            grid-auto-rows: minmax(96px, auto);
+        }
+
+        .widget-card {
+            position: relative; background: var(--bg-secondary);
+            border: 1px solid var(--border); border-radius: 10px;
+            padding: 12px 14px 12px 16px; overflow: hidden;
+            animation: widget-in 0.25s ease-out;
+            transition: box-shadow 0.2s, opacity 0.3s, border-color 0.2s;
+        }
+        .widget-card::before {
+            content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+            background: var(--w-accent, var(--accent-cyan));
+            box-shadow: 0 0 8px var(--w-accent, var(--accent-cyan));
+        }
+        .widget-card:hover {
+            border-color: var(--w-accent, var(--accent));
+            box-shadow: 0 0 0 1px var(--w-accent, var(--accent)),
+                        0 4px 18px -6px var(--w-accent, var(--accent));
+        }
+        .widget-card.stale { opacity: 0.5; }
+        .widget-card.stale::before { background: var(--text-muted); box-shadow: none; }
+
+        .widget-label {
+            font-size: 0.78em; letter-spacing: 0.06em; text-transform: uppercase;
+            color: var(--text-secondary); margin-bottom: 8px; font-weight: 600;
+        }
+        .widget-body { display: flex; flex-direction: column; gap: 6px; }
+        .widget-value-row {
+            display: flex; align-items: baseline; gap: 6px;
+            flex-wrap: nowrap; overflow: hidden; white-space: nowrap;
+        }
+        .widget-value {
+            font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+            font-size: 1.7em; font-weight: 600; line-height: 1.15;
+            color: var(--accent-cyan); text-shadow: 0 0 12px rgba(125,207,255,0.35);
+        }
+        .widget-unit { font-size: 0.85em; color: var(--text-muted); }
+        .widget-pct { margin-left: auto; font-size: 0.85em; color: var(--text-secondary); font-family: ui-monospace, monospace; }
+        .value-flash { animation: value-flash 0.4s ease-out; }
+
+        .widget-progress {
+            height: 8px; background: var(--bg-primary); border-radius: 5px;
+            overflow: hidden; border: 1px solid var(--border);
+        }
+        .widget-progress-fill {
+            height: 100%; border-radius: 5px; transition: width 0.25s ease, background 0.25s;
+            box-shadow: 0 0 8px currentColor;
+        }
+
+        .widget-led-row { display: flex; align-items: center; gap: 10px; padding: 4px 0; }
+        .widget-led {
+            width: 14px; height: 14px; border-radius: 50%;
+            background: var(--led, var(--accent-green));
+            box-shadow: 0 0 10px var(--led, var(--accent-green)), 0 0 2px var(--led);
+            animation: led-pulse 2s ease-in-out infinite;
+        }
+        .widget-led-text {
+            font-family: ui-monospace, monospace; font-size: 1.1em;
+            text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-primary);
+        }
+
+        .widget-gauge-canvas { width: 100%; height: auto; display: block; }
+        .widget-plot-canvas {
+            width: 100%; height: auto; display: block;
+            background: var(--bg-primary); border-radius: 6px; border: 1px solid var(--border);
+        }
+        /* Vertikal gestapelt (cur/min/max/avg untereinander), damit die vollen
+           Werte lesbar sind und nicht abgeschnitten werden. Feste Höhe = 4 Zeilen. */
+        .widget-plot-stats {
+            display: flex; flex-direction: column; gap: 1px; overflow: hidden; margin-top: 4px;
+            line-height: 1.25em;
+            font-family: ui-monospace, monospace; font-size: 0.72em; color: var(--text-secondary);
+        }
+        /* Eine Zeile je Kennzahl: Key links, Wert rechtsbündig (space-between). */
+        .pstat { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; white-space: nowrap; }
+        .pstat-k { color: var(--text-muted); }
+        .pstat-v { overflow: hidden; text-overflow: ellipsis; }
+        .widget-plot-stats .pstat:first-child .pstat-v { color: var(--accent-cyan); }
+
+        /* Interactive controls (slider / number) — editable, accent-tinted. */
+        .widget-control-row { display: flex; align-items: center; gap: 10px; padding: 4px 0; }
+        .widget-slider {
+            flex: 1; min-width: 0; height: 4px; -webkit-appearance: none; appearance: none;
+            background: var(--border); border-radius: 3px; outline: none; cursor: pointer;
+        }
+        .widget-slider::-webkit-slider-thumb {
+            -webkit-appearance: none; appearance: none; width: 16px; height: 16px;
+            border-radius: 50%; background: var(--w-accent, var(--accent-cyan)); cursor: pointer;
+            box-shadow: 0 0 8px var(--w-accent, var(--accent-cyan)); border: none;
+        }
+        .widget-slider::-moz-range-thumb {
+            width: 16px; height: 16px; border-radius: 50%; border: none;
+            background: var(--w-accent, var(--accent-cyan)); cursor: pointer;
+            box-shadow: 0 0 8px var(--w-accent, var(--accent-cyan));
+        }
+        .widget-number {
+            font-family: ui-monospace, monospace; font-size: 1.05em;
+            background: var(--bg-primary); color: var(--text-primary);
+            border: 1px solid var(--border); border-radius: 5px; padding: 4px 6px; width: 100%;
+        }
+        .widget-number-mini { width: 5.5em; flex: 0 0 auto; text-align: right; }
+        .widget-number:focus { outline: none; border-color: var(--w-accent, var(--accent-cyan)); }
+
+        @keyframes widget-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+        @keyframes value-flash { 0% { color: #fff; text-shadow: 0 0 16px #fff; } 100% {} }
+        @keyframes led-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.65; } }
     </style>
 </head>
 <body>
@@ -1996,6 +2263,7 @@ function getViewerHTML(projectPath: string): string {
                 <div class="tab" data-tab="source">Code</div>
                 <div class="tab" data-tab="tasks">Tasks</div>
                 <div class="tab" data-tab="logs">Logs</div>
+                <div class="tab" data-tab="debug">Debug</div>
                 <div class="tab" data-tab="search">Search</div>
                 <div class="tab" data-tab="settings">Settings</div>
             </div>
@@ -2111,6 +2379,12 @@ function getViewerHTML(projectPath: string): string {
                 }
             } else if (msg.type === 'log') {
                 handleLogEntry(msg.entry);
+            } else if (msg.type === 'panelSnapshot') {
+                handlePanelSnapshot(msg.widgets);
+            } else if (msg.type === 'panel') {
+                upsertPanelWidget(msg.widget);
+            } else if (msg.type === 'panelClear') {
+                handlePanelClear(msg.id);
             } else if (msg.type === 'searchResults') {
                 handleSearchResults(msg);
             } else if (msg.type === 'settings') {
@@ -2171,6 +2445,8 @@ function getViewerHTML(projectPath: string): string {
                     }
                 } else if (currentDetailTab === 'logs') {
                     renderLogView();
+                } else if (currentDetailTab === 'debug') {
+                    renderDebugTab();
                 } else if (currentDetailTab === 'search') {
                     renderSearchTab();
                 } else if (currentDetailTab === 'settings') {
@@ -2178,6 +2454,516 @@ function getViewerHTML(projectPath: string): string {
                 }
             });
         });
+
+        // ============================================================
+        // Debug Dashboard — live widgets, fixed slots, overwrite in place
+        // ============================================================
+        let panelWidgets = new Map();      // id -> widget state
+        let debugViewInitialized = false;
+        let debugPaused = false;
+        const plotDirty = new Set();       // ids whose plot canvas needs redraw
+        let rafScheduled = false;
+        const STALE_MS = 3000;
+        const PLOT_HISTORY = 200;
+
+        // Map an accent name (or hex) to a CSS color. Falls back to cyan.
+        const ACCENT_MAP = {
+            cyan: getCss('--accent-cyan'), blue: getCss('--accent'), green: getCss('--accent-green'),
+            orange: getCss('--accent-orange'), purple: getCss('--accent-purple'),
+            yellow: getCss('--accent-yellow'), red: getCss('--accent-red'),
+        };
+        function getCss(varName) {
+            return getComputedStyle(document.documentElement).getPropertyValue(varName).trim() || '#7dcfff';
+        }
+        function widgetColor(w) {
+            if (!w.color) return ACCENT_MAP.cyan;
+            if (w.color[0] === '#') return w.color;
+            return ACCENT_MAP[w.color] || ACCENT_MAP.cyan;
+        }
+        // Threshold color for gauge/progress: green < warn < yellow < crit < red.
+        function zoneColor(w, val) {
+            const max = w.max != null ? w.max : 100;
+            const warn = w.warn != null ? w.warn : max * 0.7;
+            const crit = w.crit != null ? w.crit : max * 0.9;
+            if (val >= crit) return ACCENT_MAP.red;
+            if (val >= warn) return ACCENT_MAP.yellow;
+            return ACCENT_MAP.green;
+        }
+
+        function handlePanelSnapshot(widgets) {
+            panelWidgets = new Map();
+            (widgets || []).forEach(w => panelWidgets.set(w.id, w));
+            if (currentDetailTab === 'debug') renderDebugTab();
+        }
+        function handlePanelClear(id) {
+            if (id) panelWidgets.delete(id);
+            else panelWidgets.clear();
+            if (currentDetailTab === 'debug') renderDebugTab();
+        }
+
+        function upsertPanelWidget(w) {
+            if (!w || !w.id) return;
+            const existed = panelWidgets.has(w.id);
+            panelWidgets.set(w.id, w);
+            if (currentDetailTab !== 'debug' || !debugViewInitialized || debugPaused) return;
+
+            const card = document.getElementById('w-' + cssId(w.id));
+            if (!existed || !card) {
+                // New widget (or layout changed) — rebuild the whole grid so it
+                // lands in the right group. Cheap; happens rarely.
+                renderDebugTab();
+                return;
+            }
+            card.classList.remove('stale');
+            updateCardValue(card, w);
+            if (w.type === 'plot') { plotDirty.add(w.id); scheduleRaf(); }
+        }
+
+        function cssId(id) { return id.replace(/[^a-zA-Z0-9_-]/g, '_'); }
+
+        function renderDebugTab() {
+            const detail = document.getElementById('detail');
+            debugViewInitialized = true;
+
+            if (panelWidgets.size === 0) {
+                detail.innerHTML = '<div class="debug-container">' +
+                    '<div class="debug-toolbar"><h2>Debug Dashboard</h2></div>' +
+                    '<div class="empty-state"><p>No widgets yet.</p>' +
+                    '<p class="hint">Send <code>POST http://localhost:3335/panel</code> with ' +
+                    '<code>{ id, type, value, group? }</code> — type ∈ label · progress · gauge · plot · slider · number</p></div></div>';
+                return;
+            }
+
+            // Group widgets, sort groups alphabetically (Default last), widgets by order then label.
+            const groups = new Map();
+            for (const w of panelWidgets.values()) {
+                const g = w.group || 'Default';
+                if (!groups.has(g)) groups.set(g, []);
+                groups.get(g).push(w);
+            }
+            const groupNames = [...groups.keys()].sort((a, b) => {
+                if (a === 'Default') return 1; if (b === 'Default') return -1;
+                return a.localeCompare(b);
+            });
+
+            let html = '<div class="debug-container">';
+            html += '<div class="debug-toolbar">';
+            html += '<h2>Debug Dashboard</h2>';
+            html += '<div class="debug-actions">';
+            html += '<button class="debug-btn" onclick="copyDemoCommand(this)" title="Copy the demo command to your clipboard, then paste it into a terminal">▷ Demo</button>';
+            html += '<button class="debug-btn" onclick="toggleDebugPause(this)">' + (debugPaused ? '▶ Resume' : '⏸ Pause') + '</button>';
+            html += '<button class="debug-btn" onclick="clearDebugDashboard()">✕ Clear</button>';
+            html += '</div></div>';
+
+            for (const g of groupNames) {
+                const list = groups.get(g).sort((a, b) => (a.order - b.order) || a.label.localeCompare(b.label));
+                html += '<div class="debug-group"><div class="debug-group-header">' + escapeHtml(g) + '</div>';
+                html += '<div class="debug-grid">';
+                for (const w of list) html += renderWidgetCard(w);
+                html += '</div></div>';
+            }
+            html += '</div>';
+            detail.innerHTML = html;
+
+            // Draw all canvases (plots + gauges) after DOM exists.
+            for (const w of panelWidgets.values()) {
+                if (w.type === 'plot') { plotDirty.add(w.id); }
+                else if (w.type === 'gauge' && typeof w.value === 'number') { drawGauge(w); }
+            }
+            scheduleRaf();
+            startStaleTimer();
+        }
+
+        function renderWidgetCard(w) {
+            const color = widgetColor(w);
+            const cid = cssId(w.id);
+            let body = '';
+            if (w.type === 'label') {
+                body = '<div class="widget-value-row">' +
+                    '<span class="widget-value">' + escapeHtml(String(w.value)) + '</span>' +
+                    (w.unit ? '<span class="widget-unit">' + escapeHtml(w.unit) + '</span>' : '') +
+                    '</div>';
+            } else if (w.type === 'progress') {
+                body = renderProgressBody(w);
+            } else if (w.type === 'gauge') {
+                body = renderGaugeBody(w);
+            } else if (w.type === 'plot') {
+                body = '<canvas class="widget-plot-canvas" id="plot-' + cid + '" width="320" height="90"></canvas>' +
+                    '<div class="widget-plot-stats" id="pstat-' + cid + '"></div>';
+            } else if (w.type === 'slider' || w.type === 'number') {
+                body = renderControlBody(w);
+            }
+            return '<div class="widget-card" id="w-' + cid + '" style="--w-accent:' + color + '">' +
+                '<div class="widget-label">' + escapeHtml(w.label) + '</div>' +
+                '<div class="widget-body">' + body + '</div>' +
+                '</div>';
+        }
+
+        function renderProgressBody(w) {
+            const max = w.max != null ? w.max : 100, min = w.min != null ? w.min : 0;
+            const val = typeof w.value === 'number' ? w.value : 0;
+            const pct = Math.max(0, Math.min(100, ((val - min) / (max - min)) * 100));
+            const col = (w.warn != null || w.crit != null) ? zoneColor(w, val) : widgetColor(w);
+            return '<div class="widget-value-row">' +
+                '<span class="widget-value">' + fmtNum(val) + '</span>' +
+                (w.unit ? '<span class="widget-unit">' + escapeHtml(w.unit) + '</span>' : '') +
+                '<span class="widget-pct">' + pct.toFixed(0) + '%</span></div>' +
+                '<div class="widget-progress"><div class="widget-progress-fill" style="width:' + pct + '%;background:' + col + '"></div></div>';
+        }
+
+        function renderGaugeBody(w) {
+            const cid = cssId(w.id);
+            if (typeof w.value === 'string') {
+                // Status LED mode. If state is set, it drives the LED colour and
+                // value stays free display text (colour != shown text). Without
+                // state, the value word itself picks the colour (legacy).
+                const st = (typeof w.state === 'string' ? w.state : w.value).toLowerCase();
+                const led = st === 'error' || st === 'crit' || st === 'fail' ? ACCENT_MAP.red
+                    : st === 'warn' || st === 'warning' ? ACCENT_MAP.yellow
+                    : st === 'ok' || st === 'good' || st === 'up' ? ACCENT_MAP.green
+                    : st === 'off' || st === 'idle' ? '#444'
+                    : (ACCENT_MAP[st] || widgetColor(w));
+                return '<div class="widget-led-row"><span class="widget-led" style="--led:' + led + '"></span>' +
+                    '<span class="widget-led-text">' + escapeHtml(w.value) + '</span></div>';
+            }
+            return '<canvas class="widget-gauge-canvas" id="gauge-' + cid + '" width="160" height="100"></canvas>';
+        }
+
+        // -- Interactive control (slider / number) --
+        // The user edits, the new value is POSTed to /control; the owning source
+        // (e.g. the ESP32) polls GET /control and applies it. Position syncs back
+        // via the broadcast echo — but NOT while the user is actively dragging
+        // (controlDragging), so the server echo can't fight the user's hand.
+        function renderControlBody(w) {
+            const cid = cssId(w.id);
+            const min = w.min != null ? w.min : 0;
+            const max = w.max != null ? w.max : 100;
+            const step = w.step != null ? w.step : 1;
+            const val = typeof w.value === 'number' ? w.value : min;
+            const unit = w.unit ? '<span class="widget-unit">' + escapeHtml(w.unit) + '</span>' : '';
+            // The id travels in a data- attribute (HTML-escaped), NOT inline as a
+            // function argument — an id with quotes would otherwise break out of
+            // the oninput="" attribute. Handlers read it back from the element.
+            const idAttr = 'data-cid="' + escapeHtml(w.id) + '"';
+            if (w.type === 'number') {
+                // Spinner: number input only.
+                return '<div class="widget-control-row">' +
+                    '<input class="widget-number" id="ctl-' + cid + '" type="number" ' + idAttr + ' ' +
+                    'min="' + min + '" max="' + max + '" step="' + step + '" value="' + val + '" ' +
+                    'oninput="onControlInput(this)">' + unit +
+                    '</div>';
+            }
+            // Slider: range + a small number box that mirrors it (and is editable).
+            return '<div class="widget-control-row">' +
+                '<input class="widget-slider" id="ctl-' + cid + '" type="range" ' + idAttr + ' ' +
+                'min="' + min + '" max="' + max + '" step="' + step + '" value="' + val + '" ' +
+                'onpointerdown="onControlDragStart(this)" onpointerup="onControlDragEnd()" ' +
+                'oninput="onControlSlide(this)">' +
+                '<input class="widget-number widget-number-mini" id="ctlnum-' + cid + '" type="number" ' + idAttr + ' ' +
+                'min="' + min + '" max="' + max + '" step="' + step + '" value="' + val + '" ' +
+                'oninput="onControlInput(this)">' + unit +
+                '</div>';
+        }
+
+        // While true, holds the id of the control the user is dragging — the
+        // broadcast echo for THAT id is ignored so the thumb doesn't jump back.
+        let controlDragging = null;
+        // Coalesce slider POSTs: a drag fires oninput per pixel; we don't want a
+        // POST per pixel. Send at most ~every 80 ms, plus the final value on release.
+        const controlPostPending = new Map();
+        let controlPostTimer = null;
+
+        function onControlDragStart(el) { controlDragging = el.dataset.cid; }
+        function onControlDragEnd() { controlDragging = null; }
+
+        function onControlSlide(el) {
+            // Mirror into the slider's companion number box immediately.
+            const id = el.dataset.cid;
+            const numEl = document.getElementById('ctlnum-' + cssId(id));
+            if (numEl) numEl.value = el.value;
+            queueControlPost(id, el.value);
+        }
+
+        function onControlInput(el) {
+            // Number box (or standalone spinner) edited — mirror into the slider if present.
+            const id = el.dataset.cid;
+            const sl = document.getElementById('ctl-' + cssId(id));
+            if (sl && sl.type === 'range') sl.value = el.value;
+            queueControlPost(id, el.value);
+        }
+
+        function queueControlPost(id, raw) {
+            const num = Number(raw);
+            if (!Number.isFinite(num)) return;
+            // Keep the local widget value in sync so a rebuild keeps the position.
+            const w = panelWidgets.get(id);
+            if (w) w.value = num;
+            controlPostPending.set(id, num);
+            if (controlPostTimer) return;
+            controlPostTimer = setTimeout(flushControlPosts, 80);
+        }
+
+        function flushControlPosts() {
+            controlPostTimer = null;
+            for (const [id, value] of controlPostPending) postControl(id, value);
+            controlPostPending.clear();
+        }
+
+        function postControl(id, value) {
+            // LogHub is on 3335; the viewer is 3333. Hard-code the hub port like
+            // the rest of the dashboard ingest does (same machine).
+            fetch('http://localhost:3335/control', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id, value }),
+            }).catch(() => { /* hub down — nothing to do, value stays local */ });
+        }
+
+        // In-place value update (no DOM rebuild) for an existing card.
+        function updateCardValue(card, w) {
+            // Skip redraw if nothing changed — otherwise every incoming sample
+            // re-renders (and re-flashes) even with identical value/state, which
+            // looks like constant flicker at high update rates. Plots are exempt
+            // (their history scrolls even on a repeated value).
+            if (w.type !== 'plot') {
+                const sig = String(w.value) + '' + (w.state == null ? '' : String(w.state));
+                if (card.dataset.lastSig === sig) return;
+                card.dataset.lastSig = sig;
+            }
+            if (w.type === 'label') {
+                const v = card.querySelector('.widget-value');
+                if (v) { v.textContent = String(w.value); flashValue(v); }
+            } else if (w.type === 'progress') {
+                const body = card.querySelector('.widget-body');
+                if (body) body.innerHTML = renderProgressBody(w);
+            } else if (w.type === 'gauge') {
+                if (typeof w.value === 'string') {
+                    const body = card.querySelector('.widget-body');
+                    if (body) body.innerHTML = renderGaugeBody(w);
+                } else {
+                    drawGauge(w);
+                }
+            } else if (w.type === 'slider' || w.type === 'number') {
+                // Echo from the server (another viewer changed it, or the source
+                // clamped/overrode it). Sync the inputs — but never while THIS user
+                // is dragging this control, or the thumb would fight their hand.
+                if (controlDragging !== w.id && typeof w.value === 'number') {
+                    const cid = cssId(w.id);
+                    const main = document.getElementById('ctl-' + cid);
+                    const mini = document.getElementById('ctlnum-' + cid);
+                    if (main && document.activeElement !== main) main.value = w.value;
+                    if (mini && document.activeElement !== mini) mini.value = w.value;
+                }
+            }
+            // plot handled via plotDirty/raf
+        }
+
+        function flashValue(el) {
+            el.classList.remove('value-flash');
+            void el.offsetWidth;  // restart animation
+            el.classList.add('value-flash');
+        }
+
+        function fmtNum(n) {
+            if (typeof n !== 'number') return String(n);
+            if (Math.abs(n) >= 1000 || Number.isInteger(n)) return n.toLocaleString('en-US');
+            return n.toFixed(2);
+        }
+
+        // -- Canvas: plot (HWiNFO/Afterburner style line graph) --
+        function drawPlot(w) {
+            const canvas = document.getElementById('plot-' + cssId(w.id));
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            const W = canvas.width, H = canvas.height;
+            const data = w.history || [];
+            ctx.clearRect(0, 0, W, H);
+
+            // Grid.
+            ctx.strokeStyle = 'rgba(122,162,247,0.10)';
+            ctx.lineWidth = 1;
+            for (let i = 1; i < 4; i++) { const y = (H / 4) * i; ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+            for (let i = 1; i < 6; i++) { const x = (W / 6) * i; ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+
+            if (data.length < 2) return;
+            let lo, hi;
+            if (typeof w.min === 'number' && typeof w.max === 'number' && w.max > w.min) {
+                // Feste Skala vorgegeben (min/max) → keine Autoskala. So bleibt der
+                // Plot stabil und kleine Schwankungen sehen nicht riesig aus.
+                lo = w.min; hi = w.max;
+                // autoMin: Untergrenze folgt dem Daten-Minimum (Decke bleibt max).
+                // So sitzt z. B. das Grundrauschen unten am Rand und die volle
+                // Höhe geht ans Signal darüber — keine "tote" Zone unter dem Floor.
+                if (w.autoMin) {
+                    const dmin = Math.min(...data);
+                    if (dmin < hi) lo = dmin;
+                }
+            } else {
+                // Autoskala über die History + 10% Padding (Default).
+                lo = Math.min(...data); hi = Math.max(...data);
+                if (lo === hi) { lo -= 1; hi += 1; }
+                const pad = (hi - lo) * 0.1; lo -= pad; hi += pad;
+            }
+            const color = widgetColor(w);
+            const xAt = i => (i / (data.length - 1)) * W;
+
+            // Y-Mapping: linear (Default) oder logarithmisch (scale:"log"). Log
+            // braucht positive Werte → auf >=1 clampen (Audio-Pegel passen dazu:
+            // leise Sprache und lauter Peak werden gleichzeitig sichtbar).
+            const isLog = w.scale === 'log';
+            let yAt;
+            if (isLog) {
+                // Log braucht positive Grenzen. lo/hi auf >=1 heben, dann ins
+                // Log-Maß. Werte werden auf [lo,hi] geclampt → unter lo sitzt die
+                // Linie am unteren Rand, über hi am oberen (kein Ausreißer raus).
+                const clo = Math.max(1, lo);
+                const chi = Math.max(clo + 0.0001, hi);
+                const llo = Math.log10(clo);
+                const lhi = Math.log10(chi);
+                yAt = v => {
+                    const lv = Math.log10(Math.min(Math.max(clo, v), chi));
+                    return H - ((lv - llo) / (lhi - llo)) * H;
+                };
+            } else {
+                yAt = v => H - ((Math.min(Math.max(v, lo), hi) - lo) / (hi - lo)) * H;
+            }
+
+            // Fill under curve.
+            const grad = ctx.createLinearGradient(0, 0, 0, H);
+            grad.addColorStop(0, hexA(color, 0.35));
+            grad.addColorStop(1, hexA(color, 0.0));
+            ctx.beginPath(); ctx.moveTo(0, H);
+            data.forEach((v, i) => ctx.lineTo(xAt(i), yAt(v)));
+            ctx.lineTo(W, H); ctx.closePath();
+            ctx.fillStyle = grad; ctx.fill();
+
+            // Line + glow.
+            ctx.beginPath();
+            data.forEach((v, i) => i === 0 ? ctx.moveTo(xAt(i), yAt(v)) : ctx.lineTo(xAt(i), yAt(v)));
+            ctx.strokeStyle = color; ctx.lineWidth = 1.8;
+            ctx.shadowColor = color; ctx.shadowBlur = 6;
+            ctx.stroke(); ctx.shadowBlur = 0;
+
+            // min/max/avg labels.
+            const avg = data.reduce((a, b) => a + b, 0) / data.length;
+            const stat = document.getElementById('pstat-' + cssId(w.id));
+            if (stat) {
+                const unit = w.unit ? ' ' + escapeHtml(w.unit) : '';
+                // Nachkommastellen vom Sender (decimals); sonst fmtNum-Default.
+                const fmt = (typeof w.decimals === 'number')
+                    ? (v => Number(v).toLocaleString(undefined, {
+                          minimumFractionDigits: w.decimals, maximumFractionDigits: w.decimals }))
+                    : fmtNum;
+                const cell = (k, v) => '<span class="pstat"><span class="pstat-k">' + k + '</span>' +
+                    '<span class="pstat-v">' + v + '</span></span>';
+                stat.innerHTML =
+                    cell('cur', fmt(w.value) + unit) +
+                    cell('min', fmt(Math.min(...data))) +
+                    cell('max', fmt(Math.max(...data))) +
+                    cell('avg', fmt(avg));
+            }
+        }
+
+        // -- Canvas: radial gauge (Afterburner / ASUS GPU Tweak style) --
+        function drawGauge(w) {
+            const canvas = document.getElementById('gauge-' + cssId(w.id));
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            const W = canvas.width, H = canvas.height;
+            ctx.clearRect(0, 0, W, H);
+            const cx = W / 2, cy = H - 8, r = Math.min(W / 2, H) - 14;
+            const min = w.min != null ? w.min : 0, max = w.max != null ? w.max : 100;
+            const val = typeof w.value === 'number' ? w.value : 0;
+            const frac = Math.max(0, Math.min(1, (val - min) / (max - min)));
+            const start = Math.PI, end = 2 * Math.PI;   // upper half-circle, left→right
+            const ang = start + (end - start) * frac;
+            const col = (w.warn != null || w.crit != null) ? zoneColor(w, val) : widgetColor(w);
+
+            // Track.
+            ctx.beginPath(); ctx.arc(cx, cy, r, start, end);
+            ctx.strokeStyle = 'rgba(122,162,247,0.15)'; ctx.lineWidth = 9; ctx.lineCap = 'round'; ctx.stroke();
+            // Value arc + glow.
+            ctx.beginPath(); ctx.arc(cx, cy, r, start, ang);
+            ctx.strokeStyle = col; ctx.lineWidth = 9; ctx.lineCap = 'round';
+            ctx.shadowColor = col; ctx.shadowBlur = 10; ctx.stroke(); ctx.shadowBlur = 0;
+            // Center value.
+            ctx.fillStyle = col; ctx.font = '600 22px ui-monospace, monospace';
+            ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+            ctx.fillText(fmtNum(val), cx, cy - 4);
+            if (w.unit) {
+                ctx.fillStyle = getCss('--text-muted'); ctx.font = '11px ui-monospace, monospace';
+                ctx.fillText(w.unit, cx, cy + 10);
+            }
+        }
+
+        function hexA(hex, a) {
+            // #rrggbb → rgba(). If not hex, just return with alpha via color-mix fallback.
+            const m = /^#?([0-9a-f]{6})$/i.exec(hex);
+            if (!m) return hex;
+            const n = parseInt(m[1], 16);
+            return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+        }
+
+        function scheduleRaf() {
+            if (rafScheduled) return;
+            rafScheduled = true;
+            requestAnimationFrame(() => {
+                rafScheduled = false;
+                if (currentDetailTab !== 'debug') { plotDirty.clear(); return; }
+                for (const id of plotDirty) {
+                    const w = panelWidgets.get(id);
+                    if (w) drawPlot(w);
+                }
+                plotDirty.clear();
+            });
+        }
+
+        let staleTimer = null;
+        function startStaleTimer() {
+            if (staleTimer) return;
+            staleTimer = setInterval(() => {
+                if (currentDetailTab !== 'debug') return;
+                const now = Date.now();
+                for (const w of panelWidgets.values()) {
+                    const card = document.getElementById('w-' + cssId(w.id));
+                    if (!card) continue;
+                    // Interactive controls hold a static set-point — they never go
+                    // stale (they'd dim a second after load with nothing wrong).
+                    if (w.type === 'slider' || w.type === 'number') { card.classList.remove('stale'); continue; }
+                    const stale = (now - (w.lastUpdate || 0)) > STALE_MS;
+                    card.classList.toggle('stale', stale);
+                }
+            }, 1000);
+        }
+
+        function toggleDebugPause(btn) {
+            debugPaused = !debugPaused;
+            btn.textContent = debugPaused ? '▶ Resume' : '⏸ Pause';
+            if (!debugPaused) renderDebugTab();
+        }
+        function clearDebugDashboard() {
+            panelWidgets.clear();
+            fetch('http://localhost:3335/panel/clear', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {});
+            renderDebugTab();
+        }
+
+        // The browser can't spawn a node process, so the Demo button copies the
+        // command to the clipboard — paste it into a terminal to run the showcase.
+        function copyDemoCommand(btn) {
+            const cmd = ${demoCommandJson};
+            const orig = btn.textContent;
+            const done = () => { btn.textContent = '✓ Copied!'; setTimeout(() => { btn.textContent = orig; }, 1800); };
+            const fail = () => { btn.textContent = cmd; setTimeout(() => { btn.textContent = orig; }, 4000); };
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(cmd).then(done).catch(fail);
+            } else {
+                // Fallback for non-secure contexts.
+                const ta = document.createElement('textarea');
+                ta.value = cmd; document.body.appendChild(ta); ta.select();
+                try { document.execCommand('copy'); done(); } catch (e) { fail(); }
+                document.body.removeChild(ta);
+            }
+        }
 
         function renderTree(node, container = document.getElementById('tree'), depth = 0) {
             if (depth === 0) {
