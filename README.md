@@ -99,6 +99,7 @@ aidex_task({ path: ".", action: "create", title: "Fix edge case in parser", prio
 - [Global Search](#global-search)
 - [AI Guidelines](#ai-guidelines)
 - [Log Hub](#log-hub--universal-logging)
+- [Debug Dashboard](#debug-dashboard)
 - [Screenshots — LLM-Optimized](#screenshots--llm-optimized)
 - [Interactive Viewer](#interactive-viewer)
 - [CLI Usage](#cli-usage)
@@ -722,6 +723,88 @@ Invoke-RestMethod -Uri http://localhost:3335/log -Method POST -ContentType "appl
 - **Consume pattern**: `query` with `consume: true` removes returned entries — ideal for polling
 - **Viewer integration**: Logs tab with WebSocket live-stream, level/source/text filters, auto-scroll
 - **Fire & forget**: Just POST and go — if the server isn't running, the POST silently fails
+
+## Control API — let the AI *drive* your app
+
+Logs and dashboard widgets flow **app → AI**. The **Control API** is the return channel: **AI → app**. It turns the Log Hub into a tiny, zero-dependency command bus — so an AI assistant can drive any running program *without you writing a server*.
+
+The AI sets a command; your app polls for it, runs it, and posts the result back:
+
+```
+AI ──control_set {id,cmd}──→  Hub  ←──GET /control──  Your App (polls ~1s)
+AI ←──control_get──── result ─ Hub  ←──POST /control── runs it, posts result + ack
+```
+
+- **`control_set { id, value }`** — the AI (or a Viewer slider) sets a control slot.
+- **`GET /control`** — your app reads all current control values.
+- **`POST /control`** — your app writes back results / acknowledgements.
+- **`control_get`** — the AI reads what the app reported.
+
+Two slots by convention give you full request/response: a `*_cmd` slot the AI writes, a `*_result` slot the app writes, and an `*_ack` counter so each command runs **exactly once** (bump the command `id` every time; the app skips any `id` it has already handled).
+
+That's the whole protocol. A client needs nothing but an HTTP library you already have.
+
+### Real example — an AI controlling Autodesk Fusion 360
+
+A ~30-line Fusion 360 add-in (`urllib` only, no SDK) polls `GET /control`, executes the command on Fusion's main thread, and posts the result back. With nothing else, an AI assistant drove Fusion to **parametrically design a complete 3D enclosure** — sketches, extrusions, screw-boss domes with heat-set inserts, USB-C cut-outs, reset/button holes — verifying every step by reading back the actual face geometry.
+
+The pattern is universal: anything that can POST and GET — Blender, a CNC controller, a game, a home-automation hub — becomes AI-steerable with a few lines and no bespoke server. Two safety rules carry over from that build:
+
+- **Single-thread GUI APIs:** the poll loop must never touch the app API directly. Fire an event and run the command on the main thread (the official Fusion pattern; the same holds for any non-thread-safe UI/COM API).
+- **Idempotency:** track the last handled `id` and ack it — polling means you'll see the same command repeatedly, so skip what you've already done.
+
+## Debug Dashboard
+
+The scrolling log stream is great for *what happened when* — but useless for fast, repeating values (audio levels, buffer fill, FPS, sensor readings). The **Debug Dashboard** is the opposite: a fixed-slot panel where each value has a permanent spot and **overwrites in place** instead of scrolling away. Live in the Viewer's **Debug tab**, styled like a hardware monitor (MSI Afterburner / HWiNFO).
+
+It rides on the same Log Hub server — no extra setup. Your program sends widget updates via HTTP POST; sending the same `id` again updates that widget.
+
+### Widget types
+
+| Type | Looks like | Use for |
+|------|-----------|---------|
+| `label` | big value + unit | FPS, state text, counters |
+| `progress` | bar with warn/crit colouring | buffer fill, percentages |
+| `gauge` | radial tachometer (or status LED for strings) | temperature, load, ok/warn/error |
+| `plot` | real-time line graph with grid + min/max/avg | audio signal, latency, any time series |
+
+### Send a widget
+
+```bash
+# A single widget — id is the fixed slot, type is required on first send
+curl -X POST http://localhost:3335/panel -H "Content-Type: application/json" \
+  -d '{"id":"mic","type":"plot","value":0.73,"group":"Audio","label":"Mic Level","unit":"dB"}'
+
+# A gauge with threshold zones (green < warn < yellow < crit < red)
+curl -X POST http://localhost:3335/panel -H "Content-Type: application/json" \
+  -d '{"id":"gpu_temp","type":"gauge","value":67,"min":0,"max":100,"warn":75,"crit":90,"group":"Hardware"}'
+```
+
+**Fields:** `id` (required), `type` (`label`/`progress`/`gauge`/`plot`, required on first send), `value` (number, status string, or number array for a full plot frame), `group`, `label`, `unit`, `min`, `max`, `warn`, `crit`, `color`, `order`.
+**Endpoints:** `POST /panel` (one), `POST /panels` (batch), `POST /panel/clear` (`{id}` for one, empty for all).
+
+### Lifecycle
+
+- The server keeps the last state per `id`, so a freshly-opened or reloaded Viewer shows the whole dashboard immediately.
+- Cards with no update for ~3 s grey out as "stale".
+- **Clear** is a full reset: it empties the store. A source only reappears if it sends widgets *with their `type`* again (plain value-only updates to a cleared id are ignored).
+- Backpressure-guarded — a slow browser can't make the server's send-queue grow without bound.
+
+### Try it — the built-in demo
+
+A ready-to-run showcase animates all widget types (audio waveform, GPU gauges drifting through their zones, a signal generator cycling sine → sawtooth → triangle → square, latency spikes):
+
+```bash
+# 1. Start the Log Hub + Viewer from your AI assistant:
+#      aidex_log({ action: "init" })
+#      aidex_viewer({ path: "." })       → click the Debug tab
+# 2. Run the demo (from the AiDex repo root):
+node scripts/demo-dashboard.mjs           # endless loop, Ctrl+C to stop (clears on exit)
+```
+
+Or use the **▷ Demo** button on the Debug tab — it copies the run command to your clipboard; paste it into a terminal. (The browser can't spawn a process itself.) `scripts/demo-dashboard.ps1` is a one-command launcher that checks the Log Hub first.
+
+> Running it twice starts two instances that fight over the same widgets (visible flicker) — stop the old one (Ctrl+C) before starting another.
 
 ## Screenshots — LLM-Optimized
 
