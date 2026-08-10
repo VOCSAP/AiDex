@@ -457,18 +457,23 @@ Invoke-RestMethod -Uri "http://localhost:3335/log" -Method POST `
 
 ## Posture securite du fork
 
-Etat releve apres `npm install` (Node 22.11.0, npm 11.15.0) le 2026-05-21 :
-- 4 vulnerabilites reportees par `npm audit` (3 high + 1 critical)
-- Warnings deprecated transitifs : `inflight@1.0.6` (memory leak), `glob@7.2.3` (x4, CVE), `prebuild-install@7.1.3` (non maintenu), `glob@10.5.0`
+Etat releve apres `npm install` sur upstream 2.3.0 (Node 22.11.0, npm 11.15.0) le 2026-08-10 :
+- **15 vulnerabilites en dependances de production** : 1 critical, 10 high, 4 moderate (`npm audit --omit=dev`)
+- 19 au total en comptant les devDependencies
+- Critical : `simple-git` (RCE / bypass option-parsing)
+- High notables : `ws`, `@modelcontextprotocol/sdk`, `@hono/node-server`, `path-to-regexp`, `minimatch` / `brace-expansion`, `fast-uri`, `sharp` et `@xenova/transformers` (qui en depend)
+- Warnings deprecated transitifs toujours presents : `glob@7.2.3` (x3), `inflight`, `prebuild-install`
 
-Aucun de ces packages n'est en dependance directe -- tous sont des transitifs (`jest`, `rimraf@5`, `better-sqlite3`, etc.).
+Aucun n'est une dependance directe du fork -- ce sont les transitifs d'upstream. Le chiffre a monte de 4 (releve 2.1.2 du 2026-05-21) a 15 parce que 2.2.x/2.3.0 ont elargi l'arbre de dependances, pas a cause d'un patch local.
+
+Le seul `overrides` du fork est `protobufjs: ^7.5.8`. Il force protobufjs 7.6.5 sur `onnx-proto@4.0.4`, qui declare pourtant `^6.8.8` : violation semver majeure assumee, chemin embeddings uniquement. **Verifie fonctionnel le 2026-08-10** (embedding jina-code, vecteur 768 dims non degenere). A re-tester apres chaque refresh de dependances.
 
 Plan de hardening candidat pour un patch fork futur :
-1. Ajouter des `overrides` dans `package.json` (npm 8.3+) pour forcer `glob@^11`, `rimraf@^6` sur les transitives.
-2. Tester en CI dedie avant merge sur `local-patches`.
-3. Surveiller les CVE upstream sur `tree-sitter` et `better-sqlite3` qui sont les addons natifs les plus exposes.
+1. `npm audit fix` couvre `ws` et `simple-git` sans breaking change -- a valider isolement.
+2. Ajouter des `overrides` pour forcer `glob@^11`, `rimraf@^6`, `minimatch` recents sur les transitives.
+3. Surveiller les CVE upstream sur `tree-sitter` et `better-sqlite3`, les addons natifs les plus exposes.
 
-Ces actions ne sont **pas urgentes** : aucun des warnings ne casse le build. A traiter dans une session dediee, pas pendant un fix fonctionnel.
+Ces actions ne sont **pas urgentes** : aucun warning ne casse le build. A traiter dans une session dediee, pas pendant un fix fonctionnel ni pendant un merge upstream.
 
 ## Documentation complementaire
 
