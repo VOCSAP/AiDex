@@ -20,6 +20,7 @@ import { update as updateIndex } from '../commands/update.js';
 import { getGitStatus, GitStatusInfo, GitFileStatus } from './git-status.js';
 import { isSupported as isSupportedByParser } from '../parser/index.js';
 import { PRODUCT_NAME, INDEX_DIR } from '../constants.js';
+import { DEFAULT_EXCLUDED_DIRS } from '../commands/global/global-init.js';
 import Database from 'better-sqlite3';
 
 const PORT = 3333;
@@ -215,16 +216,32 @@ export async function startViewer(projectPath: string, initialTab?: string, opti
         console.error('[Viewer] Broadcast tree update — sent:', sent, 'dropped:', dropped);
     };
 
-    // Use chokidar for reliable cross-platform file watching
+    // Use chokidar for reliable cross-platform file watching.
+    //
+    // `ignored` MUST be a function, not globs. chokidar v4 REMOVED glob support:
+    // a string matcher is now an EXACT comparison (`matcher === string`, see
+    // node_modules/chokidar/index.js), so patterns like '**/node_modules/**'
+    // silently never match. That is not cosmetic — chokidar opens one
+    // non-recursive fs.watch per directory, i.e. one OS handle each. With the
+    // globs dead, watching this very repo (2.520 dirs) drove the process from
+    // 191 to 19.619 handles; the real project content is only ~350 of those
+    // dirs. Measured 2026-08-05, see scripts/measure-viewer-handles.mjs.
+    //
+    // The predicate must return true for the DIRECTORY ITSELF — returning true
+    // only for files inside it still lets chokidar descend and open the handle.
+    const isIgnoredPath = (targetPath: string): boolean => {
+        const rel = path.relative(projectRoot, targetPath);
+        if (!rel || rel.startsWith('..')) return false;   // the root itself
+        // Any excluded name anywhere in the path kills the whole subtree.
+        return rel.split(/[\\/]/).some(
+            (segment) => segment === INDEX_DIR
+                || segment === '.terraform'   // Terraform module + state cache
+                || DEFAULT_EXCLUDED_DIRS.has(segment)
+        );
+    };
+
     fileWatcher = chokidar.watch(projectRoot, {
-        ignored: [
-            '**/node_modules/**',
-            '**/.git/**',
-            `**/${INDEX_DIR}/**`,
-            '**/build/**',
-            '**/dist/**',
-            '**/.terraform/**',  // Terraform downloaded modules + state cache
-        ],
+        ignored: isIgnoredPath,
         ignoreInitial: true,
         persistent: true
     });
@@ -761,17 +778,23 @@ async function buildTree(
     let files: Array<{ path: string; items: number; methods: number; types: number; fileType?: string }>;
 
     if (mode === 'code') {
-        // Only indexed code files (original behavior)
+        // Only indexed code files (original behavior).
+        //
+        // Three correlated subqueries, NOT three LEFT JOINs with
+        // COUNT(DISTINCT). The joins multiply per file (occurrences x methods
+        // x types) before the DISTINCT collapses them again — a giant
+        // generated header (miniaudio.h: 191k occurrences, 3.1k methods,
+        // 786 types) made that 471 BILLION intermediate rows. better-sqlite3
+        // runs synchronously in native code, so the event loop was dead for
+        // hours, the process sat at 98 % CPU, and even the inspector could
+        // not interrupt it (2026-08-05). The subqueries walk each table once
+        // per file via its file_id index and return in milliseconds.
         files = db.prepare(`
             SELECT f.path,
-                   COUNT(DISTINCT o.item_id) as items,
-                   COUNT(DISTINCT m.id) as methods,
-                   COUNT(DISTINCT t.id) as types
+                   (SELECT COUNT(DISTINCT o.item_id) FROM occurrences o WHERE o.file_id = f.id) as items,
+                   (SELECT COUNT(*) FROM methods m WHERE m.file_id = f.id) as methods,
+                   (SELECT COUNT(*) FROM types t WHERE t.file_id = f.id) as types
             FROM files f
-            LEFT JOIN occurrences o ON o.file_id = f.id
-            LEFT JOIN methods m ON m.file_id = f.id
-            LEFT JOIN types t ON t.file_id = f.id
-            GROUP BY f.id
             ORDER BY f.path
         `).all() as Array<{ path: string; items: number; methods: number; types: number }>;
     } else {
@@ -780,18 +803,15 @@ async function buildTree(
             SELECT path, type as fileType FROM project_files WHERE type != 'dir' ORDER BY path
         `).all() as Array<{ path: string; fileType: string }>;
 
-        // Get stats for indexed files — single query with JOINs (no N+1)
+        // Get stats for indexed files. Subqueries, not JOINs — same reasoning
+        // (and the same 471-billion-row incident) as in the 'code' branch above.
         const statsMap = new Map<string, { items: number; methods: number; types: number }>();
         const indexedStats = db.prepare(`
             SELECT f.path,
-                   COUNT(DISTINCT o.item_id) as items,
-                   COUNT(DISTINCT m.id) as methods,
-                   COUNT(DISTINCT t.id) as types
+                   (SELECT COUNT(DISTINCT o.item_id) FROM occurrences o WHERE o.file_id = f.id) as items,
+                   (SELECT COUNT(*) FROM methods m WHERE m.file_id = f.id) as methods,
+                   (SELECT COUNT(*) FROM types t WHERE t.file_id = f.id) as types
             FROM files f
-            LEFT JOIN occurrences o ON o.file_id = f.id
-            LEFT JOIN methods m ON m.file_id = f.id
-            LEFT JOIN types t ON t.file_id = f.id
-            GROUP BY f.id
         `).all() as Array<{ path: string; items: number; methods: number; types: number }>;
 
         for (const stat of indexedStats) {
@@ -1006,6 +1026,10 @@ function getLanguageFromExtension(filePath: string): string {
         '.php': 'php',
         '.rb': 'ruby',
         '.rake': 'ruby',
+        // Kotlin & Swift are in the highlight.js common bundle (unlike hcl)
+        '.kt': 'kotlin',
+        '.kts': 'kotlin',
+        '.swift': 'swift',
         // HCL/Terraform: highlight.js base bundle has no hcl language module,
         // fall back to plaintext to avoid "Unknown language" errors
         '.tf': 'plaintext',
@@ -2115,6 +2139,34 @@ function getViewerHTML(projectPath: string): string {
             color: var(--accent-cyan); font-size: 0.95em;
         }
 
+        /* Modal — used by the Demo button to explain the clipboard hand-off. */
+        .modal-backdrop {
+            position: fixed; inset: 0; z-index: 1000;
+            background: rgba(0, 0, 0, 0.55);
+            display: flex; align-items: center; justify-content: center;
+            padding: 20px;
+        }
+        .modal {
+            background: var(--bg-secondary); color: var(--text-primary);
+            border: 1px solid var(--border); border-radius: 10px;
+            padding: 22px 24px; max-width: 540px; width: 100%;
+            box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+        }
+        .modal h3 {
+            margin: 0 0 12px; font-size: 1.02em; letter-spacing: 0.03em;
+            color: var(--accent-cyan);
+        }
+        .modal p { margin: 0 0 12px; font-size: 0.9em; line-height: 1.55; color: var(--text-secondary); }
+        .modal-cmd {
+            background: var(--bg-tertiary); border: 1px solid var(--border);
+            border-radius: 6px; padding: 10px 12px; margin: 0 0 12px;
+            font-size: 0.82em; color: var(--accent-cyan);
+            white-space: pre-wrap; word-break: break-all;
+            user-select: all; overflow-x: auto;
+        }
+        .modal-hint { font-size: 0.82em !important; color: var(--text-muted) !important; }
+        .modal-actions { display: flex; justify-content: flex-end; margin-top: 4px; }
+
         .debug-group { margin-bottom: 22px; }
         .debug-group-header {
             font-size: 0.8em; font-weight: 700; letter-spacing: 0.14em;
@@ -2235,6 +2287,55 @@ function getViewerHTML(projectPath: string): string {
         .widget-number-mini { width: 5.5em; flex: 0 0 auto; text-align: right; }
         .widget-number:focus { outline: none; border-color: var(--w-accent, var(--accent-cyan)); }
 
+        /* Toggle (state) — a two-position switch, styled as a sliding knob. */
+        .widget-toggle {
+            position: relative; width: 52px; height: 26px; flex: 0 0 auto;
+            border-radius: 13px; border: 1px solid var(--border);
+            background: var(--bg-primary); cursor: pointer; padding: 0;
+            transition: background 0.18s ease, border-color 0.18s ease;
+        }
+        .widget-toggle::after {
+            content: ""; position: absolute; top: 2px; left: 2px;
+            width: 20px; height: 20px; border-radius: 50%;
+            background: var(--text-secondary); transition: transform 0.18s ease, background 0.18s ease;
+        }
+        .widget-toggle[aria-pressed="true"] {
+            background: color-mix(in srgb, var(--w-accent, var(--accent-cyan)) 28%, transparent);
+            border-color: var(--w-accent, var(--accent-cyan));
+        }
+        .widget-toggle[aria-pressed="true"]::after {
+            transform: translateX(26px);
+            background: var(--w-accent, var(--accent-cyan));
+            box-shadow: 0 0 8px var(--w-accent, var(--accent-cyan));
+        }
+        .widget-toggle:focus-visible { outline: 2px solid var(--w-accent, var(--accent-cyan)); outline-offset: 2px; }
+        .widget-toggle-state {
+            font-family: ui-monospace, monospace; font-size: 0.95em;
+            color: var(--text-secondary); letter-spacing: 0.04em;
+        }
+
+        /* Button (event) — momentary push, with a press counter next to it. */
+        .widget-button {
+            flex: 1; min-width: 0; padding: 8px 14px; cursor: pointer;
+            font-family: inherit; font-size: 0.95em; font-weight: 600;
+            color: var(--w-accent, var(--accent-cyan));
+            background: color-mix(in srgb, var(--w-accent, var(--accent-cyan)) 12%, transparent);
+            border: 1px solid var(--w-accent, var(--accent-cyan)); border-radius: 6px;
+            transition: transform 0.06s ease, background 0.15s ease, box-shadow 0.15s ease;
+        }
+        .widget-button:hover { background: color-mix(in srgb, var(--w-accent, var(--accent-cyan)) 22%, transparent); }
+        .widget-button:active { transform: translateY(1px) scale(0.985); }
+        .widget-button:focus-visible { outline: 2px solid var(--w-accent, var(--accent-cyan)); outline-offset: 2px; }
+        /* Brief flash confirming the hub counted the press. */
+        .widget-button.pressed {
+            background: var(--w-accent, var(--accent-cyan)); color: var(--bg-primary);
+            box-shadow: 0 0 14px var(--w-accent, var(--accent-cyan));
+        }
+        .widget-button-count {
+            font-family: ui-monospace, monospace; font-size: 0.9em;
+            color: var(--text-secondary); flex: 0 0 auto; min-width: 3.5em; text-align: right;
+        }
+
         @keyframes widget-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
         @keyframes value-flash { 0% { color: #fff; text-shadow: 0 0 16px #fff; } 100% {} }
         @keyframes led-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.65; } }
@@ -2263,7 +2364,7 @@ function getViewerHTML(projectPath: string): string {
                 <div class="tab" data-tab="source">Code</div>
                 <div class="tab" data-tab="tasks">Tasks</div>
                 <div class="tab" data-tab="logs">Logs</div>
-                <div class="tab" data-tab="debug">Debug</div>
+                <div class="tab" data-tab="debug">Live</div>
                 <div class="tab" data-tab="search">Search</div>
                 <div class="tab" data-tab="settings">Settings</div>
             </div>
@@ -2463,7 +2564,8 @@ function getViewerHTML(projectPath: string): string {
         let debugPaused = false;
         const plotDirty = new Set();       // ids whose plot canvas needs redraw
         let rafScheduled = false;
-        const STALE_MS = 3000;
+        const STALE_MS = 3000;        // no update for this long → dim the card
+        const ABANDON_MS = 15000;     // …and this long → the sender is gone, drop the widgets
         const PLOT_HISTORY = 200;
 
         // Map an accent name (or hex) to a CSS color. Falls back to cyan.
@@ -2492,7 +2594,10 @@ function getViewerHTML(projectPath: string): string {
 
         function handlePanelSnapshot(widgets) {
             panelWidgets = new Map();
-            (widgets || []).forEach(w => panelWidgets.set(w.id, w));
+            // The snapshot carries no arrival time, so treat "now" as the last
+            // update — otherwise every widget would look abandoned on arrival.
+            const now = Date.now();
+            (widgets || []).forEach(w => { w.lastUpdate = now; panelWidgets.set(w.id, w); });
             if (currentDetailTab === 'debug') renderDebugTab();
         }
         function handlePanelClear(id) {
@@ -2504,6 +2609,7 @@ function getViewerHTML(projectPath: string): string {
         function upsertPanelWidget(w) {
             if (!w || !w.id) return;
             const existed = panelWidgets.has(w.id);
+            w.lastUpdate = Date.now();
             panelWidgets.set(w.id, w);
             if (currentDetailTab !== 'debug' || !debugViewInitialized || debugPaused) return;
 
@@ -2521,16 +2627,29 @@ function getViewerHTML(projectPath: string): string {
 
         function cssId(id) { return id.replace(/[^a-zA-Z0-9_-]/g, '_'); }
 
+        // Toolbar is identical in both states — the Demo button matters most while
+        // the dashboard is still empty, since it is how you get your first widgets.
+        function debugToolbarHTML() {
+            return '<div class="debug-toolbar">' +
+                '<h2>Live Dashboard</h2>' +
+                '<div class="debug-actions">' +
+                '<button class="debug-btn" onclick="copyDemoCommand(this)" title="Copy the demo command to your clipboard, then paste it into a terminal">▷ Demo</button>' +
+                '<button class="debug-btn" onclick="toggleDebugPause(this)">' + (debugPaused ? '▶ Resume' : '⏸ Pause') + '</button>' +
+                '<button class="debug-btn" onclick="clearDebugDashboard()">✕ Clear</button>' +
+                '</div></div>';
+        }
+
         function renderDebugTab() {
             const detail = document.getElementById('detail');
             debugViewInitialized = true;
 
             if (panelWidgets.size === 0) {
                 detail.innerHTML = '<div class="debug-container">' +
-                    '<div class="debug-toolbar"><h2>Debug Dashboard</h2></div>' +
+                    debugToolbarHTML() +
                     '<div class="empty-state"><p>No widgets yet.</p>' +
-                    '<p class="hint">Send <code>POST http://localhost:3335/panel</code> with ' +
-                    '<code>{ id, type, value, group? }</code> — type ∈ label · progress · gauge · plot · slider · number</p></div></div>';
+                    '<p class="hint">Hit <strong>▷ Demo</strong> above to copy the showcase command, then paste it into a terminal. ' +
+                    'Or send <code>POST http://localhost:3335/panel</code> with ' +
+                    '<code>{ id, type, value, group? }</code> — type ∈ label · progress · gauge · plot · slider · number · toggle · button</p></div></div>';
                 return;
             }
 
@@ -2547,13 +2666,7 @@ function getViewerHTML(projectPath: string): string {
             });
 
             let html = '<div class="debug-container">';
-            html += '<div class="debug-toolbar">';
-            html += '<h2>Debug Dashboard</h2>';
-            html += '<div class="debug-actions">';
-            html += '<button class="debug-btn" onclick="copyDemoCommand(this)" title="Copy the demo command to your clipboard, then paste it into a terminal">▷ Demo</button>';
-            html += '<button class="debug-btn" onclick="toggleDebugPause(this)">' + (debugPaused ? '▶ Resume' : '⏸ Pause') + '</button>';
-            html += '<button class="debug-btn" onclick="clearDebugDashboard()">✕ Clear</button>';
-            html += '</div></div>';
+            html += debugToolbarHTML();
 
             for (const g of groupNames) {
                 const list = groups.get(g).sort((a, b) => (a.order - b.order) || a.label.localeCompare(b.label));
@@ -2590,7 +2703,7 @@ function getViewerHTML(projectPath: string): string {
             } else if (w.type === 'plot') {
                 body = '<canvas class="widget-plot-canvas" id="plot-' + cid + '" width="320" height="90"></canvas>' +
                     '<div class="widget-plot-stats" id="pstat-' + cid + '"></div>';
-            } else if (w.type === 'slider' || w.type === 'number') {
+            } else if (isControlWidget(w.type)) {
                 body = renderControlBody(w);
             }
             return '<div class="widget-card" id="w-' + cid + '" style="--w-accent:' + color + '">' +
@@ -2645,6 +2758,34 @@ function getViewerHTML(projectPath: string): string {
             // function argument — an id with quotes would otherwise break out of
             // the oninput="" attribute. Handlers read it back from the element.
             const idAttr = 'data-cid="' + escapeHtml(w.id) + '"';
+            if (w.type === 'toggle') {
+                // State control: 0 or 1. Any non-zero counts as on, so a source
+                // that seeds it with something else still renders sensibly.
+                const on = typeof w.value === 'number' ? w.value !== 0 : false;
+                // Optional per-position captions: unit "on|off" overrides the default.
+                const caps = (w.unit || '').split('|');
+                const onText = caps[0] ? caps[0] : 'ON';
+                const offText = caps.length > 1 && caps[1] ? caps[1] : 'OFF';
+                return '<div class="widget-control-row">' +
+                    '<button class="widget-toggle" id="ctl-' + cid + '" ' + idAttr + ' ' +
+                    'type="button" aria-pressed="' + (on ? 'true' : 'false') + '" ' +
+                    'data-on="' + escapeHtml(onText) + '" data-off="' + escapeHtml(offText) + '" ' +
+                    'onclick="onControlToggle(this)"></button>' +
+                    '<span class="widget-toggle-state" id="ctlstate-' + cid + '">' +
+                    escapeHtml(on ? onText : offText) + '</span>' +
+                    '</div>';
+            }
+            if (w.type === 'button') {
+                // Event control: the value is a press COUNTER, shown next to the
+                // button so it is visible that the hub counted the press.
+                const count = typeof w.value === 'number' ? w.value : 0;
+                const caption = w.label ? w.label : w.id;
+                return '<div class="widget-control-row">' +
+                    '<button class="widget-button" id="ctl-' + cid + '" ' + idAttr + ' ' +
+                    'type="button" onclick="onControlPress(this)">' + escapeHtml(caption) + '</button>' +
+                    '<span class="widget-button-count" id="ctlcount-' + cid + '">' + count + '</span>' +
+                    '</div>';
+            }
             if (w.type === 'number') {
                 // Spinner: number input only.
                 return '<div class="widget-control-row">' +
@@ -2663,6 +2804,14 @@ function getViewerHTML(projectPath: string): string {
                 'min="' + min + '" max="' + max + '" step="' + step + '" value="' + val + '" ' +
                 'oninput="onControlInput(this)">' + unit +
                 '</div>';
+        }
+
+        // Is this widget interactive (user-editable) rather than a read-only feed?
+        // Mirrors CONTROL_TYPES in panel-types.ts. One test instead of the same
+        // type list repeated at every branch — the next control type only has to
+        // be added here and in renderControlBody.
+        function isControlWidget(type) {
+            return type === 'slider' || type === 'number' || type === 'toggle' || type === 'button';
         }
 
         // While true, holds the id of the control the user is dragging — the
@@ -2690,6 +2839,38 @@ function getViewerHTML(projectPath: string): string {
             const sl = document.getElementById('ctl-' + cssId(id));
             if (sl && sl.type === 'range') sl.value = el.value;
             queueControlPost(id, el.value);
+        }
+
+        function onControlToggle(el) {
+            // Flip locally for an instant response, then post. The broadcast echo
+            // confirms it; if the post fails the next echo puts it back.
+            const id = el.dataset.cid;
+            const next = el.getAttribute('aria-pressed') === 'true' ? 0 : 1;
+            applyToggleVisual(el, next);
+            queueControlPost(id, next);
+        }
+
+        function applyToggleVisual(el, value) {
+            const on = value !== 0;
+            el.setAttribute('aria-pressed', on ? 'true' : 'false');
+            const stateEl = document.getElementById('ctlstate-' + cssId(el.dataset.cid));
+            if (stateEl) stateEl.textContent = on ? el.dataset.on : el.dataset.off;
+        }
+
+        function onControlPress(el) {
+            // A press is an EVENT, so it does NOT go through queueControlPost —
+            // that coalescer drops all but the last value in its window, which
+            // would silently swallow rapid presses. Each click posts once, and
+            // the HUB owns the counter (two open dashboards must both count).
+            const id = el.dataset.cid;
+            el.classList.add('pressed');
+            setTimeout(() => el.classList.remove('pressed'), 140);
+            // Hub port hard-coded like postControl above (same machine).
+            fetch('http://localhost:3335/control/press', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: id }),
+            }).catch(() => { /* hub gone — the echo simply never arrives */ });
         }
 
         function queueControlPost(id, raw) {
@@ -2743,7 +2924,15 @@ function getViewerHTML(projectPath: string): string {
                 } else {
                     drawGauge(w);
                 }
-            } else if (w.type === 'slider' || w.type === 'number') {
+            } else if (w.type === 'toggle') {
+                // Echo: another dashboard flipped it, or the source overrode it.
+                const el = document.getElementById('ctl-' + cssId(w.id));
+                if (el && typeof w.value === 'number') applyToggleVisual(el, w.value);
+            } else if (w.type === 'button') {
+                // Echo carries the authoritative press count from the hub.
+                const countEl = document.getElementById('ctlcount-' + cssId(w.id));
+                if (countEl && typeof w.value === 'number') countEl.textContent = w.value;
+            } else if (isControlWidget(w.type)) {
                 // Echo from the server (another viewer changed it, or the source
                 // clamped/overrode it). Sync the inputs — but never while THIS user
                 // is dragging this control, or the thumb would fight their hand.
@@ -2924,16 +3113,39 @@ function getViewerHTML(projectPath: string): string {
             staleTimer = setInterval(() => {
                 if (currentDetailTab !== 'debug') return;
                 const now = Date.now();
+
+                // A sender that goes away without clearing (window closed, crash,
+                // network drop) would otherwise leave its widgets on screen forever.
+                // Dim them first, then drop them once nothing has arrived for a while.
+                if (!debugPaused && panelWidgets.size > 0 && isDashboardAbandoned(now)) {
+                    panelWidgets.clear();
+                    renderDebugTab();
+                    return;
+                }
+
                 for (const w of panelWidgets.values()) {
                     const card = document.getElementById('w-' + cssId(w.id));
                     if (!card) continue;
                     // Interactive controls hold a static set-point — they never go
                     // stale (they'd dim a second after load with nothing wrong).
-                    if (w.type === 'slider' || w.type === 'number') { card.classList.remove('stale'); continue; }
+                    if (isControlWidget(w.type)) { card.classList.remove('stale'); continue; }
                     const stale = (now - (w.lastUpdate || 0)) > STALE_MS;
                     card.classList.toggle('stale', stale);
                 }
             }, 1000);
+        }
+
+        // True once every live widget has been silent past ABANDON_MS. Controls
+        // are set-points, not feeds — they never update on their own, so a
+        // dashboard made only of controls is never considered abandoned.
+        function isDashboardAbandoned(now) {
+            let sawFeed = false;
+            for (const w of panelWidgets.values()) {
+                if (isControlWidget(w.type)) continue;
+                sawFeed = true;
+                if ((now - (w.lastUpdate || 0)) <= ABANDON_MS) return false;
+            }
+            return sawFeed;
         }
 
         function toggleDebugPause(btn) {
@@ -2948,21 +3160,61 @@ function getViewerHTML(projectPath: string): string {
         }
 
         // The browser can't spawn a node process, so the Demo button copies the
-        // command to the clipboard — paste it into a terminal to run the showcase.
+        // command and then says so — a bare "Copied!" left people waiting for
+        // something to happen on its own.
         function copyDemoCommand(btn) {
             const cmd = ${demoCommandJson};
-            const orig = btn.textContent;
-            const done = () => { btn.textContent = '✓ Copied!'; setTimeout(() => { btn.textContent = orig; }, 1800); };
-            const fail = () => { btn.textContent = cmd; setTimeout(() => { btn.textContent = orig; }, 4000); };
             if (navigator.clipboard && navigator.clipboard.writeText) {
-                navigator.clipboard.writeText(cmd).then(done).catch(fail);
+                navigator.clipboard.writeText(cmd).then(() => showDemoDialog(cmd, true)).catch(() => showDemoDialog(cmd, false));
             } else {
                 // Fallback for non-secure contexts.
                 const ta = document.createElement('textarea');
                 ta.value = cmd; document.body.appendChild(ta); ta.select();
-                try { document.execCommand('copy'); done(); } catch (e) { fail(); }
+                let ok = false;
+                try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
                 document.body.removeChild(ta);
+                showDemoDialog(cmd, ok);
             }
+        }
+
+        // Modal explaining that the command is now on the clipboard and needs to be
+        // pasted into a terminal. If copying failed, the command is shown for manual
+        // selection instead of claiming success.
+        function showDemoDialog(cmd, copied) {
+            closeDemoDialog();
+            const back = document.createElement('div');
+            back.className = 'modal-backdrop';
+            back.id = 'demo-modal';
+            back.onclick = (e) => { if (e.target === back) closeDemoDialog(); };
+
+            const head = copied
+                ? '✓ Command copied to clipboard'
+                : 'Copy this command';
+            const lead = copied
+                ? 'The demo runs as a separate process, which the browser cannot start on its own. Paste the command into a terminal and press Enter:'
+                : 'Copying failed, so select the command below and copy it yourself, then paste it into a terminal:';
+
+            back.innerHTML =
+                '<div class="modal" role="dialog" aria-modal="true" aria-labelledby="demo-modal-title">' +
+                '<h3 id="demo-modal-title">' + head + '</h3>' +
+                '<p>' + lead + '</p>' +
+                '<pre class="modal-cmd">' + escapeHtml(cmd) + '</pre>' +
+                '<p class="modal-hint">The dashboard fills up a second or two later. Press Ctrl+C in the terminal to stop it. Do not start it twice — two instances fight over the same widgets.</p>' +
+                '<div class="modal-actions"><button class="debug-btn" onclick="closeDemoDialog()">Got it</button></div>' +
+                '</div>';
+
+            document.body.appendChild(back);
+            document.addEventListener('keydown', demoDialogEsc);
+            const btn = back.querySelector('.debug-btn');
+            if (btn) btn.focus();
+        }
+
+        function demoDialogEsc(e) { if (e.key === 'Escape') closeDemoDialog(); }
+
+        function closeDemoDialog() {
+            const el = document.getElementById('demo-modal');
+            if (el) el.remove();
+            document.removeEventListener('keydown', demoDialogEsc);
         }
 
         function renderTree(node, container = document.getElementById('tree'), depth = 0) {
