@@ -2,6 +2,76 @@
 
 All notable changes to AiDex will be documented in this file.
 
+## [2.3.0] - 2026-08-06
+
+Two new dashboard controls, Kotlin and Swift, and three Viewer fixes — one of which could freeze the whole MCP server.
+
+### Added
+
+- **Dashboard switches and buttons** — the Live tab could only ever set a *value* (`slider`, `number`). Two control types join them: **`toggle`** for state (a two-position switch, value `0`/`1`, with `unit` doubling as the `"ON|OFF"` captions) and **`button`** for events. A button's value is a monotonically rising **press counter**, not a flag, because a source polls `GET /control` at its own pace — with a boolean, every press landing between two polls would be lost. The source compares against the last count it saw and learns both *that* and *how often* it was pressed; a backwards jump (wrap at 1e6, `/panel/clear`, hub restart) means "restart, adopt the value". Presses arrive via the new **`POST /control/press`**, which takes only an `id`: the hub owns the counter, so two open dashboards both count instead of overwriting each other. Re-announcing a widget (a device rebooting) no longer clobbers a value the user dialed in, and the press count survives it.
+
+- **Kotlin and Swift support** — `.kt`, `.kts` and `.swift` files are indexed via tree-sitter and classified as code across every extension list. Brings the language count to **14**. A small share of files using very recent syntax falls back gracefully when the community grammar can't parse them.
+
+### Changed
+
+- **The Viewer's `Debug` tab is now called `Live`** — sitting right next to `Logs`, the old name said nothing about what set the two apart. `Logs` is history that scrolls past; `Live` is the current state, held in fixed slots that overwrite in place. The heading inside the tab reads **Live Dashboard**. Nothing about the API changed: the panel endpoints, widget types and the `debug` tab id are all untouched, so existing senders and deep links keep working.
+
+### Fixed
+
+- **A single indexed file could freeze the entire MCP server** — the per-file stats in `buildTree` used three LEFT JOINs with `COUNT(DISTINCT)` in one `GROUP BY`. The joins multiply *per file* before the DISTINCT collapses them again: occurrences × methods × types. One generated header in an indexed project (191.134 occurrences × 3.138 methods × 786 types) came to **471 billion intermediate rows for that one file**. better-sqlite3 runs synchronously in native code, so the first tree request from a connecting browser killed the process for good: event loop dead, 98 % CPU for hours, 1,5 GB RSS, MCP calls hanging, dashboard empty — while the ports kept listening, which made it look "on but broken". Now three correlated subqueries per file, each walking one table by its `file_id` index, returning the same numbers in milliseconds. Both the `code` and `all` branches carried the pattern.
+
+- **The Viewer's file watcher opened tens of thousands of OS handles** — chokidar removed glob support in v4, but the watcher still passed v3 globs (`'**/node_modules/**'` and friends). In v5 a string matcher is an exact comparison, so the ignore list silently never matched and *every* directory below the project root got watched — one non-recursive `fs.watch`, and therefore one OS handle, each. Measured on this repo (2.520 directories): **19.619 handles and 224 MB RSS, down to 2.375 and 84 MB** after the fix; a control run without the Viewer stayed flat at 191. `ignored` is now a predicate that returns true for the *directory itself* (matching only files inside it still lets chokidar descend), and it reuses the exclusion list the indexer already had — a directory not worth indexing is not worth watching. Fixes the spurious tree rebuilds too: every `node_modules` event used to trigger a full rebuild and broadcast, for data that is not even in the database.
+
+- **`managed_components` is now excluded as well** — the predicate fix above was necessary but not sufficient on ESP-IDF projects, where that directory is the embedded world's `node_modules`. The arithmetic on one such repo is the real finding: 14.858 handles = 1.865 watched directories + 12.713 watched *files* + base. On Windows chokidar holds a handle per watched **file**, not merely per directory, and 12.407 of those files sat in `managed_components`. This one entry brings the process back to a few hundred handles. It disappears from global-init scanning too, for the same reason as `node_modules`.
+
+- **The `▷ Demo` button was missing from an empty dashboard** — the Live tab rendered two different toolbars, and the empty-state one carried only the heading, dropping Demo, Pause and Clear. That hid the button exactly when it was needed: it is the way to get your first widgets, but you only saw it once widgets already existed. Both states now share one toolbar, and the empty-state hint points at the button instead of only naming the POST endpoint.
+
+## [2.2.2] - 2026-06-30
+
+Community contribution. Adds Astro component support.
+
+### Added
+
+- **`.astro` file support** ([#15](https://github.com/CSCSoftware/AiDex/pull/15), thanks [@zlegein](https://github.com/zlegein)) — Astro components are now indexed by parsing their TypeScript frontmatter (the code between the `---` fences) with the existing TSX grammar. The template/markup below the frontmatter is skipped. Line numbers are preserved exactly: template lines are blanked (not removed) before parsing, so every reported method/type position matches the original file. No new dependency — reuses the bundled TypeScript grammar.
+
+## [2.2.1] - 2026-06-30
+
+Install fix. On **Node.js 24**, `npm install -g aidex-mcp` failed for many users with `node-gyp` errors — they had to install a full C++ toolchain (Visual Studio Build Tools on Windows, the Xcode sysroot on macOS) just to build `better-sqlite3` from source. Fixes [#13](https://github.com/CSCSoftware/AiDex/issues/13).
+
+### Fixed
+
+- **`better-sqlite3` build-from-source on Node 24** — `better-sqlite3@^11` ships no prebuilt binary for Node 24 (ABI `node-v137`), so `prebuild-install` fell through to `node-gyp rebuild`, which needs a local C/C++ toolchain most users don't have. Bumped to **`better-sqlite3@^12`**, which adds Node 24 (and newer) prebuilds — the install now downloads a ready binary on every supported platform, no compiler required. No API changes; the database layer is untouched.
+
+### Changed
+
+- **Minimum Node.js is now 20** (was 18). `better-sqlite3@12` dropped end-of-life Node 18 from its build matrix, so that is the new floor. `engines`, `.nvmrc`, the runtime version check (`src/index.ts`), and the README are aligned. Node 18 is itself past EOL.
+
+## [2.2.0] - 2026-06-30
+
+Feature release. Turns the Debug Dashboard from a one-way display into a two-way control surface: a source can now expose **interactive sliders/numbers** whose values flow *back* to it, and both the user and the AI can tune a running program live. Also gives plots sender-controlled Y-axis scaling, separates a gauge LED's colour from its text, stops dashboard flicker, and trims the npm package.
+
+### Added
+
+- **Interactive controls + `/control` back-channel** — two new widget types, **`slider`** and **`number`**, are editable in the viewer; when the user changes one, the new value flows back to the source. This is the first path on which data travels *from* AiDex *to* the program (everything else is source → AiDex). The mechanism is a deliberately dumb, source-agnostic `{ id: value }` store — it knows nothing about what a value means.
+  - HTTP: `POST /control` (set one value, mirrors it onto the card and broadcasts to every viewer) and `GET /control` (the whole store as a flat `{ id: value }` map, which the source polls at its own pace to learn the current set-points). Cleared together with their widgets via `POST /panel/clear` — there is no separate control-clear endpoint.
+  - **MCP: the AI can drive controls too.** `aidex_log` gains `control_get` (read all control values) and `control_set` (change one — the *same* set-point the user's dashboard slider drives). So Claude can tune a live program — e.g. a barge-in threshold, a gain, a sample rate — and watch the effect, without touching the source.
+  - New `step` field (slider/number increment per tick, default 1). New file: `src/loghub/control-store.ts`. First real consumer: the GeminiPod (ESP32) barge-in tuning; the same API works unchanged from C#, Python, or shell.
+- **Sender-controlled plot Y-axis** — three new plot fields, all decided by the sender (the renderer only renders):
+  - **`scale`** — `"linear"` (default) or `"log"`. Logarithmic scaling suits high-dynamic signals like audio levels, where quiet speech and a loud peak need to be visible at once. Bounds are lifted to ≥ 1.
+  - **`autoMin`** — the plot's lower bound follows the data minimum (the ceiling stays fixed at `max`), so a noise floor sits at the bottom edge and the full plot height goes to the signal above it.
+  - **`decimals`** — decimal places in the footer (cur/min/max/avg); `0` for integers. The recipe that finally made an audio-level plot readable across the whole loudness range: `scale:"log"` + `autoMin:true` + fixed `max` + `decimals:0`.
+- **Panel-Dashboard user guide** (`docs/loghub-panel-dashboard.md`) — full walkthrough: stream vs. dashboard, quickstart, the complete HTTP API (display + control back-channel), all six widget types, a field reference checked against `panel-types.ts`, plot-scaling deep-dive, best practices from real (ESP32) use, and an end-to-end audio-dashboard example.
+
+### Changed
+
+- **Gauge LED colour separated from its text** — a new `state` field drives a gauge's LED colour (`"ok"`/`"warn"`/`"error"`/…) independently of `value`, which stays the free display text. Previously the status word *was* the displayed text, so you were stuck looking at a literal "WARN"/"OK". Now the LED can be red while the card shows whatever text you want.
+- **npm package trimmed** — `.npmignore` now ships only `build/` plus the postinstall hook; `docs/`, the `CHANGELOG`, test scripts, and source are excluded from the published tarball. Smaller install, nothing functional removed. (`scripts/verify-package.ps1`, `scripts/check-npm-auth.ps1` updated to match.)
+
+### Fixed
+
+- **Dashboard no longer flickers on unchanged values** — `updateCardValue` re-rendered (and flashed) label/progress/gauge cards on every sample, even when the value was identical, causing constant flicker at high update rates. Cards now redraw only when the value actually changes.
+- **`aidex_global_guideline` `list` token overflow** — `list` dumped the *full text* of every guideline (~1,246 lines / 68 KB for 15 guidelines), overflowing the MCP tool result so the content spilled to the swap file instead of the chat, making the overview unusable. `list` now renders a compact one-line-per-guideline index (`key — short description (updated date)`) via a new `summarizeGuideline()` helper; use `get` with a key to read the full text. 1,246 → 17 lines.
+
 ## [2.1.2] - 2026-06-02
 
 Feature + stability release. Adds the live **Debug Dashboard** and closes the WebSocket memory leak the v2.1.0/2.1.1 fixes had missed.

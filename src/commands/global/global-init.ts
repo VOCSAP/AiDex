@@ -354,7 +354,12 @@ export async function globalInit(params: GlobalInitParams): Promise<GlobalInitRe
 // Helpers
 // ============================================================
 
-const DEFAULT_EXCLUDED_DIRS = new Set([
+/**
+ * Directory names never worth descending into. Used by the global scan AND by
+ * the viewer's file watcher (viewer/server.ts) — one list, so a directory that
+ * is not worth indexing is not worth watching either.
+ */
+export const DEFAULT_EXCLUDED_DIRS = new Set([
     'node_modules', '.git', '.svn', '.hg', '__pycache__', '.cache',
     'dist', 'build', 'out', 'target', 'bin', 'obj',
     '.next', '.nuxt', 'vendor', '.gradle', '.idea', '.vscode',
@@ -365,6 +370,12 @@ const DEFAULT_EXCLUDED_DIRS = new Set([
     // Embedded runtimes & external codec libs
     'Python310', 'Python311', 'Python312', 'Python313',
     'fdk-aac',
+    // ESP-IDF dependency cache — the embedded world's node_modules. Found
+    // 2026-08-05: an ESP32 project carried 12.407 of its 12.713 files in
+    // here, and on Windows chokidar holds one OS handle per WATCHED FILE
+    // (not just per directory) — this single entry took the viewer's
+    // process from ~14.900 handles down to a few hundred.
+    'managed_components',
     // Rust
     '.cargo',
     // .NET
@@ -419,6 +430,7 @@ const CODE_EXTS = new Set([
     '.c', '.h', '.cpp', '.cc', '.cxx', '.hpp', '.hxx',
     '.java', '.go', '.php', '.rb', '.rake',
     '.tf', '.tfvars', '.hcl',
+    '.kt', '.kts', '.swift',
 ]);
 
 function estimateFileCount(dirPath: string): number {

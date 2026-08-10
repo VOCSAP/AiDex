@@ -236,11 +236,12 @@ export function readAidexEmbedIgnore(projectPath: string): string[] {
 // ============================================================
 
 const CODE_EXTENSIONS = new Set([
-    '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
+    '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.astro',
     '.cs', '.rs', '.py', '.pyw',
     '.c', '.h', '.cpp', '.cc', '.cxx', '.hpp', '.hxx',
     '.java', '.go', '.php', '.rb', '.rake',
     '.tf', '.tfvars', '.hcl',
+    '.kt', '.kts', '.swift',
 ]);
 
 const CONFIG_EXTENSIONS = new Set([

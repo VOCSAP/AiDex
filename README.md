@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/aidex-mcp.svg)](https://www.npmjs.com/package/aidex-mcp)
 [![MIT License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Node.js 18+](https://img.shields.io/badge/Node.js-18%2B-brightgreen.svg)](https://nodejs.org/)
+[![Node.js 20+](https://img.shields.io/badge/Node.js-20%2B-brightgreen.svg)](https://nodejs.org/)
 [![MCP Server](https://img.shields.io/badge/MCP-Server-blue.svg)](https://modelcontextprotocol.io/)
 [![GitHub Discussions](https://img.shields.io/github/discussions/CSCSoftware/AiDex?label=Discussions&logo=github)](https://github.com/CSCSoftware/AiDex/discussions)
 
@@ -50,7 +50,7 @@ AiDex is an MCP server that gives AI coding assistants a memory, semantic search
 | **Screenshots** | `screenshot`, `windows` | Cross-platform screen capture with LLM optimization — scale + color reduction saves up to 95% tokens |
 | **Viewer** | `viewer` | Interactive browser UI with file tree, signatures, tasks, logs, search, and live reload |
 
-**12 languages** — C#, TypeScript, JavaScript, Rust, Python, C, C++, Java, Go, PHP, Ruby, HCL/Terraform
+**14 languages** — C#, TypeScript, JavaScript, Rust, Python, C, C++, Java, Go, PHP, Ruby, HCL/Terraform, Kotlin, Swift — plus Astro frontmatter
 
 <details>
 <summary><strong>Quick Examples</strong> — see it in action</summary>
@@ -244,13 +244,16 @@ The index lives in `.aidex/index.db` (SQLite) - fast, portable, no external depe
 | PHP | `.php` |
 | Ruby | `.rb`, `.rake` |
 | HCL/Terraform | `.tf`, `.tfvars`, `.hcl` |
+| Kotlin | `.kt`, `.kts` |
+| Swift | `.swift` |
+| Astro | `.astro` (TypeScript frontmatter) |
 
 ## Quick Start
 
 ### Prerequisites
 
-- **Node.js ≥ 18** (check with `node --version`)
-  - macOS: `brew install node` or `nvm install 18 && nvm use 18`
+- **Node.js ≥ 20** (check with `node --version`)
+  - macOS: `brew install node` or `nvm install 20 && nvm use 20`
   - Linux: use your package manager or [nvm](https://github.com/nvm-sh/nvm)
   - Windows: [nodejs.org](https://nodejs.org/)
   - If you use `nvm`, the repo ships a `.nvmrc` — `nvm use` picks the right version automatically.
@@ -390,7 +393,7 @@ Do I want to search code?
 | Screenshots | `aidex_screenshot`, `aidex_windows` | Screen capture with LLM optimization (scale + color reduction, no index needed) |
 | Viewer | `aidex_viewer` | Interactive browser UI with file tree, signatures, tasks, and live logs |
 
-**12 languages:** C#, TypeScript, JavaScript, Rust, Python, C, C++, Java, Go, PHP, Ruby, HCL/Terraform
+**14 languages:** C#, TypeScript, JavaScript, Rust, Python, C, C++, Java, Go, PHP, Ruby, HCL/Terraform, Kotlin, Swift — plus Astro frontmatter
 
 ### Session Notes
 
@@ -735,10 +738,13 @@ AI ──control_set {id,cmd}──→  Hub  ←──GET /control──  Your A
 AI ←──control_get──── result ─ Hub  ←──POST /control── runs it, posts result + ack
 ```
 
-- **`control_set { id, value }`** — the AI (or a Viewer slider) sets a control slot.
+- **`control_set { id, value }`** — the AI (or a Viewer slider/switch) sets a control slot.
 - **`GET /control`** — your app reads all current control values.
 - **`POST /control`** — your app writes back results / acknowledgements.
+- **`POST /control/press { id }`** — registers one press of a `button` control. The hub owns the counter, so presses from several open dashboards add up instead of overwriting each other.
 - **`control_get`** — the AI reads what the app reported.
+
+> A `button` value is a **press counter**, not a flag — your app polls at its own pace, so compare against the last count you saw rather than testing for "pressed". Any backwards jump means the hub restarted or the panel was cleared: adopt the value, don't read it as a million presses.
 
 Two slots by convention give you full request/response: a `*_cmd` slot the AI writes, a `*_result` slot the app writes, and an `*_ack` counter so each command runs **exactly once** (bump the command `id` every time; the app skips any `id` it has already handled).
 
@@ -755,7 +761,7 @@ The pattern is universal: anything that can POST and GET — Blender, a CNC cont
 
 ## Debug Dashboard
 
-The scrolling log stream is great for *what happened when* — but useless for fast, repeating values (audio levels, buffer fill, FPS, sensor readings). The **Debug Dashboard** is the opposite: a fixed-slot panel where each value has a permanent spot and **overwrites in place** instead of scrolling away. Live in the Viewer's **Debug tab**, styled like a hardware monitor (MSI Afterburner / HWiNFO).
+The scrolling log stream is great for *what happened when* — but useless for fast, repeating values (audio levels, buffer fill, FPS, sensor readings). The **Debug Dashboard** is the opposite: a fixed-slot panel where each value has a permanent spot and **overwrites in place** instead of scrolling away. Live in the Viewer's **Live tab**, styled like a hardware monitor (MSI Afterburner / HWiNFO).
 
 It rides on the same Log Hub server — no extra setup. Your program sends widget updates via HTTP POST; sending the same `id` again updates that widget.
 
@@ -780,7 +786,7 @@ curl -X POST http://localhost:3335/panel -H "Content-Type: application/json" \
   -d '{"id":"gpu_temp","type":"gauge","value":67,"min":0,"max":100,"warn":75,"crit":90,"group":"Hardware"}'
 ```
 
-**Fields:** `id` (required), `type` (`label`/`progress`/`gauge`/`plot`, required on first send), `value` (number, status string, or number array for a full plot frame), `group`, `label`, `unit`, `min`, `max`, `warn`, `crit`, `color`, `order`.
+**Fields:** `id` (required), `type` (`label`/`progress`/`gauge`/`plot`/`slider`/`number`/`toggle`/`button`, required on first send), `value` (number, status string, or number array for a full plot frame), `group`, `label`, `unit`, `min`, `max`, `warn`, `crit`, `color`, `order`.
 **Endpoints:** `POST /panel` (one), `POST /panels` (batch), `POST /panel/clear` (`{id}` for one, empty for all).
 
 ### Lifecycle
@@ -797,12 +803,12 @@ A ready-to-run showcase animates all widget types (audio waveform, GPU gauges dr
 ```bash
 # 1. Start the Log Hub + Viewer from your AI assistant:
 #      aidex_log({ action: "init" })
-#      aidex_viewer({ path: "." })       → click the Debug tab
+#      aidex_viewer({ path: "." })       → click the Live tab
 # 2. Run the demo (from the AiDex repo root):
 node scripts/demo-dashboard.mjs           # endless loop, Ctrl+C to stop (clears on exit)
 ```
 
-Or use the **▷ Demo** button on the Debug tab — it copies the run command to your clipboard; paste it into a terminal. (The browser can't spawn a process itself.) `scripts/demo-dashboard.ps1` is a one-command launcher that checks the Log Hub first.
+Or use the **▷ Demo** button on the Live tab — it copies the run command to your clipboard; paste it into a terminal. (The browser can't spawn a process itself.) It sits in the toolbar even while the dashboard is still empty, since it's how you get your first widgets. `scripts/demo-dashboard.ps1` is a one-command launcher that checks the Log Hub first.
 
 > Running it twice starts two instances that fight over the same widgets (visible flicker) — stop the old one (Ctrl+C) before starting another.
 
@@ -876,18 +882,39 @@ Opens `http://localhost:3333` with:
 - **File signatures** - Click any file to see its types and methods
 - **Live reload** - Changes detected automatically while you code
 - **Git status icons** - See which files are modified, staged, or untracked
+- **Search tab** - Semantic / exact / hybrid search across code, docs, tasks & notes, with the optional LLM layer (translate + rerank)
+- **Live tab** - Live Debug Dashboard: fixed-slot widgets (plots, gauges, progress) plus interactive sliders, switches and buttons that drive a running program back through the `/control` channel
 - **Logs tab** - Live log stream from Log Hub with filters (level, source, text search)
 - **Tasks tab** - View and manage your task backlog
+- **Settings tab** - Configure embeddings & the LLM provider (privacy switch defaults to off)
+
+### Debug Dashboard — live, two-way
+
+The Live tab is a live dashboard with fixed slots: send the same `id` again and the value updates **in place** instead of scrolling away. Interactive `slider`/`number`/`toggle`/`button` widgets flow back to the source (HTTP `/control`, or `aidex_log control_set` so the AI can tune a running program too). A `button` carries a press **counter**, not a flag, so a source polling at its own pace never misses a click. Full guide: [docs/loghub-panel-dashboard.md](docs/loghub-panel-dashboard.md).
+
+![The Live Dashboard — plots, gauges and the four interactive control types side by side](docs/loghub-dashboard-top.png)
+
+The Controls group holds one of each interactive type: a slider, two toggles, and a button with its press counter beside it. Scrolled further down, several sources share the same dashboard — the hub knows nothing about what any value means, so a synth firmware and a demo script coexist without either being aware of the other:
+
+![Further down the same dashboard — gauges, plots and controls from several sources at once](docs/loghub-dashboard.png)
+
+The sliders react in real time — [watch the GIF](docs/loghub-dashboard.gif):
+
+![Tuning sliders drive the live waveform plots](docs/loghub-dashboard.gif)
+
+### The rest of the Viewer
+
+![AiDex Viewer - Semantic & hybrid search](docs/viewer-search.png)
+
+![AiDex Viewer - Settings (embeddings & LLM)](docs/viewer-settings.png)
+
+![AiDex Viewer - Tasks](docs/viewer-tasks.png)
+
+![AiDex Viewer - Code signatures](docs/viewer-code.png)
 
 ![AiDex Viewer - Signatures](docs/aidex-viewer.png)
 
 ![AiDex Viewer - Overview](docs/aidex-viewer-overview.png)
-
-![AiDex Viewer - Code](docs/aidex-viewer-code.png)
-
-![AiDex Viewer - Tasks](docs/aidex-viewer-tasks.png)
-
-![AiDex Viewer - Logs](docs/aidex-viewer-logs.png)
 
 Close with `aidex_viewer({ path: ".", action: "close" })`
 
