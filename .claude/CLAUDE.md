@@ -1,325 +1,398 @@
-# AiDex - CLAUDE.md
+# AiDex -- CLAUDE.md
 
-MCP Server für persistentes Code-Indexing. Ermöglicht Claude Code schnelle, präzise Suchen statt Grep/Glob.
+Serveur MCP de code-indexing persistant. Donne aux assistants IA (Claude Code, Claude Desktop, etc.) un acces structure a la codebase, plus rapide et precis que `Grep` / `Glob`.
 
-**Version:** 2.3.0 | **Sprachen:** 14 | **Repo:** https://github.com/CSCSoftware/AiDex
+## Fork VOCSAP
+
+Ce repo est un fork local `VOCSAP/AiDex`, base sur `CSCSoftware/AiDex`. Voir `git remote -v` pour les remotes :
+- `origin` : `VOCSAP/AiDex` (publique du fork)
+- `upstream` : `CSCSoftware/AiDex` (auteur d'origine, suivi pour pull les nouvelles features)
+
+Patches locaux versionnes sur la branche `local-patches`. Notes de developpement privees au fork sous `docs/dev-notes/` (exclus de git via `.gitignore` -- commit `e3dff85`).
+
+## Contrainte runtime
+
+**Node 22.x obligatoire** sur Windows 11 (builds recents type 26200). Un bug libuv dans Node 20.20.0 fait planter `npm install` au build natif (`tree-sitter`, `better-sqlite3`) avec `AssignProcessToJobObject: ERROR_INVALID_PARAMETER (87)` qui abort le process.
+
+Configuration verifiee de la station courante :
+- Node 22.11.0 via nvm4w (`C:\Users\Olivier\AppData\Local\nvm\v22.11.0\node.exe`)
+- npm 11.15.0 + node-gyp 12.3.0 bundled
+- Build natifs (tree-sitter, better-sqlite3, @xenova/transformers, sqlite-vec) compiles sous Node 22 ABI
+
+Si tu changes de version de Node, prevois `npm rebuild` pour recompiler les addons natifs sous le nouveau ABI.
+
+Depuis upstream 2.2.1, le plancher declare est **Node >= 20** (`engines`, `.nvmrc`, check runtime dans `src/index.ts`) et `better-sqlite3` est passe en `^12` pour disposer des prebuilds Node 24. La contrainte Node 22 du fork reste plus stricte que le plancher upstream, pour la raison libuv ci-dessus.
 
 ## Build & Run
 
 ```bash
-npm install && npm run build    # Einmalig
-npm run build                   # Nach Code-Änderungen
+npm install                     # First-time install
+npm run build                   # After code changes (tsc + copy-assets)
 ```
 
-Registriert als MCP Server `aidex` (Prefix: `mcp__aidex__aidex_*`).
+Si tu veux skip les optional deps (`@xenova/transformers` ~50 MB, `sqlite-vec` ~5 MB), utilise :
+```bash
+npm install --omit=optional
+```
+Mais dans ce cas les embeddings semantiques restent inactifs (stub).
 
-**Claude Code** (`~/.claude/settings.json`):
+### Enregistrement MCP
+
+Le serveur est expose sous le nom `aidex`. Prefixe des outils : `mcp__aidex__aidex_*`.
+
+**Claude Code** (`~/.claude.json`) :
 ```json
 "mcpServers": {
   "aidex": {
-    "command": "node",
-    "args": ["Q:/develop/Tools/AiDex/build/index.js"]
+    "command": "C:\\Users\\Olivier\\AppData\\Local\\nvm\\v22.11.0\\node.exe",
+    "args": ["D:\\AI\\MCPServer\\AiDex\\build\\index.js"]
   }
 }
 ```
 
-**Claude Desktop** (`%APPDATA%/Claude/claude_desktop_config.json`):
+**Claude Desktop** (`%APPDATA%/Claude/claude_desktop_config.json`) :
 ```json
 "mcpServers": {
   "aidex": {
-    "command": "C:\\Program Files\\nodejs\\node.exe",
-    "args": ["Q:\\develop\\Tools\\AiDex\\build\\index.js"]
+    "command": "C:\\Users\\Olivier\\AppData\\Local\\nvm\\v22.11.0\\node.exe",
+    "args": ["D:\\AI\\MCPServer\\AiDex\\build\\index.js"]
   }
 }
 ```
 
-**Nach Änderungen:** Build ausführen, dann Claude Code neu starten.
-**MCP-Name:** Server muss als `"aidex"` registriert sein → Prefix wird `mcp__aidex__aidex_*`.
+Note sur le path Node : il est version-pinned a 22.11.0. Si tu installes 22.12 et desinstalles 22.11, ce path casse. Alternative : pointer vers le junction `C:\nvm4w\nodejs\node.exe` qui suit la version active de nvm4w (au risque d'ABI mismatch si tu fais `nvm use 20.x`).
 
-## Tools (30)
+**Apres modification du code** : `npm run build`, puis redemarrer Claude Code / Desktop pour que le serveur MCP soit relance.
 
-### Suche & Index
-| Tool | Beschreibung |
-|------|--------------|
-| `aidex_init` | Projekt indexieren |
-| `aidex_query` | Terme suchen (exact/contains/starts_with), Zeit-Filter |
-| `aidex_status` | Index-Statistiken |
-| `aidex_update` | Einzelne Datei neu indexieren |
-| `aidex_remove` | Datei aus Index entfernen |
+## Outils
 
-### Signaturen (statt Read!)
-| Tool | Beschreibung |
-|------|--------------|
-| `aidex_signature` | Datei-Signatur (Types + Methods) |
-| `aidex_signatures` | Mehrere Dateien (Glob-Pattern) |
+### Recherche & Index
+| Outil | Description |
+|-------|-------------|
+| `aidex_init` | Indexer un projet (param optionnel `embeddings: true`) |
+| `aidex_query` | Rechercher un terme (modes exact/contains/starts_with) avec filtres temporels |
+| `aidex_search` | Recherche semantique (vector KNN) + exact + hybrid via RRF (v1.22+) |
+| `aidex_status` | Statistiques d'index |
+| `aidex_update` | Reindexer un fichier |
+| `aidex_remove` | Retirer un fichier de l'index |
 
-### Projekt-Übersicht
-| Tool | Beschreibung |
-|------|--------------|
-| `aidex_summary` | Projekt-Übersicht mit Entry Points |
-| `aidex_tree` | Dateibaum mit Stats |
-| `aidex_describe` | Dokumentation zu summary.md |
-| `aidex_files` | Projektdateien nach Typ, `modified_since` |
+### Signatures (a privilegier sur `Read`)
+| Outil | Description |
+|-------|-------------|
+| `aidex_signature` | Signature d'un fichier (Types + Methods) |
+| `aidex_signatures` | Signatures de plusieurs fichiers via glob |
 
-### Cross-Project
-| Tool | Beschreibung |
-|------|--------------|
-| `aidex_link/unlink/links` | Dependencies verlinken |
-| `aidex_scan` | Indexierte Projekte finden |
+### Vue d'ensemble du projet
+| Outil | Description |
+|-------|-------------|
+| `aidex_summary` | Apercu projet + entry points |
+| `aidex_tree` | Arborescence avec stats |
+| `aidex_describe` | Documentation auto vers `summary.md` |
+| `aidex_files` | Lister les fichiers par type, avec `modified_since` |
+
+### Cross-projet
+| Outil | Description |
+|-------|-------------|
+| `aidex_link` / `aidex_unlink` / `aidex_links` | Lier des dependances entre projets |
+| `aidex_scan` | Trouver les projets deja indexes |
 
 ### Session (v1.2+)
-| Tool | Beschreibung |
-|------|--------------|
-| `aidex_session` | Session starten, externe Änderungen erkennen |
-| `aidex_note` | Session-Notizen (persistiert in DB) |
-| `aidex_viewer` | Browser-Explorer mit Live-Reload (v1.3) |
+| Outil | Description |
+|-------|-------------|
+| `aidex_session` | Demarrer une session, detecter les modifs externes |
+| `aidex_note` | Notes de session (persistees en DB) |
+| `aidex_viewer` | Explorateur navigateur avec live-reload (v1.3) |
 
 ### Task Backlog (v1.8+)
-| Tool | Beschreibung |
-|------|--------------|
-| `aidex_task` | Task CRUD + Log + Scheduler (due/interval/action/auto_go) |
-| `aidex_tasks` | Tasks auflisten, filtern nach Status/Priority/Tag. Zeigt due-Daten + Intervalle |
+| Outil | Description |
+|-------|-------------|
+| `aidex_task` | CRUD task + log + scheduler (due/interval/action/auto_go) |
+| `aidex_tasks` | Lister tasks, filtrer par status/priority/tag |
 
-Status: `backlog → active → done | cancelled`
+Etats : `backlog -> active -> done | cancelled`.
 
 ### Log Hub (v1.16+)
-| Tool | Beschreibung |
-|------|--------------|
-| `aidex_log` | Universal-Logging: init/free/status/query/clear/write. HTTP-Server empfängt Logs von externen Programmen |
+| Outil | Description |
+|-------|-------------|
+| `aidex_log` | Universal-Logging : init/free/status/query/clear/write + control_get/control_set. Serveur HTTP recoit des logs externes |
 
-Actions: `init` (Server starten) → `query` (Logs abfragen) → `free` (Server stoppen)
+Actions : `init` (start server) -> `query` (read logs) -> `free` (stop server).
+Controles (v2.2+) : `control_get` lit toutes les valeurs du dashboard, `control_set` en modifie une (meme set-point que le slider cote utilisateur).
 
-### Screenshots (v1.9+, Optimierung v1.13)
-| Tool | Beschreibung |
-|------|--------------|
-| `aidex_screenshot` | Screenshot aufnehmen + optional optimieren (`scale`, `colors`) |
-| `aidex_windows` | Offene Fenster auflisten (Helper für window-Modus) |
+### Screenshots (v1.9+, optim v1.13)
+| Outil | Description |
+|-------|-------------|
+| `aidex_screenshot` | Capture d'ecran + optim (`scale`, `colors`) |
+| `aidex_windows` | Lister les fenetres ouvertes (helper pour le mode `window`) |
 
 ### Global Search (v1.11+)
-| Tool | Beschreibung |
-|------|--------------|
-| `aidex_global_init` | Verzeichnisbaum scannen, Projekte in `~/.aidex/global.db` registrieren. `index_unindexed`: Auto-Index ≤500 Dateien. `show_progress`: Browser Progress-UI |
-| `aidex_global_status` | Alle registrierten Projekte mit Stats anzeigen |
-| `aidex_global_query` | Terme über ALLE Projekte suchen (ATTACH DATABASE, 5-Min Cache) |
-| `aidex_global_signatures` | Methoden/Typen nach Name über alle Projekte suchen |
-| `aidex_global_refresh` | Stats aktualisieren, veraltete Projekte entfernen |
+| Outil | Description |
+|-------|-------------|
+| `aidex_global_init` | Scanner un arbre, enregistrer les projets dans `~/.aidex/global.db`. `index_unindexed` : auto-index <=500 fichiers. `show_progress` : UI navigateur |
+| `aidex_global_status` | Lister les projets enregistres avec leurs stats |
+| `aidex_global_query` | Rechercher un terme sur TOUS les projets (ATTACH DATABASE, cache 5 min) |
+| `aidex_global_signatures` | Methodes/types par nom sur tous les projets |
+| `aidex_global_refresh` | Rafraichir les stats, retirer les projets obsoletes |
 
-## Sprachen
+## Langues supportees
 
-C# · TypeScript · JavaScript · Rust · Python · C · C++ · Java · Go · PHP · Ruby · HCL/Terraform · Kotlin · Swift
+C#, TypeScript, JavaScript, Rust, Python, C, C++, Java, Go, PHP, Ruby, HCL/Terraform, Kotlin, Swift (14 langages depuis 2.3.0).
+Egalement indexes : `.astro` (frontmatter TypeScript parse via la grammaire TSX, template blanke pour preserver les numeros de ligne).
 
-## Architektur
+## Architecture
 
 ```
 src/
-├── index.ts              # Entry Point (MCP + CLI)
+├── index.ts              # Entry point (MCP + CLI)
 ├── server/
-│   ├── mcp-server.ts     # MCP Protocol
-│   └── tools.ts          # Tool-Handler
-├── commands/             # Tool-Implementierungen
+│   ├── mcp-server.ts     # MCP protocol
+│   └── tools.ts          # Tool handlers
+├── commands/             # Tool implementations
 │   ├── init.ts, query.ts, signature.ts, update.ts
 │   ├── summary.ts, link.ts, scan.ts, files.ts
 │   ├── session.ts, note.ts, task.ts, log.ts
-│   ├── screenshot/              # Plattform-Screenshots
+│   ├── screenshot/              # Platform screenshots
 │   └── global/                  # Global Search (v1.11)
-│       ├── global-init.ts       # Scan + Bulk-Index
-│       ├── global-query.ts      # ATTACH DATABASE Queries
-│       ├── global-signatures.ts # Methoden/Typen suchen
-│       ├── global-status.ts     # Projekt-Übersicht
-│       └── global-refresh.ts    # Stats aktualisieren
-├── loghub/                      # Log Hub (v1.16)
-│   ├── log-types.ts       # Shared Types
-│   ├── log-buffer.ts      # Ring Buffer (FIFO)
-│   └── log-server.ts      # HTTP Server Singleton (Port 3335)
+│       ├── global-init.ts       # Scan + bulk index
+│       ├── global-query.ts      # ATTACH DATABASE queries
+│       ├── global-signatures.ts # Symbol search
+│       ├── global-status.ts     # Project overview
+│       └── global-refresh.ts    # Stats refresh
+├── embeddings/                  # Semantic search subsystem (v1.19+)
+│   ├── index.ts          # Public API (lazy-loading stub)
+│   ├── pipeline.ts       # Real impl, instantiated on enable()
+│   ├── embedder.ts       # Transformers.js wrapper (ONNX)
+│   ├── model-registry.ts # jina-code / nomic-text / bge-small
+│   ├── chunker*.ts       # 3-tier chunking (code/docs/workspace)
+│   ├── search.ts         # vec0 KNN + RRF hybrid
+│   ├── store.ts          # SQLite schema migration
+│   └── schema.sql        # embeddings table + projects columns
+├── loghub/                      # Log Hub (v1.16) + Dashboard (v2.1/2.2)
+│   ├── log-types.ts       # Shared types
+│   ├── log-buffer.ts      # Ring buffer (FIFO)
+│   ├── panel-types.ts     # Widget types (label/progress/gauge/plot/slider/number/toggle/button)
+│   ├── panel-store.ts     # Etat des slots du dashboard
+│   ├── control-store.ts   # Back-channel { id: value } (v2.2)
+│   └── log-server.ts      # HTTP server singleton (port 3335)
 ├── viewer/
-│   ├── server.ts         # Interactive Viewer (Port 3333)
-│   └── progress.ts       # SSE Progress UI (Port 3334)
+│   ├── server.ts         # Interactive viewer (port 3333)
+│   └── progress.ts       # SSE progress UI (port 3334)
 ├── db/
 │   ├── database.ts       # SQLite (WAL)
-│   ├── queries.ts        # Prepared Statements
-│   ├── schema.sql        # Projekt-DB Schema
+│   ├── queries.ts        # Prepared statements
+│   ├── schema.sql        # Project DB schema
 │   └── global-database.ts # ~/.aidex/global.db
 └── parser/
-    ├── tree-sitter.ts    # Parser (1MB Buffer)
-    ├── extractor.ts      # Identifier + Signaturen
-    └── languages/        # Keyword-Filter (14 Sprachen)
+    ├── tree-sitter.ts    # Parser (1 MB buffer)
+    ├── extractor.ts      # Identifiers + signatures
+    └── languages/        # Per-language keyword filters (14 langages)
 ```
 
-## Datenbank-Tabellen
+## Tables principales
 
-| Tabelle | Inhalt |
-|---------|--------|
-| `files` | Dateibaum (path, hash, last_indexed) |
-| `lines` | Zeilen mit line_hash, modified Timestamp |
-| `items` | Indexierte Terme (case-insensitive) |
-| `occurrences` | Term-Vorkommen |
-| `methods` | Methoden-Prototypen |
-| `types` | Klassen/Structs/Interfaces |
-| `signatures` | Header-Kommentare |
-| `project_files` | Alle Dateien mit Typ |
-| `metadata` | Key-Value (Sessions, Notizen) |
-| `tasks` | Backlog-Tasks (Priority, Status, Tags, Scheduling: due/interval/action/auto_go) |
-| `task_log` | Task-Historie (Auto-Log bei Änderungen) |
-| `scheduled_tasks` | Global Scheduler Mirror in ~/.aidex/global.db (project_path, task_id, due) |
+| Table | Contenu |
+|-------|---------|
+| `files` | Arborescence (path, hash, last_indexed) |
+| `lines` | Lignes avec line_hash + modified timestamp |
+| `items` | Termes indexes (case-insensitive) |
+| `occurrences` | Vues des termes |
+| `methods` | Prototypes de methodes |
+| `types` | Classes / structs / interfaces |
+| `signatures` | Header comments |
+| `project_files` | Tous les fichiers du projet, avec type |
+| `metadata` | Cle-valeur (sessions, notes) |
+| `tasks` | Backlog (priority, status, tags, scheduling) |
+| `task_log` | Historique des tasks (auto-log sur change) |
+| `scheduled_tasks` | Mirror global dans `~/.aidex/global.db` |
+| `embeddings` | Vecteurs (vec0 virtual table) + content_hash |
 
-## Wichtige Features
+## Fonctionnalites cles
 
-### Zeit-Filter (v1.1)
+### Embeddings semantiques (v1.19+, stable v2.1)
+
+L'embedder est **100% local** via `@xenova/transformers` (runtime ONNX). Aucun appel reseau hors du 1er DL du modele.
+
+```
+aidex_init({ path: ".", embeddings: true })          # Active + indexe
+aidex_search({ query: "retry with backoff",          # Recherche naturelle
+               mode: "hybrid", k: 20 })
+aidex_search({ query: "specific_fn", mode: "exact" }) # Identifier match
+```
+
+Modeles disponibles (cf. `src/embeddings/model-registry.ts`) :
+- `jina-code` (defaut) : `jinaai/jina-embeddings-v2-base-code`, 768 dims, 30 langages, Apache-2.0
+- `nomic-text` : 768 dims, Apache-2.0, generaliste
+- `bge-small` : 384 dims, MIT, English only, compact
+
+Stockage :
+- Modele cache : `~/.aidex/models/` (custom, survit aux `npm install`)
+- Vecteurs : `~/.aidex/global.db` table `embeddings`, partagee cross-projets
+
+LLM-layer optionnel (pour reranking, expansion de query) via `llm_endpoint` + `llm_model` + privacy switch `llm_send_code` (defaut `false`).
+
+### Filtres temporels (v1.1)
 ```
 aidex_query({ term: "render", modified_since: "2h" })
 aidex_files({ path: ".", modified_since: "30m" })
 ```
-Formate: `30m`, `2h`, `1d`, `1w`, ISO-Datum
+Formats acceptes : `30m`, `2h`, `1d`, `1w`, ISO date.
 
-### Session-Notizen (v1.2)
+### Notes de session (v1.2)
 ```
-aidex_note({ path: ".", note: "Fix testen" })     # Schreiben
-aidex_note({ path: ".", append: true, note: "+" }) # Anhängen
-aidex_note({ path: "." })                          # Lesen
-aidex_note({ path: ".", clear: true })             # Löschen
+aidex_note({ path: ".", note: "Test the fix" })          # Write
+aidex_note({ path: ".", append: true, note: "+" })       # Append
+aidex_note({ path: "." })                                # Read
+aidex_note({ path: ".", clear: true })                   # Delete
 ```
 
-### Interactive Viewer (v1.3)
+### Viewer interactif (v1.3)
 ```
-aidex_viewer({ path: "." })                        # http://localhost:3333
+aidex_viewer({ path: "." })                              # http://localhost:3333
 aidex_viewer({ path: ".", action: "close" })
 ```
-- Dateibaum mit Klick-Navigation
-- Signaturen anzeigen
-- Live-Reload (chokidar)
-- Syntax-Highlighting
-- Git-Status mit Katzen-Icons (v1.3.1)
+Arborescence clic, signatures, live-reload (chokidar), syntax-highlight, git-status avec icones chat (v1.3.1).
 
 ### Task Backlog (v1.8)
 ```
-aidex_task({ path: ".", action: "create", title: "Bug fixen", priority: 1, tags: "bug" })
-aidex_task({ path: ".", action: "read", id: 1 })           # Task + Log lesen
+aidex_task({ path: ".", action: "create", title: "Fix bug",
+             priority: 1, tags: "bug" })
+aidex_task({ path: ".", action: "read", id: 1 })
 aidex_task({ path: ".", action: "update", id: 1, status: "done" })
-aidex_task({ path: ".", action: "log", id: 1, note: "Root cause gefunden" })
-aidex_task({ path: ".", action: "delete", id: 1 })
-aidex_tasks({ path: "." })                                  # Alle Tasks
-aidex_tasks({ path: ".", status: "active", tag: "bug" })    # Gefiltert
+aidex_task({ path: ".", action: "log", id: 1, note: "Root cause found" })
+aidex_tasks({ path: ".", status: "active", tag: "bug" })
 ```
-- Priority: 1=high, 2=medium (default), 3=low
-- Status: backlog → active → done | cancelled
-- Auto-Log bei Status-Änderungen und Task-Erstellung
-- Viewer: Tasks-Tab mit Priority-Farben, Done-Toggle, Cancelled-Sektion (durchgestrichen)
+Priorities : 1=high, 2=medium (default), 3=low.
+Auto-log sur changement de statut. Viewer expose un onglet Tasks.
 
 ### Task Scheduler (v1.17)
 ```
-aidex_task({ path: ".", action: "create", title: "Check PR", due: "3d", interval: "3d", task_action: "gh pr list" })
+aidex_task({ path: ".", action: "create", title: "Check PR",
+             due: "3d", interval: "3d", task_action: "gh pr list" })
 aidex_task({ path: ".", action: "create", title: "One-shot", due: "1w" })
 ```
-- Due: `"30m"`, `"2h"`, `"3d"`, `"1w"` oder ISO-Datum
-- Intervall: Automatisch weitergesetzt nach Trigger
-- One-Shot: `due` wird nach Trigger gelöscht
-- Cross-Project: Bei jedem `aidex_session` werden fällige Tasks aus ALLEN Projekten gemeldet
-- `auto_go: true`: Aktion wird automatisch ausgeführt
+- `due` : `"30m"`, `"2h"`, `"3d"`, `"1w"` ou ISO date
+- `interval` : automatiquement re-arme apres trigger
+- One-shot : `due` est supprime apres trigger
+- Cross-project : `aidex_session` rapporte les tasks dues de tous les projets
+- `auto_go: true` execute la commande sans confirmation
 
-### Screenshots (v1.9, Optimierung v1.13)
+### Screenshots (v1.9, optim v1.13)
 ```
-aidex_screenshot()                                             # Ganzer Bildschirm
-aidex_screenshot({ mode: "active_window" })                    # Aktives Fenster
-aidex_screenshot({ mode: "window", window_title: "VS Code" })  # Bestimmtes Fenster
-aidex_screenshot({ scale: 0.5, colors: 2 })                   # S/W, halbe Größe (ideal für LLM)
-aidex_screenshot({ colors: 16 })                               # 16 Farben (UI lesbar)
-aidex_screenshot({ mode: "region" })                           # Rechteck aufziehen
-aidex_windows({ filter: "chrome" })                            # Fenster finden
+aidex_screenshot()                                       # Full screen
+aidex_screenshot({ mode: "active_window" })
+aidex_screenshot({ mode: "window", window_title: "VS Code" })
+aidex_screenshot({ scale: 0.5, colors: 2 })              # B&W, half-size
+aidex_screenshot({ colors: 16 })                         # 16 colors
+aidex_screenshot({ mode: "region" })                     # Drag rectangle
+aidex_windows({ filter: "chrome" })                      # Find windows
 ```
-- Kein Index nötig - standalone Tool
-- Cross-Platform: Windows (PowerShell), macOS (screencapture), Linux (maim/scrot)
-- Default: Speichert in `os.tmpdir()/aidex-screenshot.png` (überschreibt immer)
-- Optional: `filename` und `save_path` für andere Pfade
-- Rückgabe: Dateipfad → Claude kann sofort `Read` aufrufen
-- **LLM-Optimierung:** `scale` (0.1-1.0) und `colors` (2/4/16/256) reduzieren Dateigröße drastisch
-- **Strategie:** Start mit `scale: 0.5, colors: 2` → falls unlesbar `colors: 16` → dann `scale: 0.75`
-- Settings pro Fenster/App merken für die aktuelle Session
+- Pas d'index requis (outil standalone)
+- Cross-platform : Windows (PowerShell), macOS (screencapture), Linux (maim/scrot)
+- Defaut : `os.tmpdir()/aidex-screenshot.png` (ecrasement systematique)
+- Options : `filename`, `save_path`
+- Strategie LLM : commencer par `scale: 0.5, colors: 2`, monter a `colors: 16` si illisible, puis `scale: 0.75`
 
 ### Global Search (v1.11)
 ```
-aidex_global_init({ path: "Q:/develop" })                              # Nur registrieren
-aidex_global_init({ path: "Q:/develop", index_unindexed: true, show_progress: true })  # Alles indexieren + Progress-UI
-aidex_global_query({ term: "TransparentWindow", mode: "contains" })    # Über alle Projekte suchen
-aidex_global_signatures({ term: "Render", kind: "method" })            # Methoden über alle Projekte
-aidex_global_status({ sort: "recent" })                                # Projektliste
-aidex_global_refresh()                                                 # Stats updaten
+aidex_global_init({ path: "D:/AI" })                                # Register only
+aidex_global_init({ path: "D:/AI", index_unindexed: true,
+                    show_progress: true })                          # Index + UI
+aidex_global_query({ term: "JobObject", mode: "contains" })
+aidex_global_signatures({ term: "Render", kind: "method" })
+aidex_global_status({ sort: "recent" })
+aidex_global_refresh()
 ```
-- `~/.aidex/global.db` referenziert alle Projekt-DBs
-- SQLite ATTACH DATABASE — kein Daten-Kopieren
-- Session-Cache (5-Min TTL) für schnelle wiederholte Queries
-- Bulk-Index: ≤500 Code-Dateien automatisch, >500 werden dem User gezeigt
-- Progress-UI: SSE-basiert auf Port 3334 mit Browser-Auto-Open
-- Auto-Deduplizierung: Parent-Projekte mit Sub-Projekten werden übersprungen
+- `~/.aidex/global.db` reference toutes les DB de projet
+- SQLite `ATTACH DATABASE`, pas de copie de donnees
+- Cache de session (TTL 5 min) pour les queries repetees
+- Bulk-index : <=500 fichiers code auto, sinon liste pour validation manuelle
+- Progress UI : SSE port 3334, auto-open navigateur
+- Auto-dedup : projets parents avec sous-projets indexes sont skips
 
 ### Log Hub (v1.16)
 ```
-aidex_log({ action: "init" })                                         # Server starten (Port 3335)
-aidex_log({ action: "init", port: 3336, buffer_size: 5000 })          # Custom Port + Buffer
-aidex_log({ action: "init", persist: true, path: "." })               # Mit DB-Persistenz
-aidex_log({ action: "query" })                                        # Letzte 50 Entries
-aidex_log({ action: "query", since: "10m", level: "error" })          # Fehler der letzten 10 Min
-aidex_log({ action: "query", source: "MyApp", contains: "crash" })    # Gefiltert
-aidex_log({ action: "write", message: "Debug started" })              # LLM-Eintrag
-aidex_log({ action: "status" })                                       # Stats
-aidex_log({ action: "clear" })                                        # Buffer leeren
-aidex_log({ action: "free" })                                         # Server stoppen
+aidex_log({ action: "init" })                            # Port 3335
+aidex_log({ action: "init", port: 3336, buffer_size: 5000 })
+aidex_log({ action: "init", persist: true, path: "." })  # DB persistence
+aidex_log({ action: "query" })                           # Last 50 entries
+aidex_log({ action: "query", since: "10m", level: "error" })
+aidex_log({ action: "query", source: "MyApp", contains: "crash" })
+aidex_log({ action: "write", message: "Debug started" })
+aidex_log({ action: "status" })
+aidex_log({ action: "clear" })
+aidex_log({ action: "free" })
 ```
-- HTTP API: `POST /log` (single), `POST /logs` (batch), `GET /health`
-- Ring Buffer: Fixed-size FIFO, älteste werden überschrieben
-- Viewer: Logs-Tab mit WebSocket-Live-Stream + Filter
-- Zero-Cost: Kein Server/Buffer bis `init` aufgerufen wird
+- API HTTP : `POST /log`, `POST /logs`, `GET /health`
+- Ring buffer fixed-size FIFO
+- Viewer : onglet Logs avec WS live-stream + filtres
+- Zero-cost : pas de serveur ni de buffer tant que `init` n'est pas appele
 
-### Auto-Cleanup (v1.3.1)
-`aidex_init` entfernt automatisch Dateien die jetzt excluded sind (z.B. build/).
-Zeigt "Files removed: N" im Ergebnis.
+### Auto-cleanup (v1.3.1)
+`aidex_init` retire automatiquement les fichiers desormais exclus (ex. `build/` ajoute aux ignores). Sortie : `Files removed: N`.
 
 ## CLI
 
 ```bash
-node build/index.js              # MCP Server
-node build/index.js scan <path>  # Projekte finden
-node build/index.js init <path>  # Indexieren
+node build/index.js              # MCP server (stdin/stdout)
+node build/index.js scan <path>  # Discover projects
+node build/index.js init <path>  # Index a project
 ```
 
-## Implementierungsdetails
+## Details d'implementation
 
-- **Tree-sitter:** 1MB Buffer für große Dateien
-- **Hash-Diff:** Zeilen-Timestamps bleiben bei unverändertem Hash
-- **Arrow Functions:** Werden als Methods erkannt (gewollt, etwas Noise)
-- **Keyword-Filter:** Pro Sprache in `src/parser/languages/`
+- **Tree-sitter** : buffer 1 MB pour les gros fichiers
+- **Hash-diff** : les timestamps de ligne sont preserves si le hash ne change pas
+- **Arrow functions** : detectees comme methodes (volontaire, un peu de bruit)
+- **Filtres keyword** : par langue dans `src/parser/languages/`
 
 ## LogHub Developer Guide
 
-### Übersicht
+### Vue d'ensemble
 
-LogHub ist ein universeller Log-Empfänger. Jedes Programm kann per HTTP POST Logs senden — keine Library, kein SDK nötig. Die KI kann die Logs abfragen, der User sieht sie live im AiDex Viewer.
+LogHub est un recepteur de logs universel. N'importe quel programme peut envoyer des logs via HTTP POST, sans library ni SDK. L'IA peut interroger les logs, l'utilisateur les voit en live dans le Viewer.
 
-### Setup (durch die KI)
+### Setup (cote IA)
 
 ```
-1. aidex_log({ action: "init" })                    # Server starten (Port 3335)
-2. aidex_viewer({ path: "." })                       # Viewer öffnen → Logs-Tab zeigt Live-Stream
-3. Logging in das Programm einbauen (siehe unten)
-4. aidex_log({ action: "query", since: "5m" })       # KI fragt Logs ab
-5. aidex_log({ action: "free" })                     # Am Ende: Server stoppen
+1. aidex_log({ action: "init" })             # Start server (port 3335)
+2. aidex_viewer({ path: "." })                # Open Viewer -> Logs tab
+3. Wire logging into the target program (see below)
+4. aidex_log({ action: "query", since: "5m" })
+5. aidex_log({ action: "free" })              # Stop server
 ```
 
-### HTTP API
+### API HTTP
 
-| Endpoint | Method | Body | Beschreibung |
-|----------|--------|------|--------------|
-| `/log` | POST | `{ level, source, message, data? }` | Einzelner Log-Eintrag |
-| `/logs` | POST | `[{ level, source, message, data? }, ...]` | Batch (mehrere auf einmal) |
-| `/health` | GET | — | Status + Buffer-Auslastung |
+| Endpoint | Methode | Body | Description |
+|----------|---------|------|-------------|
+| `/log` | POST | `{ level, source, message, data? }` | Single entry |
+| `/logs` | POST | `[{ level, source, message, data? }, ...]` | Batch |
+| `/health` | GET | -- | Status + buffer fill |
+| `/panel` | POST | `{ id, type, value, ... }` | Widget du dashboard (slot fixe, ecrase en place) |
+| `/panel/clear` | POST | -- | Vide widgets + valeurs de controle |
+| `/control` | POST / GET | `{ id, value }` / -- | Set une valeur ; GET renvoie tout en `{ id: value }` (la source poll) |
+| `/control/press` | POST | `{ id }` | Signale un appui bouton -- c'est le hub qui incremente, pas l'appelant |
 
-**Felder:**
-- `level`: `"debug"`, `"info"`, `"warn"`, `"error"` (default: `"info"`)
-- `source`: Name der App/Komponente (z.B. `"MyApp"`, `"Parser"`)
-- `message`: Log-Text (required)
-- `data`: Beliebiges JSON-Objekt für strukturierte Daten (optional)
-- `timestamp`: Unix-Timestamp in ms (optional, sonst Server-Zeit)
+Champs :
+- `level` : `"debug"` / `"info"` / `"warn"` / `"error"` (defaut `info`)
+- `source` : nom de l'app/composant (ex. `"MyApp"`, `"Parser"`)
+- `message` : texte du log (requis)
+- `data` : objet JSON libre (optionnel)
+- `timestamp` : Unix ms (optionnel, sinon heure serveur)
 
-### Code-Beispiele für verschiedene Sprachen
+### Dashboard Live (v2.1, controles v2.2/2.3)
+
+A cote du flux de logs qui defile, un dashboard a slots fixes : chaque valeur a une `id`, renvoyer la meme `id` ecrase la valeur en place au lieu de scroller. Adapte aux valeurs haute frequence (niveau audio, remplissage de buffer, FPS, capteurs). Visible dans l'onglet **Live** du viewer (nomme `Debug` jusqu'a 2.2.2 ; l'id de tab `debug` reste inchange cote API).
+
+Types de widgets :
+- **Affichage** : `label`, `progress`, `gauge` (champ `state` = couleur LED, independant du texte), `plot` (champs `scale` `linear`/`log`, `autoMin`, `decimals`)
+- **Interactifs** (la valeur redescend vers la source qui la recupere via `GET /control`) : `slider`, `number` (`min`/`max`/`step`), `toggle` (0/1, `unit` = `"ON|OFF"`), `button`
+
+Piege du `button` : sa valeur est un **compteur monotone**, pas un booleen. La source poll a son propre rythme, donc un flag serait perdu entre deux polls. Elle compare avec le dernier compte vu -- la difference donne le nombre d'appuis. Un saut vers le bas (overflow a 1e6, `/panel/clear`, redemarrage du hub) signifie "redemarrage, adopter la valeur", pas un million d'appuis.
+
+Cote IA : `aidex_log({ action: "control_get" })` lit toutes les valeurs, `aidex_log({ action: "control_set", id, value })` en pilote une. C'est le meme set-point que le slider de l'utilisateur, donc Claude peut regler un programme en cours d'execution (seuil, gain, sample rate) et observer l'effet.
+
+### Exemples par langage
 
 **C# (.NET)**
 ```csharp
@@ -332,18 +405,13 @@ http.PostAsJsonAsync("http://localhost:3335/log", new {
 });
 ```
 
-**C# (Minimal-Helper)**
+**C# (helper minimal)**
 ```csharp
-// Einmal initialisieren
 static readonly HttpClient _log = new();
 static void Log(string msg, string level = "info", object? data = null) {
     var body = new { level, source = "MyApp", message = msg, data };
     _ = _log.PostAsJsonAsync("http://localhost:3335/log", body);
 }
-
-// Verwenden
-Log("Game started");
-Log("Error loading level", "error", new { levelId = 5 });
 ```
 
 **Python**
@@ -370,133 +438,43 @@ fetch("http://localhost:3335/log", {
 });
 ```
 
-**C / C++ (curl)**
-```c
-// Mit libcurl oder shell:
-// curl -X POST http://localhost:3335/log -H "Content-Type: application/json" -d '{"level":"info","source":"MyApp","message":"Init done"}'
-```
-
 **PowerShell**
 ```powershell
-Invoke-RestMethod -Uri "http://localhost:3335/log" -Method POST -ContentType "application/json" -Body '{"level":"info","source":"MyApp","message":"Task done"}'
+Invoke-RestMethod -Uri "http://localhost:3335/log" -Method POST `
+  -ContentType "application/json" `
+  -Body '{"level":"info","source":"MyApp","message":"Task done"}'
 ```
 
-### Tipps für die KI
+### Tips pour l'IA
 
-- **Viewer immer mit anbieten** — `aidex_viewer({ path: "." })` öffnet den Browser, Logs-Tab zeigt Live-Stream via WebSocket
-- **Source sinnvoll wählen** — ermöglicht Filtern per `aidex_log({ action: "query", source: "MyApp" })`
-- **Level nutzen** — `error` für Fehler, `warn` für Warnungen, `debug` für Verbose
-- **Batch für Performance** — bei vielen Logs pro Sekunde `/logs` statt `/log` verwenden
-- **Consume-Pattern** — `aidex_log({ action: "query", consume: true })` holt Logs und entfernt sie aus dem Buffer (Poll-Muster)
-- **Fire & Forget** — Logs asynchron senden (kein await nötig), damit die App nicht blockiert
-- **Kein Error-Handling nötig** — wenn LogHub nicht läuft, schlägt der POST still fehl
+- Proposer le Viewer (`aidex_viewer`) pour streamer les logs en live.
+- Choisir un `source` parlant -> facilite le filtrage cote query.
+- Niveaux : `error` pour les erreurs, `warn` pour les warnings, `debug` pour le verbose.
+- Batch (`POST /logs`) si le programme genere beaucoup de logs/seconde.
+- Pattern consume : `aidex_log({ action: "query", consume: true })` retire les entries lues du buffer (poll-style).
+- Fire-and-forget cote client : pas besoin d'attendre la reponse, ca evite de bloquer le code metier.
+- Aucune gestion d'erreur cote client : si LogHub n'est pas demarre, le POST echoue silencieusement, c'est OK.
 
-## Debug-Dashboard (Panel-API)
+## Posture securite du fork
 
-Neben dem scrollenden Log-Stream gibt es ein **Live-Dashboard** mit festen Slots: jeder Wert hat eine `id`, ein erneutes Senden derselben `id` **überschreibt den Wert in-place** statt wegzuscrollen. Ideal für hochfrequente / wiederholte Werte (Audio-Pegel, Buffer-Füllung, FPS, Sensoren). Sichtbar im Viewer-**Live-Tab** (hieß bis 2.2.2 „Debug").
+Etat releve apres `npm install` (Node 22.11.0, npm 11.15.0) le 2026-05-21 :
+- 4 vulnerabilites reportees par `npm audit` (3 high + 1 critical)
+- Warnings deprecated transitifs : `inflight@1.0.6` (memory leak), `glob@7.2.3` (x4, CVE), `prebuild-install@7.1.3` (non maintenu), `glob@10.5.0`
 
-### HTTP API
+Aucun de ces packages n'est en dependance directe -- tous sont des transitifs (`jest`, `rimraf@5`, `better-sqlite3`, etc.).
 
-| Endpoint | Method | Body | Beschreibung |
-|----------|--------|------|--------------|
-| `/panel` | POST | `{ id, type, value, group?, ... }` | Einzelnes Widget setzen/aktualisieren |
-| `/panels` | POST | `[{ ... }, ...]` | Batch |
-| `/panel/clear` | POST | `{ id? }` | Ein Widget (id) oder alle (leer) entfernen |
-| `/control` | POST/GET | `{ id, value }` / — | Control-Wert setzen; GET liefert alle als `{ id: value }` (das pollt die Quelle) |
-| `/control/press` | POST | `{ id }` | Einen Tastendruck melden — der **Hub** zählt hoch, nicht der Aufrufer |
+Plan de hardening candidat pour un patch fork futur :
+1. Ajouter des `overrides` dans `package.json` (npm 8.3+) pour forcer `glob@^11`, `rimraf@^6` sur les transitives.
+2. Tester en CI dedie avant merge sur `local-patches`.
+3. Surveiller les CVE upstream sur `tree-sitter` et `better-sqlite3` qui sont les addons natifs les plus exposes.
 
-### Widget-Felder
+Ces actions ne sont **pas urgentes** : aucun des warnings ne casse le build. A traiter dans une session dediee, pas pendant un fix fonctionnel.
 
-- `id` (Pflicht) — fester Slot-Key; gleiche id = Überschreiben
-- `type` (Pflicht bei Erst-Anlage) — `label` · `progress` · `gauge` · `plot` · `slider` · `number` · `toggle` · `button`
-- `value` — typabhängig: Zahl, String (für gauge-Status `"ok"`/`"warn"`/`"error"`), oder Zahl-Array (plot: ganzer Frame)
-- `group` — Sektion im Dashboard (default `"Default"`)
-- `label` — Anzeigename (default = id)
-- `unit` — Einheit (z.B. `"dB"`, `"°C"`, `"fps"`)
-- `min` / `max` — Skala für progress/gauge (default 0..100)
-- `warn` / `crit` — Schwellen → Färbung grün/gelb/rot (gauge/progress)
-- `color` — Akzent: `cyan`/`blue`/`green`/`orange`/`purple`/`yellow`/`red` oder Hex
-- `order` — Sortierung innerhalb der Gruppe
+## Documentation complementaire
 
-### Widget-Typen
-
-- **label** — großer Wert + Einheit, in-place überschrieben
-- **progress** — Balken (min..max), mit Schwellwert-Färbung (warn/crit)
-- **gauge** — bei Zahl: radiales Tacho (Afterburner-Stil) mit Zonen-Färbung; bei Status-String: pulsierende LED (grün/gelb/rot)
-- **plot** — Echtzeit-Liniengraph (HWiNFO-Stil) mit Gitternetz + min/max/avg. Einzel-Sample (`value: 0.7`) wird an einen Verlauf (200 Werte) angehängt; ein Array ersetzt den ganzen Verlauf.
-
-**Interaktiv** (Wert fließt zurück zur Quelle, die ihn per `GET /control` abholt):
-- **slider** / **number** — Regler bzw. Zahleneingabe. Felder `min`/`max`/`step`/`value`.
-- **toggle** — Schalter, Wert `0`/`1`. `unit` als `"AN|AUS"` beschriftet beide Stellungen.
-- **button** — Taster. ⚠️ Der Wert ist ein **monoton steigender Zähler**, kein Flag: die
-  Quelle pollt in ihrem eigenen Takt, ein Ja/Nein wäre zwischen zwei Polls verloren.
-  Die Quelle vergleicht mit dem zuletzt gesehenen Stand → Differenz = Anzahl Drücke.
-  Jeder Sprung **nach unten** (Überlauf bei 1e6, `/panel/clear`, Hub-Neustart) heißt
-  „Neustart, Wert übernehmen" — nicht eine Million Drücke. `value` beim Anlegen wird
-  ignoriert, Start immer 0.
-
-### Lifecycle
-
-- Server hält den letzten Zustand pro `id` → ein neu verbundener/neugeladener Browser bekommt sofort den kompletten Snapshot.
-- Karten ohne Update seit ~3 s werden visuell „stale" (ausgegraut).
-- Backpressure-geschützt: ein langsamer Browser-Client lässt die Send-Queue nicht volllaufen (Frames werden gedroppt, kein Memory-Leak).
-
-### Code-Beispiele
-
-**PowerShell**
-```powershell
-Invoke-RestMethod -Uri "http://localhost:3335/panel" -Method POST -ContentType "application/json" `
-  -Body '{"id":"mic_level","type":"plot","value":0.73,"group":"Audio","label":"Mic Level","unit":"dB"}'
-```
-
-**C# (Minimal-Helper)**
-```csharp
-static readonly HttpClient _hub = new();
-static void Panel(string id, string type, object value, string group = "Default", object? extra = null) {
-    var body = new { id, type, value, group };
-    _ = _hub.PostAsJsonAsync("http://localhost:3335/panel", body);
-}
-Panel("buffer", "progress", 82, "Engine");      // value überschreibt in-place
-Panel("state",  "gauge",    "ok", "Engine");     // LED-Status
-```
-
-**Python**
-```python
-import requests
-requests.post("http://localhost:3335/panel", json={
-    "id": "gpu_temp", "type": "gauge", "value": 67, "min": 0, "max": 100,
-    "unit": "°C", "warn": 75, "crit": 90, "group": "Hardware", "label": "GPU Temp"
-})
-```
-
-**C / ESP32 (curl-Stil)**
-```c
-// POST http://localhost:3335/panel  Body: {"id":"audio","type":"plot","value":0.42,"group":"Audio"}
-// Einzel-Sample je Frame senden — der Server baut den Verlauf, der Viewer plottet flüssig.
-```
-
-### Demo zum Vorführen
-
-`scripts/demo-dashboard.mjs` animiert alle Widget-Typen endlos (Audio-Waveform, GPU-Gauges durch ihre Zonen, Signalgenerator sine→sawtooth→triangle→square, Latenz-Spikes). Ideal zum Zeigen/Testen.
-
-```
-# Voraussetzung: LogHub + Viewer laufen (aidex_log init, aidex_viewer → Live-Tab)
-node scripts/demo-dashboard.mjs        # Endlos-Loop, Ctrl+C beendet (clear't beim Exit)
-scripts/demo-dashboard.ps1             # Launcher mit LogHub-Check
-```
-
-Auch per **▷ Demo**-Button im Live-Tab (kopiert den Befehl in die Zwischenablage). Der Button steht auch im leeren Dashboard bereit — er ist ja der Weg zu den ersten Widgets.
-
-**⚠️ Nie zweimal starten** — zwei Instanzen überschreiben sich gegenseitig (Flackern). Erst alte stoppen. Und: `TaskStop` killt nur den PowerShell-Wrapper, nicht den node-Prozess — bei Background-Start node direkt aufrufen und nach dem Stop verifizieren ([[feedback_taskstop_orphan_node]]).
-
-### Clear
-
-`POST /panel/clear` (oder der Clear-Button) ist ein **voller Reset** — leert den Store. Eine Quelle taucht nur wieder auf, wenn sie Widgets erneut **mit `type`** sendet (reine value-Updates auf eine gelöschte id werden ignoriert).
-
-## Dokumentation
-
-| Datei | Inhalt |
-|-------|--------|
-| `README.md` | Öffentliche Doku |
-| `MCP-API-REFERENCE.md` | Vollständige API |
-| `CHANGELOG.md` | Versionshistorie |
+| Fichier | Contenu |
+|---------|---------|
+| `README.md` | Documentation publique (upstream + VOCSAP) |
+| `MCP-API-REFERENCE.md` | API MCP complete |
+| `CHANGELOG.md` | Historique des versions |
+| `docs/dev-notes/` | Notes privees au fork VOCSAP (exclues de git) |
