@@ -280,11 +280,24 @@ async function main() {
     // a failed commit, whatever happened to the files it was given.
     if (args[0] === 'update') {
         const projectPath = args[1];
-        const verbose = args.includes('--verbose') || args.includes('-v');
-        const fileArgs = args.slice(2).filter(a => a !== '--verbose' && a !== '-v');
 
-        if (!projectPath || fileArgs.length === 0) {
-            console.error(`Usage: ${PRODUCT_NAME_LOWER} update <project> <file...> [--verbose]`);
+        // `--` ends option parsing: everything after it is a literal file
+        // argument, even if it looks like -v/--verbose. Without this, a file
+        // genuinely named -v is silently swallowed as a flag.
+        const rest = args.slice(2);
+        const endOfOpts = rest.indexOf('--');
+        const optsPart = endOfOpts === -1 ? rest : rest.slice(0, endOfOpts);
+        const literalPart = endOfOpts === -1 ? [] : rest.slice(endOfOpts + 1);
+        const verbose = optsPart.includes('--verbose') || optsPart.includes('-v');
+        const fileArgs = optsPart.filter(a => a !== '--verbose' && a !== '-v').concat(literalPart);
+
+        // A leading-dash projectPath (e.g. `update --verbose <proj> <files>`
+        // where --verbose lands in argv[1] instead) must not be treated as a
+        // real path: validateIndex() below would just fail to find an index
+        // there and the branch would return as a "clean no-op", making a
+        // misuse look like a success.
+        if (!projectPath || projectPath.startsWith('-') || fileArgs.length === 0) {
+            console.error(`Usage: ${PRODUCT_NAME_LOWER} update <project> <file...> [--verbose] [-- <file...>]`);
             process.exit(1);
         }
 
@@ -298,33 +311,100 @@ async function main() {
 
         const { update, remove } = await import('./commands/update.js');
         const path = await import('path');
-        const { existsSync } = await import('fs');
+        const { existsSync, realpathSync } = await import('fs');
 
         let updated = 0, removed = 0, skipped = 0, errors = 0;
         for (const rawFile of fileArgs) {
-            const absFile = path.isAbsolute(rawFile) ? rawFile : path.join(projectPath, rawFile);
-            const relFile = path.relative(projectPath, absFile).replace(/\\/g, '/');
+            try {
+                // Single resolution: compute the project-relative path first
+                // instead of trusting rawFile, then derive the absolute path
+                // from it. A hook may pass repo-root-relative paths, absolute
+                // paths, or a path that only differs by case on Windows --
+                // all funnel through this one calculation, so the existsSync
+                // check below and the join update()/remove() do internally
+                // can never disagree.
+                let relFile = (path.isAbsolute(rawFile)
+                    ? path.relative(projectPath, rawFile)
+                    : path.normalize(rawFile)
+                ).replace(/\\/g, '/');
 
-            if (!existsSync(absFile)) {
-                const res = remove({ path: projectPath, file: relFile });
-                if (res.removed) removed++;
-                if (verbose) console.log(`removed: ${relFile}`);
-                continue;
-            }
+                // Escapes the project (../..) or never had a common root with
+                // it (absolute path elsewhere, cross-drive, UNC share --
+                // path.relative() returns the untouched absolute target when
+                // there is nothing shared to relativize against). Sandboxing
+                // to the project root also keeps exclude patterns meaningful.
+                if (relFile === '..' || relFile.startsWith('../') || path.isAbsolute(relFile)) {
+                    skipped++;
+                    if (verbose) console.log(`skipped (outside project): ${rawFile}`);
+                    continue;
+                }
 
-            const res = update({ path: projectPath, file: relFile });
-            if (res.success) {
-                updated++;
-                if (verbose) console.log(`updated: ${relFile} (+${res.itemsAdded} -${res.itemsRemoved} items${res.error ? `, ${res.error}` : ''})`);
-            } else if (res.error?.includes('Unsupported file type') || res.error?.includes('excluded by pattern')) {
-                skipped++;
-            } else {
+                let absFile = path.join(projectPath, relFile);
+
+                // Windows filesystems are case-insensitive, so existsSync()
+                // above would succeed regardless of case, but the index
+                // stores whatever casing the caller handed us. A hook that
+                // reports a different case than what's on disk (core.
+                // ignorecase, a pure-case rename) would otherwise create a
+                // second, stale entry for the same physical file. Only for
+                // files that exist -- a deleted file has no on-disk casing
+                // to resolve and must fall through to remove() below as-is.
+                if (process.platform === 'win32' && existsSync(absFile)) {
+                    try {
+                        const realAbs = realpathSync.native(absFile);
+                        const realRel = path.relative(projectPath, realAbs).replace(/\\/g, '/');
+                        if (!realRel.startsWith('../') && !path.isAbsolute(realRel)) {
+                            relFile = realRel;
+                            absFile = path.join(projectPath, relFile);
+                        }
+                    } catch {
+                        // Not worth failing the file over a realpath quirk;
+                        // fall back to the caller-provided casing.
+                    }
+                }
+
+                if (!existsSync(absFile)) {
+                    const res = remove({ path: projectPath, file: relFile });
+                    if (res.removed) {
+                        removed++;
+                        if (verbose) console.log(`removed: ${relFile}`);
+                    }
+                    continue;
+                }
+
+                const res = update({ path: projectPath, file: relFile });
+                if (res.success) {
+                    updated++;
+                    if (verbose) console.log(`updated: ${relFile} (+${res.itemsAdded} -${res.itemsRemoved} items${res.error ? `, ${res.error}` : ''})`);
+                } else if (res.error?.includes('Unsupported file type') || res.error?.includes('excluded by pattern')) {
+                    skipped++;
+                } else {
+                    errors++;
+                    if (verbose) console.error(`error: ${relFile}: ${res.error}`);
+                }
+            } catch (err) {
+                // A single bad file (corrupted index.db, disk full, a native
+                // ABI mismatch surfacing here instead of at import time...)
+                // must never take the rest of the batch down with it -- this
+                // runs from a global hook on every repo on the machine.
                 errors++;
-                if (verbose) console.error(`error: ${relFile}: ${res.error}`);
+                const msg = err instanceof Error ? err.message : String(err);
+                if (verbose) console.error(`error: ${rawFile}: ${msg}`);
+                if (msg.includes('database is locked') || msg.includes('SQLITE_BUSY')) {
+                    // Every remaining file would block for the same
+                    // busy_timeout and fail the same way -- stop paying that
+                    // cost once per file.
+                    if (verbose) console.error('Database is locked, aborting remaining files in this batch.');
+                    break;
+                }
             }
         }
 
         if (verbose) console.log(`Done. Updated: ${updated}, Removed: ${removed}, Skipped: ${skipped}, Errors: ${errors}`);
+        // Never let this branch look like a failed commit to the hook that
+        // invoked it, regardless of what happened above or what the rest of
+        // this file's error handling does.
+        process.exitCode = 0;
         return;
     }
 
