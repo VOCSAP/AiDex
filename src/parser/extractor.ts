@@ -5,7 +5,8 @@
 import type Parser from 'tree-sitter';
 import { detectLanguage, parseFile, type SupportedLanguage } from './tree-sitter.js';
 import { getLanguageConfig } from './languages/index.js';
-import type { LineRow } from '../db/queries.js';
+import type { LineRow, OccurrenceKind } from '../db/queries.js';
+import { literalQualifies, type LiteralPosition } from '../coverage/rule.js';
 
 // ============================================================
 // Types
@@ -15,6 +16,18 @@ export interface ExtractedItem {
     term: string;
     lineNumber: number;
     lineType: LineRow['line_type'];
+    /** Why this item exists: a code symbol, or an indexed string literal. */
+    kind: OccurrenceKind;
+}
+
+/**
+ * What the literal pass saw on this file, so a full reindex can report a
+ * MEASURED coverage percentage instead of a number written by hand.
+ * `seen` counts every string literal node; `indexed` those the rule kept.
+ */
+export interface LiteralStats {
+    seen: number;
+    indexed: number;
 }
 
 export interface ExtractedLine {
@@ -53,6 +66,94 @@ export interface ExtractionResult {
     methods: ExtractedMethod[];
     types: ExtractedType[];
     headerComments: string[];
+    literalStats: LiteralStats;
+}
+
+// ============================================================
+// String literals (Lot 3)
+// ============================================================
+
+/**
+ * Child node types carrying the TEXT of a string literal.
+ *
+ * Every name here was read off a grammar, not inferred: they are all different
+ * and none of them is guessable (`line_str_text` in Swift, `template_literal`
+ * in HCL, `interpreted_string_literal_content` in Go).
+ */
+const STRING_CONTENT_NODES = new Set([
+    'string_fragment',                    // TypeScript / JavaScript / Java
+    'string_content',                     // Rust / C / C++ / PHP / Ruby / Kotlin / Python
+    'string_literal_content',             // C#
+    'raw_string_content',                 // C# raw / C++ raw
+    'interpreted_string_literal_content', // Go
+    'raw_string_literal_content',         // Go raw
+    'line_str_text',                      // Swift
+    'multi_line_str_text',                // Swift multi-line
+    'template_literal',                   // HCL
+]);
+
+/**
+ * Named children that are pure delimiters. They have to be listed, because the
+ * rule below is "any OTHER named child disqualifies the literal" -- and in
+ * Python, C# raw strings and HCL the quotes themselves are named nodes.
+ */
+const STRING_DELIMITER_NODES = new Set([
+    'string_start', 'string_end',                   // Python
+    'raw_string_start', 'raw_string_end',           // C# raw
+    'quoted_template_start', 'quoted_template_end', // HCL
+]);
+
+/**
+ * The literal text, or null when there is no stable text to index.
+ *
+ * Null on interpolation, whatever the grammar calls it: `template_substitution`
+ * (TS), `interpolation` (Python f-string, Ruby), `interpolated_expression`
+ * (Swift), `variable_name` (PHP "$x"). Listing the interpolation node types
+ * would mean keeping up with 14 grammars, so the test is inverted -- anything
+ * named that is neither content nor delimiter disqualifies the literal. An
+ * unknown child then costs one literal, never a wrong one.
+ */
+function literalText(node: Parser.SyntaxNode): string | null {
+    const named = node.children.filter(c => c.isNamed);
+
+    // No named children at all: an opaque token (C# @"verbatim"). Strip the
+    // delimiters off the raw text.
+    if (named.length === 0) {
+        const start = node.text.search(/["'`]/);
+        if (start === -1) return null;
+        return node.text.slice(start).replace(/^["'`]+/, '').replace(/["'`]+$/, '');
+    }
+
+    const parts: string[] = [];
+    for (const child of named) {
+        if (STRING_CONTENT_NODES.has(child.type)) {
+            parts.push(child.text);
+        } else if (!STRING_DELIMITER_NODES.has(child.type)) {
+            return null;
+        }
+    }
+    return parts.length > 0 ? parts.join('') : null;
+}
+
+/**
+ * Where this literal sits, reduced to what the rule cares about.
+ *
+ * `pair` + field `value` is shared by TypeScript, JavaScript, Python dicts and
+ * Ruby hashes, so one check covers four languages. Grammars spelling the same
+ * idea differently (Go `keyed_element`, Swift `dictionary_literal`, HCL
+ * `object_elem`) fall through to `other`: their bare lowercase words stay out
+ * until someone MEASURES that position on those languages, the way the
+ * TypeScript sample was measured.
+ */
+function literalPosition(node: Parser.SyntaxNode): LiteralPosition {
+    const parent = node.parent;
+    if (!parent) return 'other';
+    if (parent.type === 'literal_type') return 'type';
+    if (parent.type === 'jsx_attribute') return 'jsx';
+    if (parent.type === 'pair' && parent.childForFieldName('value')?.id === node.id) {
+        return 'object_value';
+    }
+    return 'other';
 }
 
 // ============================================================
@@ -82,6 +183,7 @@ export function extract(sourceCode: string, filePath: string): ExtractionResult 
     const methods: ExtractedMethod[] = [];
     const types: ExtractedType[] = [];
     const headerComments: string[] = [];
+    const literalStats: LiteralStats = { seen: 0, indexed: 0 };
 
     // Track if we've seen non-comment code (for header comments)
     let seenCode = false;
@@ -126,7 +228,7 @@ export function extract(sourceCode: string, filePath: string): ExtractionResult 
                     const parts = typeInfo.name.split('.');
                     for (let i = 1; i < parts.length; i++) {
                         if (parts[i].length >= 2) {
-                            items.push({ term: parts[i], lineNumber, lineType: 'struct' });
+                            items.push({ term: parts[i], lineNumber, lineType: 'struct', kind: 'symbol' });
                         }
                     }
                 }
@@ -153,6 +255,47 @@ export function extract(sourceCode: string, filePath: string): ExtractionResult 
             setLineType(lineNumber, 'property');
         }
 
+        // String literals (Lot 3), BEFORE the identifier check and before
+        // recursion. `node.isNamed` is not optional: an ANONYMOUS token carries
+        // its own text as its type, so the TypeScript type keyword `string` is
+        // a node of type 'string' too, and would be read here as a literal.
+        if (node.isNamed && config.stringNodes.has(node.type)) {
+            seenCode = true;
+            literalStats.seen++;
+
+            const text = literalText(node);
+            if (text !== null && literalQualifies(text, literalPosition(node))) {
+                literalStats.indexed++;
+                items.push({
+                    term: text,
+                    lineNumber,
+                    // Deliberately NOT setLineType: LINE_TYPE_PRIORITY ranks
+                    // 'string' above 'code', so flagging the line would flip
+                    // 9175 lines from 'code' to 'string' on koryphaios alone and
+                    // silently change what every existing `type_filter: ['code']`
+                    // query returns. Only a line created from scratch for this
+                    // literal gets 'string', resolved in the final pass below.
+                    lineType: 'string',
+                    kind: 'literal',
+                });
+            }
+            // Never recurse into the TEXT of a string: `string` contains
+            // `string_fragment`, which would double-count the same text, and a
+            // template literal would come apart into its pieces.
+            //
+            // Interpolations are the exception, and they matter: the identifiers
+            // in `hello ${userName}` or "pre-$x" were indexed as symbols before
+            // Lot 3 and have to stay indexed, or this lot would quietly shrink
+            // the symbol dimension it promised not to touch.
+            for (const child of node.children) {
+                if (!child.isNamed) continue;
+                if (STRING_CONTENT_NODES.has(child.type)) continue;
+                if (STRING_DELIMITER_NODES.has(child.type)) continue;
+                visit(child);
+            }
+            return;
+        }
+
         // Check for identifiers
         if (config.identifierNodes.has(node.type)) {
             seenCode = true;
@@ -164,6 +307,7 @@ export function extract(sourceCode: string, filePath: string): ExtractionResult 
                     term,
                     lineNumber,
                     lineType: linesMap.get(lineNumber) ?? 'code',
+                    kind: 'symbol',
                 });
                 setLineType(lineNumber, linesMap.get(lineNumber) ?? 'code');
             }
@@ -188,14 +332,33 @@ export function extract(sourceCode: string, filePath: string): ExtractionResult 
     // Start traversal
     visit(tree.rootNode);
 
+    // A literal can be the ONLY thing on its line (an element of a string array,
+    // a lone object value). No other pass recorded that line, so it has no row
+    // to hang an occurrence on -- and the insert would fail on a missing line id.
+    // Create it here, typed 'string'.
+    //
+    // This is the one case where a literal decides a line type, and it is safe
+    // precisely because the line does not exist yet: nothing is being upgraded,
+    // so no `type_filter: ['code']` query loses a line it used to return.
+    for (const item of items) {
+        if (item.kind === 'literal' && !linesMap.has(item.lineNumber)) {
+            linesMap.set(item.lineNumber, 'string');
+        }
+    }
+
     // Convert lines map to array
     const lines: ExtractedLine[] = Array.from(linesMap.entries())
         .map(([lineNumber, lineType]) => ({ lineNumber, lineType }))
         .sort((a, b) => a.lineNumber - b.lineNumber);
 
-    // Update item line types from final linesMap
+    // Update item line types from final linesMap.
+    // A literal keeps 'string' ONLY when no other pass typed its line -- i.e.
+    // when the line exists purely because of this literal. Measured on
+    // koryphaios, 79% of literal occurrences land on a line already typed
+    // 'code', and those keep that type untouched.
     for (const item of items) {
-        item.lineType = linesMap.get(item.lineNumber) ?? 'code';
+        item.lineType = linesMap.get(item.lineNumber)
+            ?? (item.kind === 'literal' ? 'string' : 'code');
     }
 
     return {
@@ -205,6 +368,7 @@ export function extract(sourceCode: string, filePath: string): ExtractionResult 
         methods,
         types,
         headerComments,
+        literalStats,
     };
 }
 
@@ -263,6 +427,7 @@ function extractIdentifiersFromComment(
                 term,
                 lineNumber,
                 lineType: 'comment',
+                kind: 'symbol',
             });
         }
     }
