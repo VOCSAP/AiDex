@@ -137,7 +137,19 @@ def _parse_errors(stdout):
     """Extract the error count from the --verbose summary line ('Done.
     Updated: N, Removed: N, Skipped: N, Errors: N'). Returns None if the
     line was not found (no-index no-op, usage error, or any other output
-    shape) -- callers must treat None as failure, not as zero errors."""
+    shape) -- callers must treat None as failure, not as zero errors.
+
+    This is a text-coupling to the CLI's exact --verbose output format
+    (src/index.ts). There is no structured (JSON/exit-code) alternative --
+    see run_update()'s docstring for why the exit code cannot be used
+    instead. If a future CLI change ever renames or reformats this summary
+    line, _ERRORS_RE stops matching, every call falls into the "None" (no
+    line found) branch, and run_update() returns False for every group --
+    which just means every batch gets retried forever, never falsely
+    marked done. Silently blind to real success, in other words, but the
+    original BLOCKER symptom (a queue silently deleted despite an error)
+    cannot recur through this path, because "no match" already maps to
+    failure, not to zero."""
     if not stdout:
         return None
     m = _ERRORS_RE.search(stdout)
