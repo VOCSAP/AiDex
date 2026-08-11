@@ -28,8 +28,16 @@ def main():
     except Exception:
         sys.exit(0)
 
+    if not isinstance(data, dict):
+        # Valid JSON but not an object (null, list, string, number) -- the
+        # .get() calls below would raise on anything else. Silence is the
+        # contract here, never a traceback on stderr.
+        sys.exit(0)
+
     session_id = data.get("session_id")
-    tool_input = data.get("tool_input") or {}
+    tool_input = data.get("tool_input")
+    if not isinstance(tool_input, dict):
+        tool_input = {}
     file_path = tool_input.get("file_path")
     cwd = data.get("cwd") or os.getcwd()
 

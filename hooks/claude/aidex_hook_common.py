@@ -15,6 +15,7 @@ mismatch on a PATH `node` of the wrong major).
 import json
 import os
 import tempfile
+import time
 
 CLAUDE_CONFIGS = [
     os.path.join(os.path.expanduser("~"), ".claude.json"),
@@ -98,15 +99,42 @@ def has_index(search_path):
     return os.path.isfile(os.path.join(search_path, ".aidex", "index.db"))
 
 
+# A dead session's queue file (crashed before its Stop hook ran, or was
+# never drained because the project lost its .aidex index) would otherwise
+# sit in the per-user Temp dir forever -- harmless on a per-user Windows
+# Temp, but worth capping rather than assuming. Purge is opportunistic and
+# best-effort: it runs from queue_dir(), which every hook call already goes
+# through, so no extra process or scheduler is needed.
+STALE_QUEUE_AGE_S = 7 * 24 * 60 * 60
+
+
 def queue_dir():
     d = os.path.join(tempfile.gettempdir(), "aidex-hook-queue")
     os.makedirs(d, exist_ok=True)
+    try:
+        cutoff = time.time() - STALE_QUEUE_AGE_S
+        with os.scandir(d) as it:
+            for entry in it:
+                try:
+                    if entry.is_file() and entry.stat().st_mtime < cutoff:
+                        os.remove(entry.path)
+                except OSError:
+                    continue  # another process may be touching it -- skip, not fatal
+    except OSError:
+        pass  # purge is a courtesy, never a reason to fail queue_dir()
     return d
 
 
 def queue_path(session_id):
     """Per-session queue file. session_id scoping is what makes concurrent
     Claude Code sessions on the same repo (the live normal case here) safe:
-    each session only ever reads/writes its own file."""
+    each session only ever reads/writes its own file.
+
+    session_id is caller-controlled JSON (Claude Code sends a string, but
+    nothing here should trust that): stringify defensively so a non-string
+    value (int, list, ...) can never raise instead of just producing an
+    unusual-but-valid filename.
+    """
+    session_id = session_id if isinstance(session_id, str) else str(session_id)
     safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in (session_id or "unknown"))
     return os.path.join(queue_dir(), f"{safe}.txt")
