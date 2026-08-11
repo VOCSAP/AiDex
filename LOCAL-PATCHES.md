@@ -112,7 +112,23 @@ La migration est **annoncee** dans le resultat (`literalCoverageUpgraded`) et no
 
 Ce cas n'etait pas atteignable avant l'extraction : c'est elle qui l'a cree, en permettant a un `aidex_update` d'ecrire des litteraux dans un index encore declare 1.2.
 
-### 1.8 Pas de levier de configuration
+### 1.8 La fenetre de termes -- `src/db/queries.ts`, `src/commands/query.ts`
+
+`searchItems` appliquait `LIMIT 1000` **sans `ORDER BY` et avant le filtre `kinds`**. Trois defauts en un :
+
+- Les items dont toutes les occurrences sont litterales occupaient la fenetre meme quand l'appelant ne demandait que des symboles. Mesure : 14 % a 22 % des items d'un index reel sont dans ce cas, et sur un `contains 'id'` dans un depot Rust, 307 termes sur 1649.
+- **La troncature etait silencieuse.** Un terme evince ne produit AUCUNE ligne de resultat, donc un symbole pouvait disparaitre sans que rien ne le signale. C'est le meme defaut epistemique que le zero non qualifie, un etage plus tot.
+- Sans `ORDER BY`, aucun ordre n'est garanti par SQL, donc aucune pagination n'etait possible.
+
+Corriges ensemble, parce qu'ils ne se separent pas : le filtre `kinds` descend dans le SQL, l'ordre devient TOTAL (egalite exacte, puis prefixe, puis longueur croissante, puis alphabetique et id), et `item_offset` / `item_limit` permettent de lire la tranche suivante, la reponse annoncant `Terms 1-1000 of 1342 examined`.
+
+**Les deux derniers criteres de tri n'apportent aucune pertinence** : ils existent pour rendre l'ordre total. Sans depart, deux lignes de meme rang peuvent permuter entre deux appels et la pagination redevient fausse, pour une raison plus subtile que l'absence d'ordre.
+
+**Pas de reranker semantique**, decision explicite : `aidex_query` est le chemin lexical deterministe, `aidex_search` porte le semantique (embeddings, RRF, rerank LLM optionnel). Melanger les deux effacerait la seule distinction claire entre ces outils et couterait latence et tokens, a rebours du but.
+
+Piege rencontre en ecrivant le test : la pagination porte sur les TERMES, pas sur les lignes. Plusieurs termes distincts peuvent tomber sur la meme ligne, et la deduplication par `file:line` n'opere qu'a l'interieur d'un appel. Une assertion de disjonction ecrite au niveau des lignes est donc fausse, et c'est le code qui a raison.
+
+### 1.9 Pas de levier de configuration
 
 Ni pour le defaut de `kinds`, ni pour la regle d'indexation, **et surtout pas par variable d'environnement**.
 
@@ -180,7 +196,18 @@ Petits patchs sans rapport avec la couverture, mais qui protegent des proprietes
 
 ---
 
-## 7. Portage vers l'upstream
+## 7. Extensions MESUREES puis ECARTEES
+
+A ne pas retenter sans nouvelle mesure : ces regles paraissent raisonnables sur le papier, et le terrain les a refusees. Campagne du 2026-08-11 sur cinq depots reels (Go, Python x2, Rust, TypeScript), hors fichiers de test, en ne comptant que les litteraux qui seraient NOUVELLEMENT indexes.
+
+- **Litteraux en position array : ECARTES.** Meme restreints aux tableaux lies a une const annotee ou en majuscules, ils sont majoritairement des TABLES DE DONNEES : un bucket de 760 candidats s'est revele etre un dictionnaire de sentiment et des listes de mots vides (`"the"`, `"a"`, `"is"`, `"were"`). Gain de 0,6 a 2,4 points de couverture contre l'injection de centaines de mots anglais courants dans l'espace de noms des symboles.
+- **Litteral en argument d'appel, en Go : ECARTE.** 77 % des candidats sont les clefs du logging structure (`slog.Warn("msg", "error", err)`).
+- **Idem en TypeScript et en Python : ECARTES.** Tables de mapping et noms d'evenements en un seul mot.
+- **Idem en Rust : viable, mais seulement en excluant les appels de diagnostic** (`expect`, `unwrap_or`, `panic`, `assert*`), qui font 18 % du bucket et l'essentiel du bruit. Le reste est domine par `get` (391 occurrences), soit des clefs de lookup. Non implemente : le gain ne concerne qu'un langage et coute un changement de `ruleVersion`, donc la reindexation de tous les index.
+
+**Lecon de methode, plus utile que le resultat** : la precision Rust avait ete annoncee a 82 % sur un echantillon de 34. Sur le depot complet elle tombe a environ 64 %, et a 36 % de bruit si les fichiers de test sont inclus. Un echantillon de quelques dizaines ne voit pas un motif qui pese 15 % du total.
+
+## 8. Portage vers l'upstream
 
 Ordre de PR = ordre de livraison, du moins engageant au plus opinione.
 

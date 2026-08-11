@@ -472,32 +472,77 @@ export class Queries {
     // Query: Search items
     // --------------------------------------------------------
 
+    /**
+     * The WHERE clause shared by item search and item counting, so a filter can
+     * never apply to one and not the other -- which would make the announced
+     * total disagree with the rows returned under it.
+     *
+     * `includeLiteralOnly: false` drops items whose every occurrence is a
+     * literal. Without it those items take seats in the window even when the
+     * caller only asked for symbols, and the eviction is silent.
+     */
+    private itemMatchClause(mode: 'exact' | 'contains' | 'starts_with', includeLiteralOnly: boolean): string {
+        const match = mode === 'exact'
+            ? 'i.term = ? COLLATE NOCASE'
+            : "i.term LIKE ? ESCAPE '\\' COLLATE NOCASE";
+        // Omitted on a pre-Lot-2 index: there is no `kind` column to filter on,
+        // and everything such an index holds is a symbol anyway.
+        const literalFilter = (!includeLiteralOnly && this.hasOccurrenceKind())
+            ? ` AND EXISTS (SELECT 1 FROM occurrences o WHERE o.item_id = i.id AND o.kind IN ('symbol', 'both'))`
+            : '';
+        return `${match}${literalFilter}`;
+    }
+
+    private itemMatchParam(term: string, mode: 'exact' | 'contains' | 'starts_with'): string {
+        if (mode === 'exact') return term;
+        return mode === 'contains' ? `%${escapeLike(term)}%` : `${escapeLike(term)}%`;
+    }
+
+    /** How many items match, BEFORE the window is applied. */
+    countItems(
+        term: string,
+        mode: 'exact' | 'contains' | 'starts_with' = 'exact',
+        includeLiteralOnly = true
+    ): number {
+        const sql = `SELECT COUNT(*) n FROM items i WHERE ${this.itemMatchClause(mode, includeLiteralOnly)}`;
+        return (this.db.prepare(sql).get(this.itemMatchParam(term, mode)) as { n: number }).n;
+    }
+
     searchItems(
         term: string,
         mode: 'exact' | 'contains' | 'starts_with' = 'exact',
-        limit = 100
+        limit = 100,
+        offset = 0,
+        includeLiteralOnly = true
     ): ItemRow[] {
-        let sql: string;
-        let param: string;
-
-        switch (mode) {
-            case 'exact':
-                sql = 'SELECT * FROM items WHERE term = ? COLLATE NOCASE LIMIT ?';
-                param = term;
-                break;
-            case 'contains': {
-                sql = "SELECT * FROM items WHERE term LIKE ? ESCAPE '\\' COLLATE NOCASE LIMIT ?";
-                param = `%${escapeLike(term)}%`;
-                break;
-            }
-            case 'starts_with': {
-                sql = "SELECT * FROM items WHERE term LIKE ? ESCAPE '\\' COLLATE NOCASE LIMIT ?";
-                param = `${escapeLike(term)}%`;
-                break;
-            }
-        }
-
-        return this.db.prepare(sql).all(param, limit) as ItemRow[];
+        // ORDER BY is not cosmetic here, it is what makes `offset` mean
+        // anything: SQL guarantees no row order without it, so paging through
+        // an unordered LIMIT can repeat rows and skip others.
+        //
+        // The ranking itself uses the only signal a substring search carries --
+        // how close a term is to what was typed. On `contains`, `getUser` is a
+        // likelier target than `internalGetUserPreferencesCache`. The last two
+        // keys exist to make the order TOTAL: without a tiebreak, equal-ranking
+        // rows are free to swap between two calls, and the paging breaks again
+        // for a subtler reason.
+        const sql = `
+            SELECT i.* FROM items i
+            WHERE ${this.itemMatchClause(mode, includeLiteralOnly)}
+            ORDER BY
+                CASE WHEN i.term = ? COLLATE NOCASE THEN 0 ELSE 1 END,
+                CASE WHEN i.term LIKE ? ESCAPE '\\' COLLATE NOCASE THEN 0 ELSE 1 END,
+                LENGTH(i.term),
+                i.term COLLATE NOCASE,
+                i.id
+            LIMIT ? OFFSET ?
+        `;
+        return this.db.prepare(sql).all(
+            this.itemMatchParam(term, mode),
+            term,
+            `${escapeLike(term)}%`,
+            limit,
+            offset
+        ) as ItemRow[];
     }
 
     // --------------------------------------------------------

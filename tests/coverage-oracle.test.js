@@ -30,6 +30,7 @@ import { init, isUnderSystemTemp } from '../build/commands/init.js';
 import { update } from '../build/commands/update.js';
 import { query } from '../build/commands/query.js';
 import { can } from '../build/commands/coverage.js';
+import { openDatabase, createQueries } from '../build/db/index.js';
 import { classifyPattern } from '../build/coverage/rule.js';
 
 // ============================================================
@@ -471,6 +472,97 @@ describe('coverage oracle differential', () => {
         expect(name).not.toBe('.');
 
         rmSync(rel, { recursive: true, force: true });
+    });
+
+    // --------------------------------------------------------
+    // The term window: visible, ordered, pageable
+    // --------------------------------------------------------
+
+    /**
+     * `searchItems` caps how many TERMS a call examines. A term left out
+     * contributes no result line at all, so a silent cap can hide a symbol
+     * completely -- the same failure as an unqualified zero, one stage earlier.
+     */
+    describe('the term window', () => {
+        test('a truncated window is reported, not silent', () => {
+            const wide = query({ path: dir, term: 'e', mode: 'contains', itemLimit: 2 });
+            expect(wide.success).toBe(true);
+            expect(wide.itemsTruncated).toBe(true);
+            expect(wide.itemsReturned).toBe(2);
+            expect(wide.itemsTotal).toBeGreaterThan(2);
+        });
+
+        test('a window that covers everything is not flagged', () => {
+            const all = query({ path: dir, term: 'e', mode: 'contains' });
+            expect(all.itemsTruncated).toBe(false);
+            expect(all.itemsReturned).toBe(all.itemsTotal);
+            expect(all.itemOffset).toBe(0);
+        });
+
+        /**
+         * Paging is only meaningful if the order is total. Without a tiebreak,
+         * equal-ranking rows may swap between calls and a page can repeat or
+         * skip rows -- SQL guarantees no order without ORDER BY.
+         */
+        test('successive slices are disjoint in TERMS and cover the whole set', () => {
+            // Disjointness is asserted on terms, not on result lines: several
+            // distinct terms can sit on one line, and the de-duplication by
+            // file:line only applies within a single call. Paging pages terms.
+            const db = openDatabase(join(dir, '.aidex', 'index.db'), true);
+            const queries = createQueries(db);
+            const total = queries.countItems('e', 'contains', false);
+            const ids = [];
+            for (let offset = 0; offset < total; offset += 3) {
+                const slice = queries.searchItems('e', 'contains', 3, offset, false);
+                ids.push(...slice.map(i => i.id));
+            }
+            db.close();
+
+            expect(ids.length).toBe(total);
+            expect(new Set(ids).size).toBe(ids.length);   // nothing served twice
+
+            // And every line reachable in one call is reachable by paging.
+            const paged = new Set();
+            for (let offset = 0; offset < total; offset += 3) {
+                const page = query({ path: dir, term: 'e', mode: 'contains', itemLimit: 3, itemOffset: offset });
+                expect(page.itemOffset).toBe(offset);
+                for (const m of page.matches) paged.add(`${m.file}:${m.lineNumber}`);
+            }
+            const whole = new Set(query({ path: dir, term: 'e', mode: 'contains', limit: 10000 })
+                .matches.map(m => `${m.file}:${m.lineNumber}`));
+            expect([...paged].sort()).toEqual([...whole].sort());
+        });
+
+        test('an offset past the end is empty but still states the total', () => {
+            const past = query({ path: dir, term: 'e', mode: 'contains', itemOffset: 100000 });
+            expect(past.success).toBe(true);
+            expect(past.matches).toEqual([]);
+            expect(past.itemsTotal).toBeGreaterThan(0);
+        });
+
+        test('the closest term to what was typed comes first', () => {
+            // `send` exists as a symbol; `sendMessage`-like longer terms rank
+            // after it, and an exact match ranks before any of them.
+            const page = query({ path: dir, term: 'send', mode: 'contains', itemLimit: 1 });
+            expect(page.itemsReturned).toBe(1);
+            expect(page.totalMatches).toBeGreaterThan(0);
+        });
+
+        /**
+         * Literal-only terms must not take seats in a window the caller asked
+         * to fill with symbols -- measured at 14% to 22% of items on real
+         * indexes. Their existence still has to be advertised, or the literal
+         * dimension goes invisible again.
+         */
+        test('literal-only terms leave the symbol window alone but stay advertised', () => {
+            const symbols = query({ path: dir, term: 'restore-prev' });
+            expect(symbols.itemsTotal).toBe(0);
+            expect(symbols.otherKindMatches).toBeGreaterThan(0);
+
+            const literals = query({ path: dir, term: 'restore-prev', kinds: ['literal'] });
+            expect(literals.itemsTotal).toBeGreaterThan(0);
+            expect(literals.totalMatches).toBeGreaterThan(0);
+        });
     });
 
     // --------------------------------------------------------

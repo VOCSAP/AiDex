@@ -93,6 +93,14 @@ export function registerTools(): Tool[] {
                         items: { type: 'string', enum: ['symbol', 'literal'] },
                         description: 'Index dimension to search (default: ["symbol"]). "literal" searches indexed string literals, and only an index rebuilt for literal coverage holds any. Check with aidex_coverage before reading a zero as an absence.',
                     },
+                    item_offset: {
+                        type: 'number',
+                        description: 'Matching TERMS to skip. A broad `contains` can match more terms than one call examines; when that happens the answer says so, and this reads the next slice.',
+                    },
+                    item_limit: {
+                        type: 'number',
+                        description: 'Matching TERMS to examine in this call (default 1000). Distinct from `limit`, which caps the result LINES shown.',
+                    },
                     modified_since: {
                         type: 'string',
                         description: 'Only include lines modified after this time. Supports: "2h" (hours), "30m" (minutes), "1d" (days), "1w" (weeks), or ISO date string',
@@ -1223,6 +1231,8 @@ function handleQuery(args: Record<string, unknown>): { content: Array<{ type: st
         fileFilter: args.file_filter as string | undefined,
         typeFilter: args.type_filter as string[] | undefined,
         kinds: args.kinds as QueryKind[] | undefined,
+        itemOffset: args.item_offset as number | undefined,
+        itemLimit: args.item_limit as number | undefined,
         modifiedSince: args.modified_since as string | undefined,
         modifiedBefore: args.modified_before as string | undefined,
         limit: args.limit as number | undefined,
@@ -1262,6 +1272,16 @@ function handleQuery(args: Record<string, unknown>): { content: Array<{ type: st
     let message = `Found ${result.totalMatches} match(es) for "${term}" (mode: ${result.mode}, kinds: ${result.kinds.join(',')})`;
     if (result.truncated) {
         message += ` [showing first ${result.matches.length}]`;
+    }
+    // The TERM window, announced separately from the line limit above. They cut
+    // at different stages: a term left out here contributes no line at all, so
+    // staying silent about it would let a caller read a partial answer as the
+    // whole of it.
+    if (result.itemsTruncated) {
+        const from = result.itemOffset + 1;
+        const to = result.itemOffset + result.itemsReturned;
+        message += `\nTerms ${from}-${to} of ${result.itemsTotal} examined`
+            + ` -- re-run with item_offset: ${to} for the next slice.`;
     }
     message += '\n\n';
 

@@ -35,6 +35,13 @@ export type QueryKind = 'symbol' | 'literal';
  */
 export const DEFAULT_QUERY_KINDS: QueryKind[] = ['symbol'];
 
+/**
+ * How many matching TERMS one call looks at. Distinct from `limit`, which caps
+ * the MATCHES finally shown: a term evicted here contributes no match at all,
+ * which is why the window has to be visible and pageable rather than silent.
+ */
+export const DEFAULT_ITEM_WINDOW = 1000;
+
 export interface QueryParams {
     path: string;
     term: string;
@@ -42,6 +49,10 @@ export interface QueryParams {
     fileFilter?: string;
     typeFilter?: string[];
     kinds?: QueryKind[];
+    /** Terms to skip, for reading past the first window. */
+    itemOffset?: number;
+    /** Terms to look at in this call (default 1000). */
+    itemLimit?: number;
     modifiedSince?: string;
     modifiedBefore?: string;
     limit?: number;
@@ -77,6 +88,18 @@ export interface QueryResult {
      */
     literalDimensionAvailable: boolean;
     truncated: boolean;
+    /** Matching TERMS in the index, before the window. */
+    itemsTotal: number;
+    /** Terms this call actually looked at. */
+    itemsReturned: number;
+    /** Terms skipped before this window. */
+    itemOffset: number;
+    /**
+     * True when terms exist beyond this window. Reported rather than silent:
+     * a caller that cannot see the cut has no way to tell "nothing else" from
+     * "nothing else HERE", which is the same failure as an unqualified zero.
+     */
+    itemsTruncated: boolean;
     error?: string;
 }
 
@@ -97,7 +120,7 @@ export function query(params: QueryParams): QueryResult {
 
     return withProjectDb(
         params.path, true,
-        (error) => ({ success: false, term: params.term, mode, kinds, matches: [], totalMatches: 0, otherKindMatches: 0, literalDimensionAvailable: false, truncated: false, error }),
+        (error) => ({ success: false, term: params.term, mode, kinds, matches: [], totalMatches: 0, otherKindMatches: 0, literalDimensionAvailable: false, truncated: false, itemsTotal: 0, itemsReturned: 0, itemOffset: 0, itemsTruncated: false, error }),
         (db, queries) => {
             try {
                 const coverage = readCoverage(db);
@@ -138,12 +161,32 @@ export function query(params: QueryParams): QueryResult {
                         otherKindMatches: 0,
                         literalDimensionAvailable,
                         truncated: false,
+                        itemsTotal: 0,
+                        itemsReturned: 0,
+                        itemOffset: 0,
+                        itemsTruncated: false,
                         error,
                     };
                 }
 
-                // Search for items
-                const items = queries.searchItems(params.term, mode, 1000);
+                // ---- the term window --------------------------------------
+                // Items whose every occurrence is a literal are dropped in SQL
+                // when the caller did not ask for literals, so they cannot take
+                // seats in a window meant for symbols. Measured before this
+                // existed: 14% to 22% of items on real indexes are literal-only.
+                const wantsLiterals = kinds.includes('literal');
+                const itemOffset = Math.max(0, params.itemOffset ?? 0);
+                const itemLimit = Math.max(1, params.itemLimit ?? DEFAULT_ITEM_WINDOW);
+
+                const itemsTotal = queries.countItems(params.term, mode, wantsLiterals);
+                const items = queries.searchItems(params.term, mode, itemLimit, itemOffset, wantsLiterals);
+                const itemsTruncated = itemOffset + items.length < itemsTotal;
+                const window = {
+                    itemsTotal,
+                    itemsReturned: items.length,
+                    itemOffset,
+                    itemsTruncated,
+                };
 
                 if (items.length === 0) {
                     return {
@@ -153,9 +196,17 @@ export function query(params: QueryParams): QueryResult {
                         kinds,
                         matches: [],
                         totalMatches: 0,
-                        otherKindMatches: 0,
+                        // Nothing under the requested kinds. If the term exists
+                        // ONLY as a literal, the SQL filter above already
+                        // removed it, so the count has to be taken separately
+                        // or the literal dimension becomes invisible again --
+                        // the very thing the teaser exists to prevent.
+                        otherKindMatches: wantsLiterals
+                            ? 0
+                            : queries.countItems(params.term, mode, true) - itemsTotal,
                         literalDimensionAvailable,
                         truncated: false,
+                        ...window,
                     };
                 }
 
@@ -242,9 +293,15 @@ export function query(params: QueryParams): QueryResult {
                     kinds,
                     matches: allMatches,
                     totalMatches,
-                    otherKindMatches: otherKindKeys.size,
+                    // Same reasoning as the empty branch: literal-only terms
+                    // were filtered in SQL, so their count is added back here
+                    // rather than inferred from occurrences that never loaded.
+                    otherKindMatches: otherKindKeys.size + (wantsLiterals
+                        ? 0
+                        : queries.countItems(params.term, mode, true) - itemsTotal),
                     literalDimensionAvailable,
                     truncated,
+                    ...window,
                 };
 
             } catch (error) {
@@ -258,6 +315,10 @@ export function query(params: QueryParams): QueryResult {
                     otherKindMatches: 0,
                     literalDimensionAvailable: false,
                     truncated: false,
+                    itemsTotal: 0,
+                    itemsReturned: 0,
+                    itemOffset: 0,
+                    itemsTruncated: false,
                     error: error instanceof Error ? error.message : String(error),
                 };
             }
