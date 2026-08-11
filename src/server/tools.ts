@@ -5,9 +5,10 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { existsSync } from 'fs';
 import { join } from 'path';
-import { init, query, signature, signatures, update, remove, summary, tree, describe, link, unlink, listLinks, scan, files, note, getSessionNote, session, formatSessionTime, formatDuration, task, tasks, screenshot, listWindows, globalInit, globalStatus, globalQuery, globalSignatures, globalRefresh, globalGuideline, log, type QueryMode, type TaskAction, type ScreenshotMode, type ScreenshotColors, type SignatureKind, type GuidelineAction, type LogAction, type LogLevel } from '../commands/index.js';
+import { init, query, signature, signatures, update, remove, summary, tree, describe, link, unlink, listLinks, scan, files, note, getSessionNote, session, formatSessionTime, formatDuration, task, tasks, screenshot, listWindows, globalInit, globalStatus, globalQuery, globalSignatures, globalRefresh, globalGuideline, log, can, noticeFor, globalNotice, type QueryMode, type QueryKind, type TaskAction, type ScreenshotMode, type ScreenshotColors, type SignatureKind, type GuidelineAction, type LogAction, type LogLevel } from '../commands/index.js';
 import type { TaskRow } from '../db/index.js';
 import { openDatabase } from '../db/index.js';
+import { LITERAL_COVERAGE_SCHEMA, LITERAL_RULE_ID, LITERAL_RULE_VERSION } from '../coverage/rule.js';
 import { startViewer, stopViewer } from '../viewer/index.js';
 import { PRODUCT_NAME, PRODUCT_NAME_LOWER, PRODUCT_VERSION, INDEX_DIR, TOOL_PREFIX } from '../constants.js';
 
@@ -85,7 +86,12 @@ export function registerTools(): Tool[] {
                     type_filter: {
                         type: 'array',
                         items: { type: 'string' },
-                        description: 'Filter by line type: code, comment, method, struct, property',
+                        description: 'Filter by LINE type: code, comment, method, struct, property, string. Not to be confused with `kinds`, which selects the index dimension.',
+                    },
+                    kinds: {
+                        type: 'array',
+                        items: { type: 'string', enum: ['symbol', 'literal'] },
+                        description: 'Index dimension to search (default: ["symbol"]). "literal" searches indexed string literals, and only an index rebuilt for literal coverage holds any. Check with aidex_coverage before reading a zero as an absence.',
                     },
                     modified_since: {
                         type: 'string',
@@ -101,6 +107,38 @@ export function registerTools(): Tool[] {
                     },
                 },
                 required: ['path', 'term'],
+            },
+        },
+        {
+            name: `${TOOL_PREFIX}coverage`,
+            description: `Ask whether ${PRODUCT_NAME} can actually answer a search, BEFORE trusting a zero result. `
+                + `Returns {covered, reason, advice}. \`covered: true\` means this index can answer both the symbol `
+                + `and the literal dimension for that pattern and path -- and only then is an empty result proof of absence. `
+                + `Every other reason means "ask something else" (grep), never "the term is absent". `
+                + `Reasons: covered, covered_symbols_only, literal_coverage_absent, pattern_below_literal_rule, `
+                + `pattern_not_indexable, path_out_of_scope, index_stale_on_file, project_not_indexed, oracle_error. `
+                + `Background: ${PRODUCT_NAME} indexes symbols always; string literals only on an index rebuilt for it, `
+                + `and only in identifier form (a separator or mixed case, or a single lowercase word in type/JSX/object-value `
+                + `position). Measured literal coverage varies far too much to quote once -- 9.8% on Go against 29.9% on `
+                + `TypeScript, and 18.8% vs 29.9% between two TypeScript projects -- so each index reports its own figures. `
+                + `Reindexing is manual: an index is lifted only by \`${PRODUCT_NAME_LOWER} rebuild-index <path>\`, run by the operator.`,
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    path: {
+                        type: 'string',
+                        description: `Path to project with ${INDEX_DIR} directory`,
+                    },
+                    pattern: {
+                        type: 'string',
+                        description: 'The exact string you are about to search for',
+                    },
+                    target: {
+                        type: 'string',
+                        description: 'Optional file the search is scoped to. Checks it is indexed AND not stale.',
+                    },
+                },
+                required: ['path', 'pattern'],
             },
         },
         {
@@ -951,6 +989,9 @@ export async function handleToolCall(
             case `${TOOL_PREFIX}query`:
                 return handleQuery(args);
 
+            case `${TOOL_PREFIX}coverage`:
+                return handleCoverage(args);
+
             case `${TOOL_PREFIX}status`:
                 return await handleStatus(args);
 
@@ -1084,6 +1125,14 @@ async function handleInit(args: Record<string, unknown>): Promise<{ content: Arr
 
     if (result.success) {
         let message = `✓ ${PRODUCT_NAME} initialized for project\n\n`;
+        // Said before the counters, because it explains them: a run that
+        // migrates reindexes every file and reports zero skipped, where the
+        // caller expected an incremental pass.
+        if (result.literalCoverageUpgraded) {
+            message += `Literal coverage MIGRATED: the index did not declare it, so every file was `
+                + `re-indexed and the index now answers for literals (schema ${LITERAL_COVERAGE_SCHEMA}, `
+                + `rule ${LITERAL_RULE_ID}@${LITERAL_RULE_VERSION}). Query them with kinds: ["literal"].\n\n`;
+        }
         message += `Database: ${result.indexPath}/index.db\n`;
         message += `Files indexed: ${result.filesIndexed}`;
         if (result.filesSkipped > 0) {
@@ -1125,6 +1174,36 @@ async function handleInit(args: Record<string, unknown>): Promise<{ content: Arr
 }
 
 /**
+ * Handle coverage -- the oracle.
+ *
+ * Emits the raw verdict as JSON on purpose. A caller (a hook, a script, another
+ * agent) branches on `reason`, and prose would force it to guess. `covered: true`
+ * is the ONLY value that licenses treating an empty result as proof of absence.
+ */
+function handleCoverage(args: Record<string, unknown>): { content: Array<{ type: string; text: string }> } {
+    const path = args.path as string;
+    const pattern = args.pattern as string;
+
+    if (!path || !pattern) {
+        return {
+            content: [{ type: 'text', text: JSON.stringify({ covered: false, reason: 'oracle_error', error: 'path and pattern parameters are required' }) }],
+        };
+    }
+
+    try {
+        return {
+            content: [{ type: 'text', text: JSON.stringify(can({ path, pattern, target: args.target as string | undefined })) }],
+        };
+    } catch (err) {
+        // Never a verdict: a caller must treat this as "could not answer" and
+        // fall back to its own search, not as "not covered".
+        return {
+            content: [{ type: 'text', text: JSON.stringify({ covered: false, reason: 'oracle_error', error: err instanceof Error ? err.message : String(err) }) }],
+        };
+    }
+}
+
+/**
  * Handle query
  */
 function handleQuery(args: Record<string, unknown>): { content: Array<{ type: string; text: string }> } {
@@ -1143,6 +1222,7 @@ function handleQuery(args: Record<string, unknown>): { content: Array<{ type: st
         mode: (args.mode as QueryMode) ?? 'exact',
         fileFilter: args.file_filter as string | undefined,
         typeFilter: args.type_filter as string[] | undefined,
+        kinds: args.kinds as QueryKind[] | undefined,
         modifiedSince: args.modified_since as string | undefined,
         modifiedBefore: args.modified_before as string | undefined,
         limit: args.limit as number | undefined,
@@ -1155,13 +1235,31 @@ function handleQuery(args: Record<string, unknown>): { content: Array<{ type: st
     }
 
     if (result.matches.length === 0) {
-        return {
-            content: [{ type: 'text', text: `No matches found for "${term}" (mode: ${result.mode})` }],
-        };
+        // Exactly ONE extra line: what is missing, and what to do. The
+        // per-language coverage figures live in the tool description, read once,
+        // not in every empty response of every session.
+        // `kinds` rides on the existing header line: it costs no extra line, and
+        // a response that states the query it answered stays correct if the
+        // default ever moves.
+        //
+        // The teaser wins over the caveat when there IS something to point at:
+        // "N of them exist, ask for them" beats a warning, and it is the whole
+        // reason the default can stay narrow without hiding the other dimension.
+        // ...but only when that re-run would be ANSWERED. On an index that does
+        // not declare literal coverage the literal dimension is refused, so
+        // pointing at it would hand the caller an instruction that fails; the
+        // coverage notice, which names the schema and the rebuild command, is
+        // the honest half of the same fact.
+        const second = result.otherKindMatches > 0 && result.literalDimensionAvailable
+            ? `${result.otherKindMatches} match(es) exist in other kinds -- re-run with kinds: ["literal"].`
+            : noticeFor(path, term);
+        const text = `No matches found for "${term}" (mode: ${result.mode}, kinds: ${result.kinds.join(',')})`
+            + (second ? `\n${second}` : '');
+        return { content: [{ type: 'text', text }] };
     }
 
     // Format results
-    let message = `Found ${result.totalMatches} match(es) for "${term}" (mode: ${result.mode})`;
+    let message = `Found ${result.totalMatches} match(es) for "${term}" (mode: ${result.mode}, kinds: ${result.kinds.join(',')})`;
     if (result.truncated) {
         message += ` [showing first ${result.matches.length}]`;
     }
@@ -2532,6 +2630,10 @@ function handleGlobalQuery(args: Record<string, unknown>): { content: Array<{ ty
     if (result.totalMatches === 0) {
         let msg = `No matches for "${result.term}" (mode: ${result.mode}) across ${result.projectsSearched} projects.`;
         if (result.cached) msg += ' (cached)';
+        // Coverage is per index and reindexing is manual, so a cross-project
+        // zero spans a mix of states by design. One line saying so.
+        const notice = globalNotice(result.term);
+        if (notice) msg += `\n${notice}`;
         return {
             content: [{ type: 'text', text: msg }],
         };
