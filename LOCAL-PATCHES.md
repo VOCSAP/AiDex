@@ -138,7 +138,7 @@ Si un levier devient necessaire, il va **par projet** dans les metadata de l'ind
 
 ---
 
-## 2. Le hook Claude Code -- `hooks/aidex-grep-nudge.py`
+## 2. Le hook Claude Code -- `hooks/claude/aidex-grep-nudge.py`
 
 Hors du produit : ce hook s'installe dans le profil utilisateur (`~/.claude/hooks/`) et detourne les recherches vers AiDex. Il est versionne ici parce qu'il est indissociable de l'oracle.
 

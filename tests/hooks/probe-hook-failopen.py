@@ -12,7 +12,7 @@ import subprocess
 import sys
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-HOOK = os.path.join(REPO_ROOT, "hooks", "aidex-grep-nudge.py")
+HOOK = os.path.join(REPO_ROOT, "hooks", "claude", "aidex-grep-nudge.py")
 PAYLOAD = json.dumps({
     "tool_name": "Bash",
     "cwd": REPO_ROOT,
