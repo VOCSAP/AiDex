@@ -49,10 +49,19 @@ CREATE INDEX IF NOT EXISTS idx_items_term ON items(term);
 -- ------------------------------------------------------------
 -- Item-Vorkommen
 -- ------------------------------------------------------------
+-- `kind` says WHY this occurrence exists: the term was seen as a code symbol,
+-- as an indexed string literal, or as both on the same line.
+--
+-- It is not part of the primary key on purpose. Adding it there would force a
+-- table rebuild on every existing index, and the case it would serve is rare:
+-- measured on koryphaios, 158 of 10 376 literal occurrences (1.5%) land on a
+-- line where the same term is already a symbol. Those collapse to 'both', which
+-- keeps one row and loses nothing -- a filter on either kind still matches it.
 CREATE TABLE IF NOT EXISTS occurrences (
     item_id INTEGER NOT NULL,
     file_id INTEGER NOT NULL,
     line_id INTEGER NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'symbol' CHECK(kind IN ('symbol', 'literal', 'both')),
     PRIMARY KEY (item_id, file_id, line_id),
     FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE,
     FOREIGN KEY (file_id, line_id) REFERENCES lines(file_id, id) ON DELETE CASCADE

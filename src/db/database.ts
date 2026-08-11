@@ -25,8 +25,16 @@ export class AiDexDatabase {
             readonly: config.readonly ?? false,
         });
 
-        // Enable WAL mode and foreign keys
-        this.db.pragma('journal_mode = WAL');
+        // Enable WAL mode and foreign keys.
+        // `journal_mode = WAL` is a WRITE: on a readonly handle it throws
+        // "attempt to write a readonly database" whenever the file is not
+        // already in WAL (a restored backup, a `VACUUM INTO` copy, a share that
+        // refused WAL). Setting it there is pointless anyway -- a readonly
+        // connection cannot change the journal mode -- so skip it and keep
+        // every readable index answerable.
+        if (!config.readonly) {
+            this.db.pragma('journal_mode = WAL');
+        }
         this.db.pragma('foreign_keys = ON');
     }
 
@@ -78,6 +86,15 @@ export class AiDexDatabase {
             if (!methodCols.has('body_truncated')) {
                 this.db.exec("ALTER TABLE methods ADD COLUMN body_truncated INTEGER DEFAULT 0");
             }
+        }
+
+        // occurrences.kind (Lot 2): symbol / literal / both.
+        // Plain ADD COLUMN with a DEFAULT, so every pre-existing row reads as
+        // 'symbol' -- which is exactly what it is on an index built before
+        // literals were indexed at all. No backfill, no rebuild.
+        const occurrenceCols = this.tableColumns('occurrences');
+        if (occurrenceCols.size > 0 && !occurrenceCols.has('kind')) {
+            this.db.exec("ALTER TABLE occurrences ADD COLUMN kind TEXT NOT NULL DEFAULT 'symbol'");
         }
 
         // tasks.summary (v1.15)
