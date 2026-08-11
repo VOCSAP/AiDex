@@ -21,6 +21,10 @@ npm-debug.log*
 
 # Test coverage
 coverage/
+# ...but src/coverage/ is source, not a report directory. The bare `coverage/`
+# pattern above matches at ANY depth, so without this negation the coverage
+# predicate module is silently never committed.
+!src/coverage/
 
 # Local AiDex databases (for testing)
 .codegraph/
