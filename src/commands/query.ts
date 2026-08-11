@@ -4,6 +4,10 @@
 
 import { withProjectDb } from './shared.js';
 import { globToRegex } from '../utils/glob.js';
+import { readCoverage, LITERAL_RULE_ID, LITERAL_RULE_VERSION } from '../coverage/rule.js';
+// `coverage.ts` does not import this module, so the remedy string can be shared
+// without a cycle: one command emits the rebuild line, everything else quotes it.
+import { rebuildCommand } from './coverage.js';
 
 // ============================================================
 // Types
@@ -11,12 +15,33 @@ import { globToRegex } from '../utils/glob.js';
 
 export type QueryMode = 'exact' | 'contains' | 'starts_with';
 
+/**
+ * Which dimension of the index to search.
+ *
+ * Separate from `typeFilter` on purpose. `typeFilter` selects a LINE type
+ * (code / comment / method / struct / property / string); `kinds` selects why
+ * the occurrence exists. One parameter filtering two namespaces would fail
+ * silently the day a value collided between them -- and it would already be
+ * wrong today, since a literal occurrence usually sits on a line that is
+ * already typed `code`.
+ */
+export type QueryKind = 'symbol' | 'literal';
+
+/**
+ * Default is symbols only, so every query written before literals existed
+ * returns exactly what it returned before. Discoverability of the literal
+ * dimension is handled by the count reported on an empty result, not by
+ * widening the default under people's feet.
+ */
+export const DEFAULT_QUERY_KINDS: QueryKind[] = ['symbol'];
+
 export interface QueryParams {
     path: string;
     term: string;
     mode?: QueryMode;
     fileFilter?: string;
     typeFilter?: string[];
+    kinds?: QueryKind[];
     modifiedSince?: string;
     modifiedBefore?: string;
     limit?: number;
@@ -33,8 +58,24 @@ export interface QueryResult {
     success: boolean;
     term: string;
     mode: QueryMode;
+    /** The kinds actually used, echoed even when it is the default. */
+    kinds: QueryKind[];
     matches: QueryMatch[];
     totalMatches: number;
+    /**
+     * Matches that exist in the OTHER kinds, not returned under `kinds`.
+     * This is the teaser that makes the literal dimension discoverable without
+     * changing the default.
+     */
+    otherKindMatches: number;
+    /**
+     * Does THIS index declare literal coverage under the CURRENT rule?
+     *
+     * Carried on the result so the tool layer can pick its notice without
+     * reopening the database -- and so it cannot invite a caller to re-run with
+     * `kinds: ["literal"]` on an index where that re-run would be refused.
+     */
+    literalDimensionAvailable: boolean;
     truncated: boolean;
     error?: string;
 }
@@ -46,12 +87,61 @@ export interface QueryResult {
 export function query(params: QueryParams): QueryResult {
     const mode = params.mode ?? 'exact';
     const limit = params.limit ?? 100;
+    const kinds: QueryKind[] = (params.kinds && params.kinds.length > 0)
+        ? params.kinds
+        : DEFAULT_QUERY_KINDS;
+
+    // 'both' means the term is that kind AND the other one on the same line, so
+    // it satisfies a filter on either.
+    const kindMatches = (k: string): boolean => k === 'both' || kinds.includes(k as QueryKind);
 
     return withProjectDb(
         params.path, true,
-        (error) => ({ success: false, term: params.term, mode, matches: [], totalMatches: 0, truncated: false, error }),
+        (error) => ({ success: false, term: params.term, mode, kinds, matches: [], totalMatches: 0, otherKindMatches: 0, literalDimensionAvailable: false, truncated: false, error }),
         (db, queries) => {
             try {
+                const coverage = readCoverage(db);
+                const literalDimensionAvailable = coverage.literalsIndexed;
+
+                // ---- the guard --------------------------------------------
+                // An index only answers for the literal dimension once it
+                // DECLARES it. Since Lot 3, `aidex_update` writes literal
+                // occurrences into whatever index it touches without advancing
+                // `schema_version`, so an index can hold literals for the three
+                // files that changed today and nothing else -- and answering
+                // from those would be a partial index presenting itself as a
+                // complete one, which is worse than holding none at all.
+                //
+                // Refused whole, never half-answered: returning the symbol side
+                // of a mixed `kinds` while silently dropping an unreliable
+                // literal side is the same lie in a quieter voice.
+                //
+                // On an index that genuinely holds no literals this replaces a
+                // mute zero with a refusal that says why -- same information,
+                // honest shape.
+                if (kinds.includes('literal') && !literalDimensionAvailable) {
+                    const rebuild = rebuildCommand(params.path);
+                    const error = coverage.ruleOutdated
+                        ? `This index carries literals built under rule ${coverage.record?.ruleId}@${coverage.record?.ruleVersion}, `
+                          + `not the current ${LITERAL_RULE_ID}@${LITERAL_RULE_VERSION}: what it holds is not what this build would index, `
+                          + `so the literal dimension is refused rather than answered wrongly. Rebuild: ${rebuild}`
+                        : `This index does not declare literal coverage (schema ${coverage.schemaVersion}): `
+                          + `it may hold literals for a few updated files and none for the rest, so a literal answer would be `
+                          + `partial while looking complete. Use grep, or rebuild: ${rebuild}`;
+                    return {
+                        success: false,
+                        term: params.term,
+                        mode,
+                        kinds,
+                        matches: [],
+                        totalMatches: 0,
+                        otherKindMatches: 0,
+                        literalDimensionAvailable,
+                        truncated: false,
+                        error,
+                    };
+                }
+
                 // Search for items
                 const items = queries.searchItems(params.term, mode, 1000);
 
@@ -60,8 +150,11 @@ export function query(params: QueryParams): QueryResult {
                         success: true,
                         term: params.term,
                         mode,
+                        kinds,
                         matches: [],
                         totalMatches: 0,
+                        otherKindMatches: 0,
+                        literalDimensionAvailable,
                         truncated: false,
                     };
                 }
@@ -76,10 +169,19 @@ export function query(params: QueryParams): QueryResult {
                 // Batch fetch all occurrences at once (eliminates N+1)
                 const allOccurrences = queries.getOccurrencesByItems(items.map(i => i.id));
                 let allMatches: QueryMatch[] = [];
+                const otherKindKeys = new Set<string>();
 
                 for (const occ of allOccurrences) {
                     // Apply file filter
                     if (fileFilterRegex && !fileFilterRegex.test(occ.path.replace(/\\/g, '/'))) {
+                        continue;
+                    }
+
+                    // Kind filter. What it excludes is COUNTED, not discarded:
+                    // that count is what tells an empty answer to point at the
+                    // other dimension instead of looking like an absence.
+                    if (!kindMatches(occ.kind)) {
+                        otherKindKeys.add(`${occ.path}:${occ.line_number}`);
                         continue;
                     }
 
@@ -137,8 +239,11 @@ export function query(params: QueryParams): QueryResult {
                     success: true,
                     term: params.term,
                     mode,
+                    kinds,
                     matches: allMatches,
                     totalMatches,
+                    otherKindMatches: otherKindKeys.size,
+                    literalDimensionAvailable,
                     truncated,
                 };
 
@@ -147,8 +252,11 @@ export function query(params: QueryParams): QueryResult {
                     success: false,
                     term: params.term,
                     mode,
+                    kinds,
                     matches: [],
                     totalMatches: 0,
+                    otherKindMatches: 0,
+                    literalDimensionAvailable: false,
                     truncated: false,
                     error: error instanceof Error ? error.message : String(error),
                 };
