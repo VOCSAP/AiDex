@@ -3,14 +3,23 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, statSync } from 'fs';
-import { join, relative, basename, extname, dirname } from 'path';
+import { join, relative, basename, extname, dirname, resolve } from 'path';
 import { spawn } from 'child_process';
+import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
 import { glob } from 'glob';
 import { createHash } from 'crypto';
 import { minimatch } from 'minimatch';
 import { INDEX_DIR } from '../constants.js';
 import { invalidateGlobalCache } from './global/global-query.js';
+import {
+    COVERAGE_METADATA_KEY,
+    LITERAL_COVERAGE_SCHEMA,
+    LITERAL_RULE_ID,
+    LITERAL_RULE_VERSION,
+    readCoverage,
+    type CoverageRecord,
+} from '../coverage/rule.js';
 import type { IndexResult } from '../embeddings/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -73,6 +82,7 @@ export function shortHash(content: Buffer | string): string {
 }
 
 import { createDatabase, createQueries, type AiDexDatabase, type Queries } from '../db/index.js';
+import { withDatabase } from './shared.js';
 import { extract, getSupportedExtensions } from '../parser/index.js';
 import { globalDbExists, readProjectStats, openGlobalDatabase } from '../db/global-database.js';
 
@@ -104,6 +114,13 @@ export interface InitResult {
     methodsFound: number;
     typesFound: number;
     durationMs: number;
+    /**
+     * True when this run reindexed everything because the index did not declare
+     * current literal coverage. Reported, never inferred: the caller asked for
+     * an incremental pass and got a full one, which costs real time (23 s on a
+     * 702-file Rust project) and wipes before it rebuilds.
+     */
+    literalCoverageUpgraded?: boolean;
     errors: string[];
     embeddings?: {
         embedded: number;
@@ -306,6 +323,19 @@ export async function init(params: InitParams): Promise<InitResult> {
         };
     }
 
+    // Resolve the project path ONCE, here, before anything reads it.
+    //
+    // A relative path works fine for indexing -- and then leaks. `basename('.')`
+    // is '.', so `rebuild-index .` registered a project literally named '.'
+    // pointing at '.', a phantom duplicate of the real one; the same string went
+    // into `metadata.project_root`, where it means nothing once the cwd that
+    // gave it meaning is gone. Everything downstream (project name, project_root,
+    // the global registry, the reported index path) reads `params.path`, so
+    // normalising it at the entrance fixes all of them at once instead of
+    // sprinkling resolve() at each use.
+    const resolvedPath = resolve(params.path);
+    params = { ...params, path: resolvedPath };
+
     const stat = statSync(params.path);
     if (!stat.isDirectory()) {
         return {
@@ -331,9 +361,37 @@ export async function init(params: InitParams): Promise<InitResult> {
     const dbPath = join(indexDir, 'index.db');
     const projectName = params.name ?? basename(params.path);
 
-    // Determine if incremental (default) or fresh re-index
+    // Determine if incremental (default) or fresh re-index.
     const dbExists = existsSync(dbPath);
-    const incremental = dbExists && !params.fresh;
+
+    // ---- literal-coverage migration -------------------------------------
+    // Operator decision, 2026-08-11, reversing the more conservative reading
+    // taken when Lot 3 landed: `init` IS the migration path, and an agent may
+    // trigger it. The reason is that the conservative version was treacherous
+    // in the other direction -- an agent reindexes, is told the index is fresh,
+    // and the index stays silent about literals with nothing saying so.
+    //
+    // An index that does not declare CURRENT literal coverage (schema below
+    // 1.3, no record, or a record written under another rule) cannot be brought
+    // up to date file by file: the unchanged files are precisely the ones whose
+    // literals were never extracted, and they are exactly the ones the per-file
+    // hash skip would skip. So the run ignores the hash skip and reindexes
+    // everything. `rebuild-index` remains, for forcing a rebuild of an index
+    // that is already current.
+    let literalCoverageUpgraded = false;
+    if (dbExists && !params.fresh) {
+        try {
+            literalCoverageUpgraded = withDatabase(
+                dbPath, true, (peek) => !readCoverage(peek).literalsIndexed
+            );
+        } catch {
+            // An unreadable index is not a migration signal. Leave the mode
+            // alone and let the normal path report whatever is wrong.
+            literalCoverageUpgraded = false;
+        }
+    }
+
+    const incremental = dbExists && !params.fresh && !literalCoverageUpgraded;
 
     // Create database (incremental keeps existing data)
     const db = createDatabase(dbPath, projectName, params.path, incremental);
@@ -378,6 +436,8 @@ export async function init(params: InitParams): Promise<InitResult> {
     let totalItems = 0;
     let totalMethods = 0;
     let totalTypes = 0;
+    /** Literal coverage, accumulated per language across this run (Lot 3). */
+    const literalStats = new Map<string, { seen: number; indexed: number }>();
 
     // Use transaction for bulk insert
     db.transaction(() => {
@@ -391,6 +451,12 @@ export async function init(params: InitParams): Promise<InitResult> {
                     totalItems += result.items;
                     totalMethods += result.methods;
                     totalTypes += result.types;
+                    if (result.language) {
+                        const stat = literalStats.get(result.language) ?? { seen: 0, indexed: 0 };
+                        stat.seen += result.literalsSeen ?? 0;
+                        stat.indexed += result.literalsIndexed ?? 0;
+                        literalStats.set(result.language, stat);
+                    }
                 } else if (result.error) {
                     errors.push(`${filePath}: ${result.error}`);
                 }
@@ -471,6 +537,44 @@ export async function init(params: InitParams): Promise<InitResult> {
         }
     });
 
+    // --------------------------------------------------------
+    // Literal coverage (Lot 3): measured, then declared -- in that order
+    // --------------------------------------------------------
+    // Written ONLY after a run that read every file. An incremental run skips
+    // unchanged files, so its figures describe the files that happened to have
+    // changed, not the repository; publishing those as the index's coverage
+    // would be a measurement of nothing presented as a measurement.
+    //
+    // `schema_version` moves to 1.3 here and nowhere else. It is the promise the
+    // oracle reads back, so it must be made only once the literals are actually
+    // in the tables: an interrupted reindex dies before this point, leaving the
+    // index declaring 1.2 -- incomplete and honest about it, rather than
+    // complete-looking and wrong.
+    if (!incremental) {
+        const perLanguage: CoverageRecord['perLanguage'] = {};
+        for (const [language, stat] of literalStats) {
+            // A language with zero literals is reported as 0% over 0 samples,
+            // not omitted: the difference between "measured, none there" and
+            // "never looked" is exactly what this record exists to preserve --
+            // and `seen: 0` says which of the two this is.
+            perLanguage[language] = {
+                percent: stat.seen > 0
+                    ? Math.round((stat.indexed / stat.seen) * 1000) / 10
+                    : 0,
+                seen: stat.seen,
+                indexed: stat.indexed,
+            };
+        }
+        const record: CoverageRecord = {
+            ruleId: LITERAL_RULE_ID,
+            ruleVersion: LITERAL_RULE_VERSION,
+            perLanguage,
+            measuredAt: Date.now(),
+        };
+        db.setMetadata(COVERAGE_METADATA_KEY, JSON.stringify(record));
+        db.setMetadata('schema_version', LITERAL_COVERAGE_SCHEMA);
+    }
+
     // Reset session tracking after full re-index
     const now = Date.now().toString();
     db.setMetadata('last_session_start', now);
@@ -535,6 +639,7 @@ export async function init(params: InitParams): Promise<InitResult> {
         methodsFound: totalMethods,
         typesFound: totalTypes,
         durationMs: Date.now() - startTime,
+        literalCoverageUpgraded,
         errors,
         embeddings: embeddingsResult,
     };
@@ -550,6 +655,10 @@ interface IndexFileResult {
     items: number;
     methods: number;
     types: number;
+    /** Language of the file, and what its literal pass saw (Lot 3 measurement). */
+    language?: string;
+    literalsSeen?: number;
+    literalsIndexed?: number;
     error?: string;
 }
 
@@ -648,7 +757,7 @@ function indexFile(
 
         const itemId = queries.getOrCreateItem(item.term);
         const finalLineId = lineNumberToId.get(item.lineNumber)!;
-        queries.insertOccurrence(itemId, fileId, finalLineId);
+        queries.insertOccurrence(itemId, fileId, finalLineId, item.kind);
         itemsInserted.add(item.term);
     }
 
@@ -683,6 +792,9 @@ function indexFile(
         items: itemsInserted.size,
         methods: extraction.methods.length,
         types: extraction.types.length,
+        language: extraction.language,
+        literalsSeen: extraction.literalStats.seen,
+        literalsIndexed: extraction.literalStats.indexed,
     };
 }
 
@@ -736,9 +848,36 @@ async function persistLlmConfig(
 /**
  * Update global registry after init/update. Fire-and-forget — errors are silently ignored.
  */
+/**
+ * Is this path inside the system temp directory?
+ *
+ * Used to keep throwaway indexes out of a permanent registry. The boundary is
+ * checked at a separator, so a sibling directory named `Temp-projects` is not
+ * mistaken for something inside `Temp`, and the comparison is
+ * case-insensitive on Windows, where the same directory routinely appears with
+ * different casing.
+ */
+export function isUnderSystemTemp(absPath: string): boolean {
+    const norm = (p: string): string => {
+        const r = resolve(p).replace(/\\/g, '/').replace(/\/+$/, '');
+        return process.platform === 'win32' ? r.toLowerCase() : r;
+    };
+    const temp = norm(tmpdir());
+    const target = norm(absPath);
+    return target === temp || target.startsWith(`${temp}/`);
+}
+
 function tryUpdateGlobalRegistry(projectPath: string, counts: { files: number; items: number; methods: number; types: number }): void {
     try {
         if (!globalDbExists()) return;
+
+        // A project under the system temp directory is throwaway by
+        // construction, so it has no business in a permanent registry. This is
+        // not a test-only concern, but the test suite is what made it visible:
+        // its fixtures call init(), so every `npm test` used to register one
+        // entry per fixture in the user's global.db -- 91 dead rows in two days,
+        // and six more the moment the registry was cleaned.
+        if (isUnderSystemTemp(projectPath)) return;
 
         const stats = readProjectStats(projectPath);
         if (!stats) return;
