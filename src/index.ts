@@ -8,6 +8,8 @@
  *   node build/index.js                       - Start MCP server (default)
  *   node build/index.js scan <path>           - Scan for .aidex directories
  *   node build/index.js init <path>           - Index a project
+ *   node build/index.js rebuild-index <path>  - Full rebuild, ignores the hash skip (operator-only)
+ *   node build/index.js can <pattern> ...     - Coverage oracle: can AiDex answer this?
  *   node build/index.js global-init <path>    - Scan, index unindexed, register in global DB
  *   node build/index.js viewer <path>         - Open interactive Viewer in the browser
  */
@@ -29,15 +31,49 @@
     }
 }
 
-import { createServer } from './server/mcp-server.js';
-import { scan, init, globalInit } from './commands/index.js';
-import { setupMcpClients, unsetupMcpClients } from './commands/setup.js';
+// Only the constants are imported eagerly. Everything else loads on demand,
+// because `can` runs once per candidate search command from a hook and pays for
+// whatever this module pulls in at load time. Measured on this machine: static
+// imports of the MCP server, the viewer, the log hub and the `commands` barrel
+// cost 355 ms per spawn against 75 ms once the same branch loads only what it
+// needs -- and the branch itself does 5 ms of real work.
 import { PRODUCT_NAME, PRODUCT_NAME_LOWER } from './constants.js';
-import { startViewer, stopViewer } from './viewer/server.js';
-import { freeLogHub } from './loghub/log-server.js';
 
 async function main() {
     const args = process.argv.slice(2);
+
+    // CLI mode: can -- the coverage oracle. FIRST branch, and it imports exactly
+    // one module, so the latency floor stays the Node process itself.
+    //
+    // Contract for a caller that decides whether to block a search:
+    //   exit 0    -> stdout holds a verdict, negative verdicts included
+    //   exit != 0 -> no verdict was produced; the caller must fail OPEN
+    // A negative verdict is never encoded in the exit code, or it becomes
+    // indistinguishable from the oracle being broken.
+    if (args[0] === 'can') {
+        const pattern = args[1];
+        if (!pattern) {
+            console.error(`Usage: ${PRODUCT_NAME_LOWER} can <pattern> [--project <dir>] [--path <file>]`);
+            process.exit(2);
+        }
+        const projectFlag = args.indexOf('--project');
+        const pathFlag = args.indexOf('--path');
+        const projectPath = projectFlag !== -1 ? args[projectFlag + 1] : process.cwd();
+        const target = pathFlag !== -1 ? args[pathFlag + 1] : undefined;
+
+        try {
+            const { can } = await import('./commands/coverage.js');
+            console.log(JSON.stringify(can({ path: projectPath, pattern, target })));
+            return;
+        } catch (err) {
+            console.error(JSON.stringify({
+                covered: false,
+                reason: 'oracle_error',
+                error: err instanceof Error ? err.message : String(err),
+            }));
+            process.exit(2);
+        }
+    }
 
     // CLI mode: scan
     if (args[0] === 'scan') {
@@ -47,6 +83,7 @@ async function main() {
             process.exit(1);
         }
 
+        const { scan } = await import('./commands/scan.js');
         const result = scan({ path: searchPath });
 
         if (!result.success) {
@@ -81,6 +118,7 @@ async function main() {
         }
 
         console.log(`Indexing: ${projectPath}`);
+        const { init } = await import('./commands/init.js');
         const result = await init({ path: projectPath });
 
         if (!result.success) {
@@ -98,6 +136,42 @@ async function main() {
         return;
     }
 
+    // CLI mode: rebuild-index -- FULL rebuild, ignores the per-file hash skip.
+    //
+    // Deliberately CLI-only and deliberately named for what it does. Reindexing
+    // is an operator decision, never automatic: there is no sweep, no migration
+    // on first query, no implicit rebuild. That is why this is not exposed as an
+    // MCP tool -- an agent must not be able to trigger it from a normal flow.
+    //
+    // `fresh: true` clears `files` and `items` only; tasks, notes and metadata
+    // survive (see db/database.ts createDatabase). If the run is interrupted the
+    // index is simply incomplete and its schema_version does NOT advance, so the
+    // honest per-index answer keeps applying until a run goes all the way through.
+    if (args[0] === 'rebuild-index') {
+        const projectPath = args[1];
+        if (!projectPath) {
+            console.error(`Usage: ${PRODUCT_NAME_LOWER} rebuild-index <path>`);
+            console.error('Rebuilds the whole index from scratch, ignoring the per-file hash skip.');
+            process.exit(1);
+        }
+
+        console.log(`Rebuilding index (full, no hash skip): ${projectPath}`);
+        const { init } = await import('./commands/init.js');
+        const result = await init({ path: projectPath, fresh: true });
+
+        if (!result.success) {
+            console.error(`Error: ${result.errors.join(', ')}`);
+            process.exit(1);
+        }
+
+        console.log(`Done!`);
+        console.log(`  Files: ${result.filesIndexed}`);
+        console.log(`  Items: ${result.itemsFound}`);
+        console.log(`  Time: ${result.durationMs}ms`);
+
+        return;
+    }
+
     // CLI mode: global-init
     if (args[0] === 'global-init') {
         const searchPath = args[1];
@@ -110,6 +184,7 @@ async function main() {
         const showProgress = args.includes('--show-progress');
 
         console.log(`Scanning: ${searchPath}${indexUnindexed ? ' (will index unindexed projects)' : ''}${showProgress ? ' (with progress UI)' : ''}`);
+        const { globalInit } = await import('./commands/global/index.js');
         const result = await globalInit({
             path: searchPath,
             indexUnindexed,
@@ -158,6 +233,7 @@ async function main() {
         const initialTab = tabArg ? tabArg.slice('--tab='.length) : undefined;
 
         console.log(`Starting Viewer for: ${projectPath}`);
+        const { startViewer, stopViewer } = await import('./viewer/server.js');
         let result: string;
         try {
             result = await startViewer(projectPath, initialTab, { exitOnLastClientClose: true });
@@ -192,17 +268,22 @@ async function main() {
 
     // CLI mode: setup
     if (args[0] === 'setup') {
+        const { setupMcpClients } = await import('./commands/setup.js');
         setupMcpClients();
         return;
     }
 
     // CLI mode: unsetup
     if (args[0] === 'unsetup') {
+        const { unsetupMcpClients } = await import('./commands/setup.js');
         unsetupMcpClients();
         return;
     }
 
     // Default: Start MCP server
+    const { createServer } = await import('./server/mcp-server.js');
+    const { freeLogHub } = await import('./loghub/log-server.js');
+    const { stopViewer } = await import('./viewer/server.js');
     const server = createServer();
 
     // Graceful shutdown handlers
