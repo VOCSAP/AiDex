@@ -10,7 +10,7 @@ import sys
 import tempfile
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-HOOK = os.path.join(REPO_ROOT, "hooks", "aidex-grep-nudge.py")
+HOOK = os.path.join(REPO_ROOT, "hooks", "claude", "aidex-grep-nudge.py")
 # This repository is itself an indexed project, so it doubles as the fixture.
 AIDEX = REPO_ROOT
 # A fresh temp directory has no .aidex, which is the "no index here" case.

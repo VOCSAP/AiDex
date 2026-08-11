@@ -1,6 +1,6 @@
 """Probes for aidex-grep-nudge.py.
 
-Run: python hooks/aidex-grep-nudge.test.py   (exit 0 = all green)
+Run: python tests/hooks/aidex-grep-nudge.test.py   (exit 0 = all green)
 
 Why this file exists. The nudge hook decides whether a Bash `grep` is a SYMBOL
 LOOKUP (worth diverting to AiDex) or something else. Both halves of that decision
@@ -32,7 +32,7 @@ import sys
 # in the user profile. The installed copy is a deployment of this file; testing
 # it instead would green-light a file nobody reviews.
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-HOOK = os.path.join(REPO_ROOT, "hooks", "aidex-grep-nudge.py")
+HOOK = os.path.join(REPO_ROOT, "hooks", "claude", "aidex-grep-nudge.py")
 
 spec = importlib.util.spec_from_file_location("aidex_grep_nudge", HOOK)
 module = importlib.util.module_from_spec(spec)
