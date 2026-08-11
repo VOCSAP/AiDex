@@ -73,3 +73,6 @@ server.json
 
 # Handle-Messreihen (Task #89) — Rohdaten, lokal
 scripts/measurements/
+
+# graphify reference dump (temporaire, supprime post-implementation)
+docs/reference/
