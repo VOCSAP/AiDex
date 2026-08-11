@@ -354,6 +354,15 @@ async function main() {
                         const realAbs = realpathSync.native(absFile);
                         const realRel = path.relative(projectPath, realAbs).replace(/\\/g, '/');
                         if (!realRel.startsWith('../') && !path.isAbsolute(realRel)) {
+                            if (realRel !== relFile) {
+                                // Casing actually changed (e.g. a pure
+                                // case-rename src/foo.ts -> src/Foo.ts). The
+                                // caller-provided casing is now stale and
+                                // files.path has no COLLATE NOCASE, so it
+                                // would otherwise survive as a duplicate row
+                                // alongside the correctly-cased one below.
+                                remove({ path: projectPath, file: relFile });
+                            }
                             relFile = realRel;
                             absFile = path.join(projectPath, relFile);
                         }
@@ -381,6 +390,14 @@ async function main() {
                 } else {
                     errors++;
                     if (verbose) console.error(`error: ${relFile}: ${res.error}`);
+                    // update()/remove() from commands/update.ts catch their own
+                    // DB errors internally and return them via res.error --
+                    // this is the path SQLITE_BUSY/'database is locked'
+                    // actually takes, never the catch block below. Every
+                    // remaining file would block for the same busy_timeout
+                    // and fail the same way -- stop paying that cost once
+                    // per file.
+                    if (res.error?.includes('database is locked') || res.error?.includes('SQLITE_BUSY')) break;
                 }
             } catch (err) {
                 // A single bad file (corrupted index.db, disk full, a native
