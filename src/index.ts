@@ -266,6 +266,68 @@ async function main() {
         return;
     }
 
+    // CLI mode: update -- reindex one or more files in a single process spawn.
+    //
+    // Exists because the dominant cost of reindexing from a hook (git post-commit,
+    // Claude Code tool hook) is the Node process spawn and native-addon load, not
+    // the indexing work itself -- so a hook that touches N files must be able to
+    // pay that cost once, not N times. Wraps update()/remove() from
+    // commands/update.ts as-is; no indexing logic lives here.
+    //
+    // Silent on success by default (a hook that talks on every commit is
+    // unusable); --verbose/-v prints per-file results and a summary.
+    // Always exits 0 from this branch: a post-commit hook must never look like
+    // a failed commit, whatever happened to the files it was given.
+    if (args[0] === 'update') {
+        const projectPath = args[1];
+        const verbose = args.includes('--verbose') || args.includes('-v');
+        const fileArgs = args.slice(2).filter(a => a !== '--verbose' && a !== '-v');
+
+        if (!projectPath || fileArgs.length === 0) {
+            console.error(`Usage: ${PRODUCT_NAME_LOWER} update <project> <file...> [--verbose]`);
+            process.exit(1);
+        }
+
+        const { validateIndex } = await import('./commands/shared.js');
+        if (!validateIndex(projectPath)) {
+            // No .aidex index at this project -- no-op. This is what makes a
+            // global git hook safe to fire on every repo on the machine.
+            if (verbose) console.log(`No ${PRODUCT_NAME} index at ${projectPath}, skipping.`);
+            return;
+        }
+
+        const { update, remove } = await import('./commands/update.js');
+        const path = await import('path');
+        const { existsSync } = await import('fs');
+
+        let updated = 0, removed = 0, skipped = 0, errors = 0;
+        for (const rawFile of fileArgs) {
+            const absFile = path.isAbsolute(rawFile) ? rawFile : path.join(projectPath, rawFile);
+            const relFile = path.relative(projectPath, absFile).replace(/\\/g, '/');
+
+            if (!existsSync(absFile)) {
+                const res = remove({ path: projectPath, file: relFile });
+                if (res.removed) removed++;
+                if (verbose) console.log(`removed: ${relFile}`);
+                continue;
+            }
+
+            const res = update({ path: projectPath, file: relFile });
+            if (res.success) {
+                updated++;
+                if (verbose) console.log(`updated: ${relFile} (+${res.itemsAdded} -${res.itemsRemoved} items${res.error ? `, ${res.error}` : ''})`);
+            } else if (res.error?.includes('Unsupported file type') || res.error?.includes('excluded by pattern')) {
+                skipped++;
+            } else {
+                errors++;
+                if (verbose) console.error(`error: ${relFile}: ${res.error}`);
+            }
+        }
+
+        if (verbose) console.log(`Done. Updated: ${updated}, Removed: ${removed}, Skipped: ${skipped}, Errors: ${errors}`);
+        return;
+    }
+
     // CLI mode: setup
     if (args[0] === 'setup') {
         const { setupMcpClients } = await import('./commands/setup.js');
