@@ -52,12 +52,13 @@
 
 import { mkdtempSync, rmSync, readFileSync, readdirSync, statSync, existsSync } from 'fs';
 import { join, extname } from 'path';
-import { tmpdir, homedir } from 'os';
+import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 
 import { jest, describe, test, beforeAll, afterAll, expect } from '@jest/globals';
 import { init } from '../build/commands/init.js';
 import { query } from '../build/commands/query.js';
+import { isNativeAbiMismatch, nodeAbiGuardMessage } from './helpers/node-interpreter-guard.js';
 
 jest.setTimeout(120000);
 
@@ -150,54 +151,9 @@ function findRank(dir, base, target) {
     return { rank: lo, itemsTotal: wide.itemsTotal, found: true };
 }
 
-// ============================================================
-// Node ABI guard
-//
-// AiDex loads a native addon (better-sqlite3) through init()/query(). A `node`
-// from a different major aborts with a raw ERR_DLOPEN_FAILED / NODE_MODULE_
-// VERSION stack that names none of this. This mirrors the discovery discipline
-// already used by hooks/claude/aidex-grep-nudge.py (AIDEX_NODE env override,
-// then the interpreter path Claude Code itself is configured with in
-// ~/.claude.json's mcpServers.aidex.command, no hardcoded path in either
-// place) so the next run of this file fails with a message that NAMES the
-// cause and a concrete fix instead of a bare native-module stack trace.
-// ============================================================
-
-function discoverConfiguredAidexNode() {
-    try {
-        const cfgPath = join(homedir(), '.claude.json');
-        if (!existsSync(cfgPath)) return null;
-        const data = JSON.parse(readFileSync(cfgPath, 'utf-8'));
-        const blocks = [data.mcpServers || {}];
-        for (const proj of Object.values(data.projects || {})) {
-            blocks.push((proj && proj.mcpServers) || {});
-        }
-        for (const servers of blocks) {
-            const server = servers.aidex;
-            if (server && server.command) return server.command;
-        }
-    } catch {
-        // Unreadable config is not a reason to block; caller falls through.
-    }
-    return null;
-}
-
-function isNativeAbiMismatch(err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return msg.includes('NODE_MODULE_VERSION') || msg.includes('ERR_DLOPEN_FAILED');
-}
-
-function nodeAbiGuardMessage(err) {
-    const configured = process.env.AIDEX_NODE || discoverConfiguredAidexNode();
-    const suggestion = configured
-        ? `The interpreter AiDex's own MCP config points at is:\n  ${configured}\nRe-run with that node (or export AIDEX_NODE=<that path> and prefix PATH with its directory) before invoking jest.`
-        : 'No pinned interpreter could be discovered (no AIDEX_NODE env var, no ~/.claude.json mcpServers.aidex.command). Run `npm rebuild` against the current `node` to match its NODE_MODULE_VERSION, or set AIDEX_NODE to a node binary already built against this addon.';
-    return (
-        `Node interpreter ABI mismatch: this Jest run used ${process.execPath} (${process.version}), `
-        + `but better-sqlite3's native addon was compiled for a different Node major. `
-        + `${suggestion}\n\nUnderlying error: ${err instanceof Error ? err.message : String(err)}`
-    );
-}
+// Node ABI guard: extracted to tests/helpers/node-interpreter-guard.js so
+// this file and tests/cli-update.test.js share one resolution discipline
+// instead of two hand-rolled ones. See that module's header for why.
 
 // ============================================================
 // Harness
