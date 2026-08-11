@@ -35,10 +35,14 @@ export interface ItemRow {
     term: string;
 }
 
+/** Why an occurrence exists. 'both' = the same term on one line, as each. */
+export type OccurrenceKind = 'symbol' | 'literal' | 'both';
+
 export interface OccurrenceRow {
     item_id: number;
     file_id: number;
     line_id: number;
+    kind: OccurrenceKind;
 }
 
 export interface SignatureRow {
@@ -135,6 +139,7 @@ export class Queries {
     private _deleteUnusedItems?: Database.Statement;
 
     private _insertOccurrence?: Database.Statement;
+    private _hasOccurrenceKind?: boolean;
     private _getOccurrencesByItem?: Database.Statement;
     private _getOccurrencesByFile?: Database.Statement;
     private _deleteOccurrencesByFile?: Database.Statement;
@@ -276,11 +281,21 @@ export class Queries {
     // Occurrences
     // --------------------------------------------------------
 
-    insertOccurrence(itemId: number, fileId: number, lineId: number): void {
-        this._insertOccurrence ??= this.db.prepare(
-            'INSERT OR IGNORE INTO occurrences (item_id, file_id, line_id) VALUES (?, ?, ?)'
-        );
-        this._insertOccurrence.run(itemId, fileId, lineId);
+    /**
+     * Insert an occurrence.
+     *
+     * `INSERT OR IGNORE` on a row that already exists with a DIFFERENT kind
+     * would silently keep the first one, so the conflict is resolved explicitly:
+     * a term seen both as a symbol and as a literal on one line becomes 'both'.
+     * Losing that would make `kinds` lie on 1.5% of literal occurrences.
+     */
+    insertOccurrence(itemId: number, fileId: number, lineId: number, kind: OccurrenceKind = 'symbol'): void {
+        this._insertOccurrence ??= this.db.prepare(`
+            INSERT INTO occurrences (item_id, file_id, line_id, kind) VALUES (?, ?, ?, ?)
+            ON CONFLICT(item_id, file_id, line_id) DO UPDATE SET
+                kind = CASE WHEN occurrences.kind = excluded.kind THEN occurrences.kind ELSE 'both' END
+        `);
+        this._insertOccurrence.run(itemId, fileId, lineId, kind);
     }
 
     getOccurrencesByItem(itemId: number): Array<{ file_id: number; line_id: number; line_number: number; path: string; line_type: string; modified: number | null }> {
@@ -299,23 +314,44 @@ export class Queries {
      * Get occurrences for multiple items at once (eliminates N+1 queries).
      * Returns results grouped by item_id.
      */
-    getOccurrencesByItems(itemIds: number[]): Array<{ item_id: number; file_id: number; line_id: number; line_number: number; path: string; line_type: string; modified: number | null }> {
+    /**
+     * Does this database have `occurrences.kind` yet?
+     *
+     * It is added by migrateLegacySchema, which openDatabase only runs on a
+     * WRITEABLE handle -- and a readonly connection cannot ALTER anything. So
+     * every read path has to cope with an index built before Lot 2 instead of
+     * assuming the column exists: `hyp_bde59155`, caught by probing the real
+     * koryphaios index, not by the test fixture, which is always freshly created
+     * from the current schema.
+     */
+    private hasOccurrenceKind(): boolean {
+        if (this._hasOccurrenceKind === undefined) {
+            const cols = this.db.prepare('PRAGMA table_info(occurrences)').all() as Array<{ name: string }>;
+            this._hasOccurrenceKind = cols.some(c => c.name === 'kind');
+        }
+        return this._hasOccurrenceKind;
+    }
+
+    getOccurrencesByItems(itemIds: number[]): Array<{ item_id: number; file_id: number; line_id: number; line_number: number; path: string; line_type: string; kind: OccurrenceKind; modified: number | null }> {
         if (itemIds.length === 0) return [];
+        // A pre-Lot-2 index holds symbols only, so the constant is the truth
+        // there, not a placeholder.
+        const kindExpr = this.hasOccurrenceKind() ? 'o.kind' : `'symbol' AS kind`;
         // SQLite has a max variable limit (~999), batch if needed
-        const results: Array<{ item_id: number; file_id: number; line_id: number; line_number: number; path: string; line_type: string; modified: number | null }> = [];
+        const results: Array<{ item_id: number; file_id: number; line_id: number; line_number: number; path: string; line_type: string; kind: OccurrenceKind; modified: number | null }> = [];
         const batchSize = 500;
         for (let i = 0; i < itemIds.length; i += batchSize) {
             const batch = itemIds.slice(i, i + batchSize);
             const placeholders = batch.map(() => '?').join(',');
             const sql = `
-                SELECT o.item_id, o.file_id, o.line_id, l.line_number, f.path, l.line_type, l.modified
+                SELECT o.item_id, o.file_id, o.line_id, l.line_number, f.path, l.line_type, ${kindExpr}, l.modified
                 FROM occurrences o
                 JOIN lines l ON o.file_id = l.file_id AND o.line_id = l.id
                 JOIN files f ON o.file_id = f.id
                 WHERE o.item_id IN (${placeholders})
                 ORDER BY f.path, l.line_number
             `;
-            const rows = this.db.prepare(sql).all(...batch) as Array<{ item_id: number; file_id: number; line_id: number; line_number: number; path: string; line_type: string; modified: number | null }>;
+            const rows = this.db.prepare(sql).all(...batch) as Array<{ item_id: number; file_id: number; line_id: number; line_number: number; path: string; line_type: string; kind: OccurrenceKind; modified: number | null }>;
             results.push(...rows);
         }
         return results;
