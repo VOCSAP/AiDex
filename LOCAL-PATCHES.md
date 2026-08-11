@@ -216,3 +216,81 @@ Ordre de PR = ordre de livraison, du moins engageant au plus opinione.
 - **Extraction par langage** : le plus difficile. Des regles d'extraction par langage sont un choix de produit, pas une correction.
 
 **Deux pieges de redaction.** Ne jamais justifier l'oracle par notre hook : il est invisible pour l'upstream, alors que "un consommateur MCP doit pouvoir distinguer *absent* de *hors couverture*" est un argument universel. Et les mesures citees ici ont ete faites sur des depots prives : elles devront etre rejouees sur des depots publics qu'un mainteneur peut cloner et verifier.
+
+---
+
+## 9. Reorganisation de `hooks/` -- commit `5f1bc06`
+
+`hooks/aidex-grep-nudge.py` deplace en `hooks/claude/aidex-grep-nudge.py` par `git mv`, creation de `hooks/git/`. Motif : deux familles de hooks allaient cohabiter, hooks Claude Code et hooks git, avec des mecanismes d'installation et des contrats d'entree/sortie sans rapport.
+
+Cinq references internes au depot portaient le chemin en dur et ont ete corrigees dans le meme commit : quatre fichiers sous `tests/hooks/` et la section 2 de ce fichier elle-meme.
+
+**Point important pour un futur mainteneur** : la copie EXECUTEE du hook vit dans le profil utilisateur (`$USERPROFILE/.claude/hooks/`), pas dans le depot, donc ce deplacement n'a pas casse le hook en cours d'execution. Sondes rejouees depuis la nouvelle arborescence : 29 motifs, 12 decisions de bout en bout, 6 fail-open, 6 portabilite, tous verts et identiques a l'avant-deplacement.
+
+---
+
+## 10. Sous-commande CLI `update` -- commits `a7293de`, puis durcissements `3a79c86` et `d30abf3`
+
+Expose `node build/index.js update <project> <file...>`. La logique existait deja cote MCP dans `src/commands/update.ts` ; le patch l'expose au CLI, il ne la reecrit pas. **Raison d'etre** : prerequis bloquant des deux mecanismes de reindexation automatique (sections 11 et 12), un hook git ne pouvant pas appeler un outil MCP.
+
+**Contrat, chaque point etant load-bearing** : multi-fichiers obligatoire en un seul spawn, silencieux en succes, code retour 0 MEME en cas d'echec et meme quand il n'y a rien a faire (un post-commit ne doit jamais ressembler a un echec), no-op propre sur un repertoire sans `.aidex` (c'est ce qui rend sur un hook git en portee globale), un fichier problematique ne fait jamais echouer les autres du lot, hash-diff non contourne.
+
+Mesures a citer : spawn a vide 58 ms, un fichier reel 148 ms, vingt fichiers en un seul spawn 356 ms contre 2925 ms en vingt spawns, soit un facteur 8,2. L'ecart entre spawn a vide et spawn utile, environ 90 ms, est le chargement des addons natifs tree-sitter et better-sqlite3, pas le demarrage de Node.
+
+Deux passes de durcissement apres revue, a documenter comme telles :
+- `3a79c86` a ajoute un try/catch de boucle (une base illisible faisait sortir en code 1 avec une trace de pile et abandonnait le reste du lot, parce que `withDatabase` ouvre la base AVANT son try), un garde-fou unique de normalisation des chemins qui ecarte tout chemin hors projet et referme du meme coup les cas cross-volume et UNC, et une resolution de la casse reelle sous Windows.
+- `d30abf3` a corrige un `break` devenu du code mort (il etait branche dans le `catch` alors que l'erreur de verrou remonte dans la valeur de retour, pas en exception) et un doublon de ligne en base sur un renommage de casse pure.
+
+Mesure du correctif de verrou : 16638 ms avant contre 5652 ms apres sur un lot de trois fichiers sous verrou reel.
+
+**Piege durable a signaler pour le futur mainteneur** : le code retour etant force a 0 par conception, il ne porte AUCUNE information sur le resultat par fichier. Le seul signal est la ligne de synthese en mode `--verbose`. Un test de contrat verrouille ce format, voir section 13.
+
+---
+
+## 11. Hooks git de reindexation -- commit `ee71aa2`
+
+Quatre hooks dans `hooks/git/` (`post-commit`, `post-merge`, `post-checkout`, `post-rewrite`), plus `aidex-reindex-common.sh` et un `README.md`. Installation MANUELLE assumee, l'operateur etant seul sur le fork : ce commit ne touche aucune configuration git globale.
+
+**Fait de configuration decisif a documenter, car il surprendra quiconque reprend ce code** : `core.hooksPath` est pose en GLOBAL sur la station, ce qui fait IGNORER le repertoire `.git/hooks` local de tous les depots. Un hook pose dans `.git/hooks` ne se declencherait donc jamais. **Corollaire structurant** : un hook global se declenche sur TOUS les depots de la machine, d'ou l'auto-limitation -- sortie immediate en code 0 sans rien ecrire si le depot courant n'a pas de `.aidex` a sa racine.
+
+Debounce a fenetre glissante en front descendant, defaut 2 secondes, surchargeable par `AIDEX_DEBOUNCE_SECS`. Mesure : huit commits rapides produisent huit mises en file et exactement UN drainage. Sans cela, un rebase de trente commits lancerait trente reindexations.
+
+Resolution d'interpreteur reprise du hook de nudge existant (section 2), sans aucun chemin en dur. **Enjeu a expliquer** : le `node` du PATH de la station est en version 24 et casse l'ABI de `better-sqlite3` compile sous Node 22, et un client git graphique n'a pas nvm dans son PATH.
+
+**Point ouvert honnete a consigner** : le critere "un client git graphique declenche le hook aussi bien que la ligne de commande" n'a PAS pu etre mesure faute de client graphique disponible. Un substitut a ete joue -- la fonction de decouverte reste correcte avec un environnement vide, ce qui prouve l'independance au PATH interactif mais pas le cas reel.
+
+---
+
+## 12. Hooks Claude Code de reindexation -- commits `83ef31b`, `1d4a74a`, `4a05ec1`
+
+Deux hooks dans `hooks/claude/` (`aidex-queue-edit.py`, `aidex-queue-drain.py`) plus un module commun (`aidex_hook_common.py`). `PostToolUse`, matcher `Edit|Write`, se contente d'ajouter une ligne dans un fichier de file d'attente scope par session et ne lance aucun Node. `Stop` lit la file, dedoublonne, groupe par projet et lance un seul appel du CLI `update` par groupe, par tranches de 100 fichiers (`CHUNK_SIZE`, contre la limite argv de `CreateProcess` sous Windows).
+
+**Justification du decoupage en deux hooks, a expliquer** : le hook `Stop` ne recoit PAS la liste des fichiers edites, et `PostToolUse` la recoit mais couterait un demarrage de process par edition.
+
+**FAIT IMPORTANT POUR UN FUTUR MAINTENEUR** : l'outil `MultiEdit` n'existe plus dans Claude Code 2.1.228. Un matcher ecrit `Edit|Write|MultiEdit` aurait sa troisieme alternative morte. Les editions multiples passent aujourd'hui par `Edit` avec `replace_all`.
+
+**Detection d'echec, et c'est le piege principal de ce patch** : le code retour du CLI `update` etant force a 0 par conception (section 10), le drain lit la ligne de synthese en mode `--verbose` et cherche le compteur `Errors: N`. C'est un couplage par le TEXTE entre deux modules. Un test de contrat le verrouille desormais des deux cotes (section 13).
+
+**Comportement du verrou, contre-intuitif et mesure** : le CLI ne leve PAS d'erreur face a un ecrivain concurrent ordinaire, `better-sqlite3` bloque et attend environ 5 secondes puis reussit. La retention du lot en contention ne vient donc pas d'une detection d'erreur mais du timeout de 3 secondes cote hook (`AIDEX_UPDATE_TIMEOUT_S`), seul mecanisme reellement actif.
+
+Mesures a citer, prises avec un vrai Claude Code : `PostToolUse` 45 a 53 ms par edition, `Stop` 190 a 209 ms, soit 0,7 pour cent d'un tour de 27 secondes. Sous verrou tenu le tour paie 3,07 s. Un lot de 403 fichiers donne 5 spawns et 1,18 s. Un tour a trois editions donne exactement un spawn.
+
+`1d4a74a` corrige en plus trois defauts trouves en revue (stdin malforme non-dict, `session_id` non-chaine, `subprocess.TimeoutExpired` avale par un `except` generique qui retentait sur chaque entree de `NODE_CANDIDATES`) et bascule la reecriture de la file sur `tempfile` + `os.replace` pour l'atomicite.
+
+`4a05ec1` ajoute `hooks/claude/settings.json.template` (et sa documentation `settings.json.template.md`), modele de ce que l'utilisateur doit ajouter a son `settings.json`.
+
+---
+
+## 13. Tests ajoutes -- commits `f90af5b`, `18e9201`, `cea76ca`
+
+- `f90af5b` : corpus de requetes de reference sous `tests/fixtures/query-corpus.json` et son harnais de rejeu `tests/query-corpus.test.js`, 30 requetes en trois familles (identifiant, multi-mot, `contains`), verite terrain etablie par grep. Il produit des chiffres comparables avant et apres un changement de classement, pas un simple vert ou rouge.
+- `18e9201` : suite de regression de la sous-commande CLI `update` (`tests/cli-update.test.js`), 17 cas, incluant les quatre voies d'echappement hors projet (relatif, absolu, cross-drive, UNC), la base corrompue, le renommage de casse pure et le lot mixte.
+- `cea76ca` : test de contrat (`tests/cli-update-summary-contract.test.js`) sur le format de la ligne de synthese, qui verrouille le couplage par le texte decrit en section 12.
+
+**Detail non evident a consigner** : ouvrir un fichier texte avec `better-sqlite3` REUSSIT ; l'erreur de base invalide n'est levee qu'a la premiere ecriture, en pratique le pragma WAL. Quiconque "nettoierait" cet appel supprimerait aussi le declencheur de l'erreur.
+
+---
+
+## 14. Prefiltre trigramme -- commit `e7a0c8d`, EN ATTENTE DE DECISION
+
+Existe sur la branche (`src/db/queries.ts`, mode `contains` de `aidex_query`) mais n'est **pas** acquis : la revue a etabli qu'il est 12 a 19 fois plus lent que le scan qu'il remplace, dans la forme d'execution reelle. Sort suspendu a une decision de l'operateur, qui pourrait le revert.
