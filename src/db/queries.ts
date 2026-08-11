@@ -10,6 +10,30 @@ function escapeLike(term: string): string {
     return term.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
 }
 
+/**
+ * Fold ASCII letters only, mirroring SQLite's built-in `COLLATE NOCASE`
+ * (stock SQLite, no ICU extension, folds A-Z/a-z only). `.toLowerCase()`
+ * folds full Unicode and would silently diverge from what the LIKE clause
+ * it must stay byte-identical with actually matches.
+ */
+function asciiLower(term: string): string {
+    return term.replace(/[A-Z]/g, (c) => c.toLowerCase());
+}
+
+/** Overlapping 3-char substrings of `text`, deduplicated, in first-seen order. */
+function trigramsOf(text: string): string[] {
+    const grams: string[] = [];
+    const seen = new Set<string>();
+    for (let i = 0; i + 3 <= text.length; i++) {
+        const g = text.slice(i, i + 3);
+        if (!seen.has(g)) {
+            seen.add(g);
+            grams.push(g);
+        }
+    }
+    return grams;
+}
+
 // ============================================================
 // Type definitions
 // ============================================================
@@ -138,6 +162,12 @@ export class Queries {
     private _getItemById?: Database.Statement;
     private _deleteUnusedItems?: Database.Statement;
 
+    // Trigram prefilter for contains-mode search (Lot B). Lazily built from
+    // items.term, invalidated on any items-table mutation (insertItem,
+    // deleteUnusedItems) -- see invalidateTrigramIndex.
+    private _trigramIndex?: { postings: Map<string, number[]>; total: number };
+    private static readonly TRIGRAM_GUARD_FRAC = 0.10;
+
     private _insertOccurrence?: Database.Statement;
     private _hasOccurrenceKind?: boolean;
     private _getOccurrencesByItem?: Database.Statement;
@@ -244,6 +274,7 @@ export class Queries {
             'INSERT INTO items (term) VALUES (?)'
         );
         const result = this._insertItem.run(term);
+        this.invalidateTrigramIndex();
         return result.lastInsertRowid as number;
     }
 
@@ -274,7 +305,96 @@ export class Queries {
             'DELETE FROM items WHERE NOT EXISTS (SELECT 1 FROM occurrences WHERE occurrences.item_id = items.id)'
         );
         const result = this._deleteUnusedItems.run();
+        if (result.changes > 0) {
+            this.invalidateTrigramIndex();
+        }
         return result.changes;
+    }
+
+    // --------------------------------------------------------
+    // Trigram prefilter (contains-mode search)
+    // --------------------------------------------------------
+
+    private invalidateTrigramIndex(): void {
+        this._trigramIndex = undefined;
+    }
+
+    private buildTrigramIndex(): { postings: Map<string, number[]>; total: number } {
+        const postings = new Map<string, number[]>();
+        const rows = this.db.prepare('SELECT id, term FROM items').all() as Array<{ id: number; term: string }>;
+        for (const row of rows) {
+            for (const g of trigramsOf(asciiLower(row.term))) {
+                let bucket = postings.get(g);
+                if (!bucket) {
+                    bucket = [];
+                    postings.set(g, bucket);
+                }
+                bucket.push(row.id);
+            }
+        }
+        return { postings, total: rows.length };
+    }
+
+    private getTrigramIndex(): { postings: Map<string, number[]>; total: number } {
+        this._trigramIndex ??= this.buildTrigramIndex();
+        return this._trigramIndex;
+    }
+
+    /**
+     * Candidate item ids for a contains-mode needle, or `null` to signal
+     * "fall back to the full LIKE scan" (needle too short to trigram, or its
+     * rarest trigram's posting list still exceeds TRIGRAM_GUARD_FRAC of the
+     * corpus -- the guard only reads posting-list lengths, never intersects,
+     * so it stays cheap regardless of outcome).
+     *
+     * A needle whose trigrams are all present but intersect to nothing (or
+     * whose trigrams are all absent from the index) is a definite zero-match
+     * case -- returns an empty Set, NOT null, since that is not a reason to
+     * fall back.
+     */
+    private trigramCandidates(needle: string): Set<number> | null {
+        const text = asciiLower(needle);
+        if (text.length < 3) return null;
+
+        const { postings, total } = this.getTrigramIndex();
+        if (total === 0) return new Set();
+
+        const grams = trigramsOf(text);
+        const buckets: number[][] = [];
+        const presentLens: number[] = [];
+        let hasMissingGram = false;
+        for (const g of grams) {
+            const bucket = postings.get(g);
+            if (bucket) {
+                buckets.push(bucket);
+                presentLens.push(bucket.length);
+            } else {
+                hasMissingGram = true;
+            }
+        }
+
+        // Every trigram absent from the index: needle matches nothing, but
+        // that is not a reason to fall back to a full scan.
+        if (presentLens.length === 0) return new Set();
+
+        const thresh = total * Queries.TRIGRAM_GUARD_FRAC;
+        if (Math.min(...presentLens) > thresh) return null;
+
+        // A trigram of the needle occurs nowhere in the index: no term can
+        // contain the whole needle either, so the answer is a definite zero,
+        // not a fallback.
+        if (hasMissingGram) return new Set();
+
+        buckets.sort((a, b) => a.length - b.length);
+        let hit = new Set<number>(buckets[0]);
+        for (let i = 1; i < buckets.length && hit.size > 0; i++) {
+            const next = new Set<number>();
+            for (const id of buckets[i]) {
+                if (hit.has(id)) next.add(id);
+            }
+            hit = next;
+        }
+        return hit;
     }
 
     // --------------------------------------------------------
@@ -498,14 +618,36 @@ export class Queries {
         return mode === 'contains' ? `%${escapeLike(term)}%` : `${escapeLike(term)}%`;
     }
 
+    /**
+     * `contains`-mode candidate id restriction, shared by countItems and
+     * searchItems so total and window can never disagree about which items
+     * survived the trigram prefilter.
+     *
+     * Returns `{ clause: '', params: [] }` for every mode other than
+     * `contains`, and whenever the trigram guard says "fall back" -- in both
+     * cases the caller's existing LIKE-only WHERE runs unmodified. This never
+     * touches ORDER BY: it only narrows the candidate set the existing SQL
+     * already filters and orders.
+     */
+    private trigramCandidateClause(term: string, mode: 'exact' | 'contains' | 'starts_with'): { clause: string; params: string[] } {
+        if (mode !== 'contains') return { clause: '', params: [] };
+        const candidates = this.trigramCandidates(term);
+        if (!candidates) return { clause: '', params: [] };
+        return {
+            clause: ' AND i.id IN (SELECT value FROM json_each(?))',
+            params: [JSON.stringify([...candidates])],
+        };
+    }
+
     /** How many items match, BEFORE the window is applied. */
     countItems(
         term: string,
         mode: 'exact' | 'contains' | 'starts_with' = 'exact',
         includeLiteralOnly = true
     ): number {
-        const sql = `SELECT COUNT(*) n FROM items i WHERE ${this.itemMatchClause(mode, includeLiteralOnly)}`;
-        return (this.db.prepare(sql).get(this.itemMatchParam(term, mode)) as { n: number }).n;
+        const candidate = this.trigramCandidateClause(term, mode);
+        const sql = `SELECT COUNT(*) n FROM items i WHERE ${this.itemMatchClause(mode, includeLiteralOnly)}${candidate.clause}`;
+        return (this.db.prepare(sql).get(this.itemMatchParam(term, mode), ...candidate.params) as { n: number }).n;
     }
 
     searchItems(
@@ -525,9 +667,14 @@ export class Queries {
         // keys exist to make the order TOTAL: without a tiebreak, equal-ranking
         // rows are free to swap between two calls, and the paging breaks again
         // for a subtler reason.
+        //
+        // The trigram prefilter (trigramCandidateClause) only ever narrows the
+        // WHERE's candidate set -- it never rewrites or reorders this ORDER BY,
+        // so pagination stays stable whether or not it fires.
+        const candidate = this.trigramCandidateClause(term, mode);
         const sql = `
             SELECT i.* FROM items i
-            WHERE ${this.itemMatchClause(mode, includeLiteralOnly)}
+            WHERE ${this.itemMatchClause(mode, includeLiteralOnly)}${candidate.clause}
             ORDER BY
                 CASE WHEN i.term = ? COLLATE NOCASE THEN 0 ELSE 1 END,
                 CASE WHEN i.term LIKE ? ESCAPE '\\' COLLATE NOCASE THEN 0 ELSE 1 END,
@@ -538,6 +685,7 @@ export class Queries {
         `;
         return this.db.prepare(sql).all(
             this.itemMatchParam(term, mode),
+            ...candidate.params,
             term,
             `${escapeLike(term)}%`,
             limit,
