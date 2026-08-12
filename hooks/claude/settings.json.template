@@ -1,4 +1,15 @@
 {
+  "PreToolUse": [
+    {
+      "matcher": "Grep|Bash",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python \"$USERPROFILE/.claude/hooks/aidex-grep-nudge.py\""
+        }
+      ]
+    }
+  ],
   "PostToolUse": [
     {
       "matcher": "Edit|Write",

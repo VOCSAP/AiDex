@@ -1,23 +1,29 @@
-# Installing the AiDex reindex hooks
+# Installing the AiDex hooks
 
-`settings.json.template` next to this file holds two ready-to-paste blocks
-(`PostToolUse`, `Stop`) that wire up automatic reindexing after `Edit`/`Write`
-calls. No installer exists for this fork -- do the steps below by hand.
+`settings.json.template` next to this file is the single reference for
+everything AiDex needs in your `settings.json`: three ready-to-paste blocks
+covering search-time guidance (`PreToolUse`) and index maintenance
+(`PostToolUse`, `Stop`). No installer exists for this fork -- do the steps
+below by hand.
 
 ## Install steps
 
 1. Copy the hook scripts from this repo into your Claude Code profile:
    ```
+   %USERPROFILE%\.claude\hooks\aidex-grep-nudge.py
    %USERPROFILE%\.claude\hooks\aidex-queue-edit.py
    %USERPROFILE%\.claude\hooks\aidex-queue-drain.py
    %USERPROFILE%\.claude\hooks\aidex_hook_common.py
    ```
-   All three are required -- the first two import the third.
+   The source for all four is `hooks/claude/` in this repo (moved there from
+   the repo root in commit 5f1bc06 -- do not copy from the old root `hooks/`
+   path). `aidex_hook_common.py` is required because `aidex-queue-edit.py`
+   and `aidex-queue-drain.py` import it; `aidex-grep-nudge.py` is standalone.
 2. Open your real `%USERPROFILE%\.claude\settings.json` and merge the
-   `PostToolUse` and `Stop` entries from `settings.json.template` into your
-   existing `hooks` object. Merge, do not overwrite -- your settings.json
-   almost certainly already has other entries in those same arrays (append
-   to the array, do not replace it).
+   `PreToolUse`, `PostToolUse` and `Stop` entries from
+   `settings.json.template` into your existing `hooks` object. Merge, do not
+   overwrite -- your settings.json almost certainly already has other
+   entries in those same arrays (append to the array, do not replace it).
 3. Restart Claude Code so the new hooks are picked up.
 
 This template does not touch your real `settings.json` -- that step stays
@@ -33,21 +39,34 @@ just never fire), but it is not needed.
 
 ## Invocation path convention
 
-Hooks are invoked from the **installed profile copy**, not the repo path --
-matching this operator's existing hook, `aidex-grep-nudge.py` (a separate,
-unrelated PreToolUse hook that nudges `Grep`/`Bash` calls toward
-`mcp__aidex__aidex_query`), which is wired as:
+All three hooks are invoked from the **installed profile copy**, not the
+repo path:
 ```
 python "$USERPROFILE/.claude/hooks/aidex-grep-nudge.py"
+python "$USERPROFILE/.claude/hooks/aidex-queue-edit.py"
+python "$USERPROFILE/.claude/hooks/aidex-queue-drain.py"
 ```
-verified directly in this operator's actual `settings.json` (matcher
-`Grep|Bash`, PreToolUse). The two new blocks in this template follow the
-same convention. It is shown here only as an invocation-path reference --
-it is a distinct, already-installed hook, not part of this template's
-PostToolUse/Stop pair, and this file does not modify it.
+verified directly in this operator's actual `settings.json`. That is the
+only thing the three hooks share -- beyond the invocation path convention,
+they are two unrelated families that happen to both ship in this template:
+
+- **PreToolUse** (`aidex-grep-nudge.py`, matcher `Grep|Bash`) steers a
+  search *before* it runs, toward the AiDex index instead of `Grep`/`Bash`.
+- **PostToolUse** + **Stop** (`aidex-queue-edit.py` / `aidex-queue-drain.py`)
+  keep the index itself up to date *after* edits land.
+
+Do not read more into the shared invocation path than that convention: the
+nudge hook does not touch the reindex queue, and the reindex hooks do not
+gate any search.
 
 ## What the hooks actually do
 
+- **PreToolUse** (`aidex-grep-nudge.py`) asks the coverage oracle's `aidex
+  can` subcommand whether the index already covers what a `Grep`/`Bash`
+  call is about to search for. It only blocks the call when the oracle
+  answers `covered:true` -- steering the agent to `mcp__aidex__aidex_query`
+  instead. Any other verdict, and any oracle failure (timeout, crash,
+  unreachable), lets the search through unmodified.
 - **PostToolUse** (`aidex-queue-edit.py`) ONLY appends a
   `<project>\t<file>` line to a per-session queue file in the OS temp dir.
   It never spawns Node and never touches the AiDex CLI.
@@ -61,18 +80,25 @@ Measured costs (reviewer, card `b6760488`, commit `83ef31b`): 45-53ms per
 edit for the PostToolUse queue append, 190-209ms for the Stop drain of a
 typical small batch -- about 0.7% of a 27s turn.
 
-## Failure posture: both hooks always exit 0
+## Failure posture: all three hooks fail open
 
-Every failure branch (unreadable queue, no interpreter found, CLI missing,
-a locked SQLite writer, `update()` reporting errors, a killed subprocess)
-exits 0 silently. This is deliberate: a stale AiDex index is an
+The reindex pair (`aidex-queue-edit.py`, `aidex-queue-drain.py`) always
+exits 0. Every failure branch (unreadable queue, no interpreter found, CLI
+missing, a locked SQLite writer, `update()` reporting errors, a killed
+subprocess) exits 0 silently. This is deliberate: a stale AiDex index is an
 inconvenience, a blocked or slowed-down turn is an outage. A failed
 project's files are left in the queue and retried on the next `Stop`
 rather than dropped.
 
+`aidex-grep-nudge.py` fails open for a different reason: it only blocks on
+an explicit `covered:true` verdict from the coverage oracle, so any oracle
+outage or ambiguous answer must let the search proceed -- an unavailable
+oracle must never be able to stop an agent from searching at all.
+
 ## Environment variables (all optional)
 
-Read by `hooks/claude/aidex_hook_common.py`, shared by both hooks. Node
+Read by `hooks/claude/aidex_hook_common.py`, shared by the two reindex
+hooks (`aidex-grep-nudge.py` is standalone and does not import it). Node
 resolution is automatic (falls back to a pinned nvm path discovered from
 the `aidex` MCP server entry in `~/.claude.json` /
 `claude_desktop_config.json`), so normally nothing needs to be set.
