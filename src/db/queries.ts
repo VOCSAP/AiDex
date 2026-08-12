@@ -510,6 +510,13 @@ export class Queries {
         // normalized index term is a silent miss on any whitespace difference
         // (double space, tab, indentation) even for an exact substring.
         const normTerm = normalizeLiteralWhitespace(term);
+        // Whitespace-only term (e.g. a single space) normalizes to '': in
+        // contains/starts_with mode that would build a LIKE '%%' matching the
+        // whole index, contradicting classifyPattern's own not_indexable
+        // verdict for the same input (f08aeeb1 gate fix [2]). A term that was
+        // ALREADY empty falls through unchanged -- this only catches the
+        // whitespace-collapses-to-nothing case.
+        if (normTerm === '' && term !== '') return 0;
         const sql = `SELECT COUNT(*) n FROM items i WHERE ${this.itemMatchClause(mode, includeLiteralOnly)}`;
         return (this.db.prepare(sql).get(this.itemMatchParam(normTerm, mode)) as { n: number }).n;
     }
@@ -524,6 +531,9 @@ export class Queries {
         // Same normalization as countItems above -- must agree, or a caller
         // could see a nonzero count and an empty page.
         const normTerm = normalizeLiteralWhitespace(term);
+        // Same empty-after-normalization guard as countItems above -- must
+        // agree, or a caller could see itemsTotal=0 and a nonempty page.
+        if (normTerm === '' && term !== '') return [];
         // ORDER BY is not cosmetic here, it is what makes `offset` mean
         // anything: SQL guarantees no row order without it, so paging through
         // an unordered LIMIT can repeat rows and skip others.
