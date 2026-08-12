@@ -76,3 +76,6 @@ scripts/measurements/
 
 # graphify reference dump (temporaire, supprime post-implementation)
 docs/reference/
+
+# Agent memory (per-role, private to the fork -- never publish)
+.claude/agent-memory/

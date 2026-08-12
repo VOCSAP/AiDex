@@ -1,2 +1,0 @@
-- [Query engine is substring-only, no tokenization](project_query_engine_substring_only.md) -- items search (exact/contains/starts_with) has no word-split, breaks on non-contiguous words / reordered / mismatched whitespace
-- [Peer dispatch: ACK + final report both via send_message](feedback_peer_dispatch_protocol.md) -- terminal output is not delivery, team-lead only sees send_message
