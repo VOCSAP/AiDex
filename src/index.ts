@@ -133,6 +133,16 @@ async function main() {
         console.log(`  Types: ${result.typesFound}`);
         console.log(`  Time: ${result.durationMs}ms`);
 
+        // a7039829: shown even on success -- a file that genuinely failed
+        // during indexing used to fill errors[] invisibly behind a "Done!"
+        // and a silently-reduced Files count. Mirrors the Warnings block
+        // handleInit (src/server/tools.ts) already prints on the MCP side.
+        if (result.errors.length > 0) {
+            console.log(`  Warnings: ${result.errors.length} file(s) reported errors during indexing`);
+            for (const e of result.errors.slice(0, 10)) console.log(`    - ${e}`);
+            if (result.errors.length > 10) console.log(`    ... and ${result.errors.length - 10} more`);
+        }
+
         return;
     }
 
