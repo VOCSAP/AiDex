@@ -27,6 +27,7 @@
 
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 
@@ -38,7 +39,10 @@ import { resolveAidexNode, isNativeAbiMismatch, nodeAbiGuardMessage } from './he
 
 jest.setTimeout(60000);
 
-const REPO_ROOT = process.cwd();
+// Anchored on this file's own location, not process.cwd() -- see roadmap
+// card 39e02f07 (defect 2): a process.cwd()-based root broke ENOENT/module
+// resolution when the suite was launched from outside the repo root.
+const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const CLI_ENTRY = join(REPO_ROOT, 'build', 'index.js');
 const NODE_BIN = resolveAidexNode();
 
