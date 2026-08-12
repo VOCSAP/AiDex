@@ -131,6 +131,93 @@ export interface InitResult {
 }
 
 // ============================================================
+// Success-mode contract (a7039829)
+//
+// WHY: init() used to hardcode `success: true` on its main return path no
+// matter what errors[] accumulated during the per-file indexing loop --
+// a file that genuinely failed in production filled errors[] invisibly
+// while the caller saw "Done!" and a silently-reduced Files count. Fixed in
+// two parts: (a) errors[] is now always surfaced to the caller, success or
+// not (see the CLI init printer in src/index.ts and handleInit in
+// src/server/tools.ts, which already did this); (b) success itself can now
+// react to errors[], gated behind ONE env var so existing callers are not
+// silently changed underneath them.
+//
+// AIDEX_INIT_SUCCESS_MODE is the single choke point the value flows
+// through -- resolveInitSuccessMode() is the only place that reads
+// process.env, and computeInitSuccess() is the only place that branches on
+// the resolved mode. Renaming a mode identifier later costs one line in
+// each.
+// ============================================================
+
+export type InitSuccessMode = 'default' | 'empty' | 'strict';
+
+/** Counts computeInitSuccess() needs; kept separate from InitResult so the
+ *  decision function can be unit-tested without constructing a full result. */
+export interface InitSuccessCounts {
+    /** Candidate files matched by the glob, before the indexing loop (`files.length`). */
+    filesFound: number;
+    filesIndexed: number;
+    /** Unchanged files short-circuited by the incremental hash-diff -- NOT a failure. */
+    filesSkipped: number;
+    errorCount: number;
+}
+
+/**
+ * Resolves AIDEX_INIT_SUCCESS_MODE. Unset or exactly 'default' -> 'default'.
+ * Anything else that is not one of the three known modes THROWS -- a typo'd
+ * or stale value must never silently fall back to 'default', because that
+ * would reintroduce exactly the invisible-bad-state failure mode this card
+ * exists to fix, one layer up (a misconfigured mode instead of a hardcoded
+ * success). Both the CLI (`main().catch` in src/index.ts) and the MCP
+ * dispatcher (`handleToolCall`'s try/catch in src/server/tools.ts) already
+ * turn a thrown Error into a visible, non-zero-exit / error-text response,
+ * so throwing here is safe in both callers without extra plumbing.
+ */
+export function resolveInitSuccessMode(raw: string | undefined): InitSuccessMode {
+    if (raw === undefined || raw === '') return 'default';
+    if (raw === 'default' || raw === 'empty' || raw === 'strict') return raw;
+    throw new Error(
+        `Invalid AIDEX_INIT_SUCCESS_MODE "${raw}": expected "default", "empty" or "strict".`
+    );
+}
+
+/**
+ * Decides `InitResult.success` for the main (non-early-return) return path.
+ *
+ * - 'default': unchanged from before this card -- always true here. Per-file
+ *   errors are visible via errors[] (deliverable A) but never flip success,
+ *   so nothing that already parses `success` changes behavior silently.
+ * - 'empty': false when the indexing loop produced NOTHING usable despite
+ *   candidates existing -- neither a fresh index (filesIndexed) nor a
+ *   confirmed-unchanged skip (filesSkipped). Deliberately NOT just
+ *   `filesIndexed === 0` (the card's literal wording): an idempotent re-run
+ *   over an already-up-to-date project also has filesIndexed === 0, with
+ *   filesSkipped === filesFound, and that is success, not the "total
+ *   failure" this mode targets (a run where every candidate file failed or
+ *   something crashed before either counter could move). Flagged to the
+ *   team-lead as a deliberate refinement of the literal spec, not a
+ *   reinterpretation of its intent: a raw `filesIndexed === 0` check would
+ *   make 'empty'/'strict' fire on every no-op re-run of a healthy project.
+ * - 'strict': false as soon as any error was recorded, AND (monotonicity)
+ *   also covers 'empty's condition -- a total wipeout with zero errors[]
+ *   entries must not escape the most severe mode, or the severity scale
+ *   stops being monotonic (strict would be "beaten" by a subtler failure
+ *   that 'empty' alone would have caught).
+ */
+export function computeInitSuccess(mode: InitSuccessMode, counts: InitSuccessCounts): boolean {
+    const totalFailure = counts.filesFound > 0 && counts.filesIndexed === 0 && counts.filesSkipped === 0;
+    switch (mode) {
+        case 'default':
+            return true;
+        case 'empty':
+            return !totalFailure;
+        case 'strict':
+            return counts.errorCount === 0 && !totalFailure;
+    }
+}
+
+// ============================================================
 // Default patterns
 // ============================================================
 
@@ -306,6 +393,12 @@ function detectFileType(filePath: string): FileType {
 export async function init(params: InitParams): Promise<InitResult> {
     const startTime = Date.now();
     const errors: string[] = [];
+
+    // Resolved once, up front, regardless of what params.path turns out to
+    // be -- an operator who typo'd the env var deserves that surfaced
+    // immediately, not only on the runs that happen to reach the main
+    // return path (see computeInitSuccess() above for how this is used).
+    const successMode = resolveInitSuccessMode(process.env.AIDEX_INIT_SUCCESS_MODE);
 
     // Validate project path
     if (!existsSync(params.path)) {
@@ -630,7 +723,12 @@ export async function init(params: InitParams): Promise<InitResult> {
     }
 
     return {
-        success: true,
+        success: computeInitSuccess(successMode, {
+            filesFound: files.length,
+            filesIndexed,
+            filesSkipped,
+            errorCount: errors.length,
+        }),
         indexPath: indexDir,
         filesIndexed,
         filesSkipped,
