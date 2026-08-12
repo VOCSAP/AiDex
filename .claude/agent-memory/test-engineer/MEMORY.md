@@ -1,0 +1,3 @@
+- [Test conventions](test_conventions.md) — Jest ESM run command, coverage-oracle grep-as-ground-truth precedent, rank-via-binary-search technique
+- [Node ABI trap](node_abi_trap.md) — default PATH node is v24 (nvm4w), better-sqlite3 needs pinned Node 22.11.0, exact commands to work around it
+- [CLI update contract](cli_update_contract.md) — update branch non-obvious behaviors (silent no-op, corrupted-DB, case-rename fixed), build-race gotcha, verify scratch-dir collision

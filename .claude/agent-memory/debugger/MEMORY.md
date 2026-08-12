@@ -1,0 +1,4 @@
+- [Contains perf profile](project_contains-perf-profile.md) — the "factor 10" was a unit mismatch; where the contains time actually goes, mono- and multi-project
+- [Jest + tree-sitter context trap](project_jest-treesitter-context-trap.md) — two test files in one process = indexing silently returns an empty index; the top suspect for any red suite here
+- [Test suite cwd trap](project_test-suite-cwd-trap.md) — the suite only passes from the repo root; a wrong cwd fakes a convincing "this commit broke everything"
+- [Cold measurement repro](repro_cold-measurement.md) — Node pinning, one-process-per-call shape, and the harness traps that faked a gain here
