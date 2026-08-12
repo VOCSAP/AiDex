@@ -52,7 +52,8 @@
  */
 
 import { mkdtempSync, rmSync, readFileSync, readdirSync, statSync, existsSync } from 'fs';
-import { join, extname } from 'path';
+import { join, extname, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 
@@ -63,7 +64,10 @@ import { isNativeAbiMismatch, nodeAbiGuardMessage } from './helpers/node-interpr
 
 jest.setTimeout(120000);
 
-const REPO_ROOT = process.cwd();
+// Anchored on this file's own location, not process.cwd() -- see roadmap
+// card 39e02f07 (defect 2): a process.cwd()-based root broke ENOENT/module
+// resolution when the suite was launched from outside the repo root.
+const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const CORPUS_PATH = join(REPO_ROOT, 'tests/fixtures/query-corpus.json');
 const corpus = JSON.parse(readFileSync(CORPUS_PATH, 'utf-8'));
 const { pinnedCommit } = corpus.meta;

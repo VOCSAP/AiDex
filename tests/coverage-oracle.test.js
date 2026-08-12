@@ -22,7 +22,8 @@
  */
 
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'fs';
-import { join, isAbsolute } from 'path';
+import { join, isAbsolute, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { tmpdir, homedir } from 'os';
 import Database from 'better-sqlite3';
 
@@ -83,8 +84,12 @@ export const DEFAULTS = {
 };
 
 /** Root of the current drive / filesystem, for a path that is definitely not temp. */
+// Anchored on this file's own location, not process.cwd() -- see roadmap
+// card 39e02f07 (defect 2): process.cwd() only shares a drive/root with the
+// repo when launched from the same filesystem root, which broke when the
+// suite was launched from outside the repo root.
 function cwdRoot() {
-    return process.cwd().split(/[\\/]/)[0] + '/';
+    return dirname(dirname(fileURLToPath(import.meta.url))).split(/[\\/]/)[0] + '/';
 }
 
 /** Rows in the user's global registry, or null when there is no registry here. */
