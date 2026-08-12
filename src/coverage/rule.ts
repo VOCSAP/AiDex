@@ -170,6 +170,16 @@ export function classifyPattern(pattern: string): PatternClass {
     // indexed unconditionally.
     const hasSeparator = /[:\-._/]/.test(p);
     const isMixedCase = /[a-z]/.test(p) && /[A-Z]/.test(p);
+    // f08aeeb1 gate fix [4]: the position restriction applied below (only
+    // 'below' literals are gated to type/jsx/object_value position) in
+    // practice only ever binds all-lowercase, unpunctuated phrases. Any
+    // literal with a separator char OR any capital letter -- which covers
+    // ordinary capitalized English sentences like "Failed to load config" or
+    // "Error while loading" -- already resolves to 'above' and is indexed
+    // unconditionally, position notwithstanding. This was unchanged in
+    // f08aeeb1 (no separator/case logic was touched), but the commit message
+    // describing it as "unchanged" was true for the code and misleading about
+    // effect: only a narrow slice of literals is actually still constrained.
     const literalRule: PatternClass['literalRule'] =
         !literalShaped ? 'not_literal_shaped'
             : (hasSeparator || isMixedCase) ? 'above'
@@ -343,7 +353,10 @@ export function coverageNotice(
     const fix = rebuildCmd ? ` Rebuild: ${rebuildCmd}` : '';
 
     if (cls.reason === 'not_indexable') {
-        return `"${pattern}" is not an indexable shape (whitespace, interpolation, or too long): AiDex never held it. Use grep.`;
+        // f08aeeb1 gate fix [3]: whitespace stopped being a not_indexable
+        // cause when classifyPattern started normalizing it (f08aeeb1). Only
+        // interpolation/format specifiers and the length bounds remain.
+        return `"${pattern}" is not an indexable shape (interpolation or too long): AiDex never held it. Use grep.`;
     }
 
     if (coverage.ruleOutdated) {
