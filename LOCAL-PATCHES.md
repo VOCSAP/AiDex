@@ -71,7 +71,9 @@ Les pourcentages par langage ne sont **pas** dans cette reponse : elle est emise
 
 ### 1.4 Extraction des litteraux -- `src/parser/extractor.ts`, `src/parser/languages/index.ts`
 
-Regle retenue (`ruleId: strict+typepos`, version 1) : **forme identifiant** ET (separateur `: - . _ /` OU casse mixte), OU mot minuscule seul en position `literal_type` / `jsx_attribute` / valeur de `pair`.
+Regle retenue (`ruleId: strict+typepos`, **version 2 depuis le 2026-08-12**, commit `34532c8`) : **forme identifiant** ET (separateur `: - . _ /` OU espace unique OU casse mixte), OU mot minuscule seul en position `literal_type` / `jsx_attribute` / valeur de `pair`. `LITERAL_SHAPE` vaut desormais `/^[A-Za-z0-9_:.\-/ ]+$/`. Le nombre d'espaces interieurs n'est PAS borne : une phrase entiere qualifie. Ce qui est exclu, ce sont les suites de blancs et les tabulations, parce que `classifyPattern` normalise l'entree AVANT le test (voir 15) et qu'une suite ne survit donc jamais jusqu'a la regex.
+
+**Effet du bump de version, a ne pas manquer en rebasant** : un index construit sous la regle 1 remonte `ruleOutdated: true` et **refuse** de repondre sur la dimension litterale plutot que de mentir sur ce qu'il contient (il ne detient aucun litteral multi-mots, par construction de l'ancienne garde). Ce refus est garde par `kinds.includes('literal')` (`src/commands/query.ts:145`) alors que le defaut de `kinds` reste `['symbol']` : aucune requete par defaut n'est cassee sur un index non reindexe. Voir section 15 pour le detail.
 
 `LanguageConfig.stringNodes` par langage. **Chaque nom a ete lu par sondage des grammaires, jamais devine** : ils ne suivent aucune convention (`interpreted_string_literal` en Go, `encapsed_string` en PHP, `line_string_literal` en Swift, `string_lit` en HCL, `multiline_string_literal` en Kotlin contre `multi_line_string_literal` en Swift). Un merge qui ajoute un langage doit sonder sa grammaire, pas extrapoler.
 
@@ -135,6 +137,8 @@ Ni pour le defaut de `kinds`, ni pour la regle d'indexation, **et surtout pas pa
 Raison qui tranche : l'oracle doit predire ce que la requete rendra REELLEMENT. Si le defaut vit dans l'environnement, l'oracle doit le lire aussi pour rester juste, et on a reconstruit le devineur qu'il remplace, avec un canal de divergence en plus. Un agent ne voit pas cette variable : la meme requete rendrait des resultats differents selon le poste, sans que rien dans la reponse ne le dise.
 
 Si un levier devient necessaire, il va **par projet** dans les metadata de l'index, jamais par variable d'environnement -- c'est deja la forme maison (`embeddings`, `llm_send_code`).
+
+**Contradiction apparente a resoudre explicitement, pour qu'un futur mainteneur ne croie ni que ce principe est mort, ni qu'il a ete viole** : le commit `16d8512` (section 16) introduit bien une variable d'environnement, `AIDEX_INIT_SUCCESS_MODE`. Le principe ci-dessus reste entier, parce que la frontiere qu'il protege n'est pas celle que cette variable traverse. `AIDEX_INIT_SUCCESS_MODE` ne touche ni la regle d'indexation (`literalQualifies` / `classifyPattern`), ni le defaut de `kinds`, ni rien de ce que l'oracle de couverture PREDIT -- ces trois-la restent sans aucun levier. Elle change uniquement la facon dont `init()` **rapporte** un echec par fichier deja collecte dans `errors[]`, une decision orthogonale a ce que l'index contient ou a ce qu'une requete y trouvera. Predire un resultat de requete et rapporter le succes d'une commande sont deux promesses differentes ; seule la premiere est couverte par l'interdiction ci-dessus.
 
 ---
 
@@ -217,6 +221,8 @@ Ordre de PR = ordre de livraison, du moins engageant au plus opinione.
 
 **Deux pieges de redaction.** Ne jamais justifier l'oracle par notre hook : il est invisible pour l'upstream, alors que "un consommateur MCP doit pouvoir distinguer *absent* de *hors couverture*" est un argument universel. Et les mesures citees ici ont ete faites sur des depots prives : elles devront etre rejouees sur des depots publics qu'un mainteneur peut cloner et verifier.
 
+**Mise a jour 2026-08-12** : les patches multi-mots/espacement de la section 15 s'ajoutent au meme lot "Extraction par langage" (ils touchent `LITERAL_RULE_VERSION`, `LITERAL_SHAPE` et le meme fichier `rule.ts`) et n'en changent pas la place, le plus difficile a porter. Le contrat de `init()` (section 16) et l'infrastructure de test (section 17) sont independants de la couverture litterale et portables separement, sans conversation attendue sur la surface publique.
+
 ---
 
 ## 9. Reorganisation de `hooks/` -- commit `5f1bc06`
@@ -286,6 +292,10 @@ Mesures a citer, prises avec un vrai Claude Code : `PostToolUse` 45 a 53 ms par 
 - `f90af5b` : corpus de requetes de reference sous `tests/fixtures/query-corpus.json` et son harnais de rejeu `tests/query-corpus.test.js`, 30 requetes en trois familles (identifiant, multi-mot, `contains`), verite terrain etablie par grep. Il produit des chiffres comparables avant et apres un changement de classement, pas un simple vert ou rouge.
 - `18e9201` : suite de regression de la sous-commande CLI `update` (`tests/cli-update.test.js`), 17 cas, incluant les quatre voies d'echappement hors projet (relatif, absolu, cross-drive, UNC), la base corrompue, le renommage de casse pure et le lot mixte.
 - `cea76ca` : test de contrat (`tests/cli-update-summary-contract.test.js`) sur le format de la ligne de synthese, qui verrouille le couplage par le texte decrit en section 12.
+- `0d2c7e4` : `tests/whitespace-tolerance.test.js`, 20 cas, sur la tolerance a la difference d'espacement des litteraux multi-mots (section 15). Preuve par mutation, raison d'etre du fichier : neutraliser la normalisation cote REQUETE fait rougir 11 cas, neutraliser la normalisation cote INDEXATION en fait rougir exactement 3, les deux ensembles etant disjoints et couvrant ensemble les 14 cas sensibles a la normalisation. C'est ce qui prouve que les deux points d'appel (`extractor.ts` et `db/queries.ts`) sont tous les deux porteurs de la garantie, ce qu'une suite verte seule ne prouve pas -- une suite verte est aussi compatible avec un seul des deux points d'appel qui ferait tout le travail.
+- `16d8512` : `tests/init-success-modes.test.js`, 23 cas, sur le contrat de succes de `init()` (section 16) : `resolveInitSuccessMode` (6), `computeInitSuccess` en table de decision pure pour les trois modes (11), et trois suites de bout en bout a travers le vrai `init()` (6).
+
+Total de la suite apres ces deux ajouts : **161 tests** (8 fichiers de test), contre 118 avant (section 14).
 
 **Detail non evident a consigner** : ouvrir un fichier texte avec `better-sqlite3` REUSSIT ; l'erreur de base invalide n'est levee qu'a la premiere ecriture, en pratique le pragma WAL. Quiconque "nettoierait" cet appel supprimerait aussi le declencheur de l'erreur.
 
@@ -312,3 +322,104 @@ Le gain rapporte par l'auteur, 0.40 ms contre 2.20 ms, etait reel mais mesure da
 **Il n'y a pas de probleme de performance sur le matching `contains`.** Profil a froid du chemin mono-projet, dans la forme reelle d'un appel MCP : `open` 2.3 a 2.6 ms, `countItems` 2.2 a 4.9 ms, `searchItems` 1.0 a 1.9 ms, `getOccurrencesByItems` 0.04 a 17.8 ms, bout en bout 10.6 a 54.5 ms. `searchItems`, seule cible du patch reverte, pese 5 a 12 pour cent du cout total : le ramener a zero rendrait moins de 2 ms. Sur le chemin multi-projets, 14 bases attachees, le passage de `exact` a `contains` sur une aiguille absente coute 6 ms au total, soit environ 0.45 ms par projet, tandis que la jointure d'occurrences va jusqu'a 137 ms. Le point chaud est proportionnel au FANOUT, le nombre d'occurrences ramenees, pas au nombre d'items scannes. Aucune technique d'acceleration du matching ne peut rendre plus de 2 ms en mono-projet ni 7 ms en multi-projets. La carte de tracage a ete fermee sur ce constat.
 
 **Lecon generale.** La carte prescrivait une technique avant d'avoir localise le probleme, et c'est cela qui a coute le travail. Une carte de tracage a ete creee pour la possibilite d'accelerer la recherche `contains`, cadree autour de la mesure prealable.
+
+---
+
+## 15. Litteraux multi-mots -- commits `34532c8`, `0d2c7e4`, `2c4eb99` (carte `f08aeeb1`)
+
+Carte scindee de `10096483` sur decision de l'operateur du 2026-08-11, apres mesure refutant la premisse initiale (le blocage multi-mots etait cote indexation, dans la garde de `classifyPattern`, pas cote requete).
+
+### Ce qui marche maintenant
+
+Phrase exacte, sous-chaine CONTIGUE, prefixe, casse differente, et **tolerance aux differences d'espacement** (double espace, tabulation, indentation, padding en debut/fin) -- dans les trois modes `exact`, `contains` et `starts_with`. Le mecanisme est une forme canonique unique, `normalizeLiteralWhitespace` (`src/coverage/rule.ts`) : collapse toute suite de blancs en un seul espace, puis trim. Elle est appliquee aux **deux bouts du meme pipe** : `src/parser/extractor.ts` a l'indexation (le terme ECRIT dans l'index est deja la forme canonique, pas seulement teste contre elle), `src/db/queries.ts` (`countItems`, `searchItems`) et `src/commands/global/global-query.ts` a la requete.
+
+**Piege a ne jamais reintroduire** : un index canonicalise interroge par une requete brute produit des silences invisibles -- exactement le defaut corrige par `0d2c7e4`, voir plus bas. Toute nouvelle voie de lecture ou d'ecriture des litteraux doit passer par cette meme fonction, aucune autre normalisation locale.
+
+### Ce qui ne marche toujours pas, PAR DESIGN
+
+Sous-ensemble de mots non contigu, et ordre libre (chercher "Restart Service" quand la source dit "Restart the Service", ou "Service Restart"). Le moteur ne fait **aucun split par mot** : `itemMatchParam` (`src/db/queries.ts:497`) enveloppe le terme entier, normalise, dans un seul `LIKE`. C'est le perimetre reste ouvert sous la carte `10096483`.
+
+### Volume reel mesure, et l'ecart avec la prevision
+
+Apres reindexation complete de ce depot : **6397 items avant, 6749 apres**, dont **258 multi-mots**, soit 3,82 % de l'index et 5,5 % de croissance. La prevision faite la veille (2026-08-11) annoncait +1921 items, soit +29,9 % : une surestimation d'un facteur 5,5.
+
+Cause probable, **non mesuree, a traiter comme telle** : `LITERAL_SHAPE` (voir section 1.4) n'admet que `[A-Za-z0-9_:.\-/ ]`, donc tout litteral portant une virgule, une parenthese ou une apostrophe reste rejete -- ce que le script jetable de la prevision ne modelisait vraisemblablement pas. Meme lecon de methode que la section 7 : un chiffre de prevision batie sur un script hors-production, non confronte au code de production reel, se trompe d'un facteur significatif.
+
+### Deux defauts trouves en revue -- `0d2c7e4`, tous deux des reponses fausses se presentant comme vraies
+
+1. **`global-query.ts` passait le terme BRUT** a `buildItemSearch` et a `getCacheKey`, donc la recherche multi-projets ratait ce que la mono-projet trouvait des que l'espacement de la requete differait de la source. Mesure sur quatre orthographes : **1/0/0/0** cote multi-projets contre **1/1/1/1** cote mono-projet, avant correctif. Corrige en appliquant `normalizeLiteralWhitespace` au terme avant `buildItemSearch` et avant le calcul de la cle de cache (deux orthographes en espacement d'une meme requete partagent desormais une seule entree, au lieu de payer chacune un scan complet).
+   **Lecon generale, plus large que ce bug** : l'ECRITURE (l'indexation) n'avait qu'un seul chemin, la LECTURE (la requete) en avait quatre (`query.ts` mono-projet x3 modes en interne, plus `global-query.ts`). Une garantie dite "structurelle par point de passage unique" ne l'est que si elle a ete verifiee contre TOUS les chemins de lecture, pas seulement celui qu'on vient de modifier.
+2. **Un terme de blancs se normalisait en chaine vide** et produisait `LIKE '%%'`, qui rend l'index entier -- pendant que `classifyPattern` repondait correctement `not_indexable` pour ce meme terme. Corrige par un court-circuit dans `countItems`/`searchItems` : un terme non vide qui normalise vers `''` rend 0 resultat plutot que de construire ce `LIKE`.
+
+### Fait mesure non evident : la portee reelle de la restriction `below`
+
+La restriction positionnelle `below` (litteral indexe seulement en position `literal_type`/`jsx_attribute`/valeur de `pair`, voir section 1.4) ne s'applique en pratique qu'aux phrases **tout en minuscules et sans ponctuation**. Toute phrase avec un separateur ou une majuscule resout deja `above` et est indexee sans condition de position -- ce qui couvre la quasi-totalite des phrases anglaises ordinaires : "Failed to load config" et "Error while loading" tombent en `above` via `isMixedCase`, dans toutes les positions. La regle elle-meme est inchangee par ce patch ; seule sa portee pratique est desormais documentee dans le code (`2c4eb99`).
+
+### Le hook `aidex-grep-nudge` n'est pas affecte
+
+Son pre-filtre `CANDIDATE_RE` (section 2) n'admet pas l'espace : un pattern multi-mots n'atteint donc jamais l'oracle et ne peut jamais produire de blocage sur ce cas. Elargir ce pre-filtre pour couvrir les phrases reste un changement distinct et volontaire, non fait ici -- cela resterait conforme a la direction obligatoire deja fixee en section 2 (elargir ce que le pre-filtre laisse passer vers l'oracle, jamais ce qu'il tranche seul).
+
+### Reindexation requise
+
+`LITERAL_RULE_VERSION` passe de 1 a 2 (section 1.4) : tout index anterieur remonte `ruleOutdated` sur la dimension litterale au lieu de repondre partiellement. Ce depot est reindexe ; le reste de la station peut l'etre au fil de l'eau.
+
+---
+
+## 16. Contrat de succes de `init()` -- commit `16d8512` (carte `a7039829`)
+
+### Le defaut n'etait pas l'indexation, c'etait le RAPPORT
+
+`init()` empile chaque echec par fichier dans `errors[]` sans jamais faire varier `success`, code en dur a `true` sur le chemin de retour principal. Le CLI (`src/index.ts`) n'imprimait `errors[]` que si `success` etait faux. Un fichier qui echoue reellement produisait donc "Done!" suivi d'un compteur de fichiers indexes silencieusement diminue -- sans aucun signal visible.
+
+### Deux correctifs
+
+1. **Enrichissement inconditionnel** : `errors[]` est desormais imprime par le CLI meme sur succes (`src/index.ts`, bloc `Warnings: N file(s) reported errors...`, 10 premieres entrees puis compteur du reste). Cote MCP (`handleInit`, `src/server/tools.ts`), c'etait deja le cas depuis le commit initial.
+2. **`success` peut desormais reagir a `errors[]`**, derriere UNE variable d'environnement, `AIDEX_INIT_SUCCESS_MODE`, resolue une fois par `resolveInitSuccessMode()` et appliquee une fois par `computeInitSuccess()`, toutes deux dans `src/commands/init.ts`.
+
+### Les trois modes
+
+- `default` (silencieux si absent) : comportement inchange, `success` toujours vrai sur ce chemin.
+- `empty` : `success` faux uniquement sur une panne TOTALE d'indexation -- `filesFound > 0 && filesIndexed === 0 && filesSkipped === 0`.
+- `strict` : `success` faux des qu'`errors[]` n'est pas vide, et englobe aussi la condition de `empty` pour rester monotone (un total wipeout a zero erreurs ne doit pas echapper au mode le plus severe).
+
+**Correction de specification a documenter, instructive en elle-meme** : la formulation litterale de la carte pour `empty` etait "echec si `filesIndexed` vaut 0 alors que des candidats ont ete trouves". Prise au pied de la lettre, cette condition se declenche sur un **re-run idempotent sain** -- la forme de re-run la plus courante, ou chaque fichier inchange court-circuite via le hash-diff dans `filesSkipped`, laissant `filesIndexed` a 0 sans qu'il y ait la moindre panne. La condition retenue exige les DEUX compteurs a zero (`filesIndexed === 0 && filesSkipped === 0`), ce qui exclut ce cas sain tout en couvrant la panne totale reelle que la carte visait.
+
+**Valeur inconnue de la variable** : `resolveInitSuccessMode` **jette**, aucun repli silencieux vers `default`. Un repli silencieux aurait reintroduit exactement la classe de bug que ce patch corrige, un etage plus haut (un mode mal orthographie au lieu d'un succes code en dur).
+
+### Contrainte permanente, a ne jamais assouplir en rebasant
+
+**Ce mode est scope a `init` SEUL.** La sous-commande `update` a pour contrat un code retour 0 en TOUTES circonstances (section 10), et sa ligne de synthese `--verbose` est verrouillee par un test de contrat (section 13) parce que le hook de drain (section 12) la parse par le texte. La non-interference est prouvee structurellement, pas seulement par convention : `update` n'appelle jamais `init()` et tient ses propres compteurs locaux, independants de `errors[]`/`computeInitSuccess`.
+
+Voir aussi 1.9 pour la resolution explicite de la contradiction apparente avec le principe "pas de levier par variable d'environnement" : cette variable ne touche ni la regle d'indexation ni ce que l'oracle de couverture predit, seulement le RAPPORT de `init()`.
+
+**Trou identique non traite** dans `rebuild-index`, carte `bfb7bf8f` -- meme defaut de rapport potentiel, pas encore audite ni corrige.
+
+---
+
+## 17. Infrastructure de test -- commit `f0f6ee1` (carte `39e02f07`)
+
+Piege qui a coute trois rapports de diagnostic dont deux avec une cause racine fausse avant d'etre identifie.
+
+### Defaut 1 (severe) : l'addon natif tree-sitter est un singleton de PROCESSUS
+
+`process.dlopen` charge l'addon natif tree-sitter une fois par processus OS. Jest donne a chaque FICHIER de test un contexte `vm` neuf, mais `--maxWorkers=1` (ou `--runInBand`/`-i`) force tous les fichiers a partager le MEME processus. Des le deuxieme fichier d'un processus partage qui indexe en direct, `parseFile()` rend un `rootNode` `undefined`, et `extract()` leve sur `node.startPosition` -- un plantage qui se lit exactement comme un bug du parseur AiDex, et n'en est pas un.
+
+Mesure : `--maxWorkers=1` donne **66 echecs sur 138**, le parallelisme par defaut donne **138 sur 138**, trois runs chacun.
+
+**Le nombre d'echecs varie d'un run a l'autre**, ce qui a cree l'illusion d'un defaut non deterministe dans le code : jest tire l'ordre des fichiers de son cache de timings, et seul le PREMIER fichier de l'ordre passe toujours (il a le processus pour lui seul avant que l'addon soit deja charge par un autre fichier). Trois runs consecutifs en `--maxWorkers=1` sur le meme arbre ont donne **64, 36 et 52 echecs**.
+
+### Le remede retenu, et deux approches ecartees pour la MEME raison
+
+Un `globalSetup` jest (`tests/guards/no-single-worker.globalSetup.js`) lit `globalConfig.maxWorkers` **une fois, avant tout worker ou fichier de test**, et jette si la valeur vaut 1. Deterministe par construction : il depend du MODE D'INVOCATION de jest, jamais de l'ordre des fichiers.
+
+Deux approches ecartees en amont, pour la meme raison -- la dependance a l'ordre des fichiers :
+- un test symptomatique qui verifie que `parseFile()` rend un `rootNode` defini : ne fait rougir que le fichier qui tombe en second (ou plus tard) dans le processus partage, verdict qui change a chaque run ;
+- un marqueur PID cross-fichier : meme defaut, le premier fichier de l'ordre passerait toujours.
+
+**Piege mesure a consigner pour un futur mainteneur** : le champ `runInBand` **n'existe pas** sur `globalConfig` -- jest le calcule en interne et ne l'expose pas sous ce nom. `--runInBand`/`-i` se normalise en `maxWorkers = 1` avant que `globalSetup` ne s'execute (confirme empiriquement), donc un seul controle sur `maxWorkers` couvre les deux orthographes du mode dangereux.
+
+### Defaut 2 : racine du depot resolue depuis `process.cwd()`
+
+Quatre fichiers de test (`tests/cli-update-summary-contract.test.js`, `tests/cli-update.test.js`, `tests/query-corpus.test.js`, `tests/coverage-oracle.test.js` via `cwdRoot()`) resolvaient `REPO_ROOT` depuis `process.cwd()`, cassant (`ENOENT` / module introuvable) des que la suite etait lancee depuis un repertoire hors du depot. Corrige en ancrant sur `dirname(dirname(fileURLToPath(import.meta.url)))`, une ligne par fichier.
+
+**Verifie** : mode par defaut 138/138 (deux fois), `--maxWorkers=1` et `--runInBand` declenchent tous les deux le garde-fou avec le message descriptif, suite complete lancee depuis `/tmp` (hors de l'arbre du depot) 138/138 propre.
