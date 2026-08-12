@@ -1,16 +1,19 @@
 ---
 name: project-aidex-literal-coverage-lot
-description: Etat et dependances reelles du lot couverture litterale AiDex (cartes f08aeeb1, 10096483, b2d17b5d) au 2026-08-12
+description: Etat du lot couverture litterale AiDex apres livraison (f08aeeb1 livree, b2d17b5d et 39e02f07 et a7039829 fermees, 10096483 ouverte)
 metadata:
   type: project
 ---
 
-Le lot "couverture litterale" tient en trois cartes roadmap dont les dependances declarees etaient FAUSSES et ont ete corrigees par mesure le 2026-08-12.
+Le lot "couverture litterale" est LIVRE. Etat au 2026-08-12, apres sept commits sur local-patches, suite a 161 verts.
 
-- `f08aeeb1` -- lever la garde whitespace de `classifyPattern`. Perimetre elargi par arbitrage de l'operateur a la tolerance d'espacement, les deux ne pouvant pas se livrer separement. En cours.
-- `10096483` -- ponderation IDF multi-termes. Le briefing d'origine posait qu'elle DEPENDAIT de f08aeeb1 ; la dependance est en realite croisee. Laissee ouverte, non planifiee.
-- `b2d17b5d` -- acceleration du mode `contains`. FERMEE en `done` le 2026-08-12 sur le constat qu'il n'y a rien a optimiser.
+- `f08aeeb1` -- litteraux multi-mots plus tolerance d'espacement. DONE.
+- `b2d17b5d` -- acceleration du mode `contains`. DONE, ferme sur le constat qu'il n'y a rien a optimiser.
+- `39e02f07` -- infrastructure de test. DONE.
+- `a7039829` -- contrat de `init()`, trois modes via `AIDEX_INIT_SUCCESS_MODE`. DONE.
+- `bfb7bf8f` -- meme trou de visibilite dans `rebuild-index`. CREEE, non traitee.
+- `10096483` -- ponderation IDF multi-termes. Ouverte, non planifiee.
 
-**Why:** L'operateur a tranche deux points qui bloquaient f08aeeb1 depuis la session precedente. Le cout d'une reindexation integrale de la station est juge NON bloquant, la reindexation etant ponctuelle -- ne pas le reproposer comme obstacle. Et l'effet sur le hook de nudge est nul par mesure, le pre-filtre `CANDIDATE_RE` n'admettant pas l'espace, donc un pattern multi-mots n'atteint jamais l'oracle de couverture.
+**Why:** Ce qui reste utile n'est pas l'etat des cartes, que la roadmap porte deja, mais les trois premisses que la mesure a REFUTEES en chemin. Le cout de reindexation de la station : juge non bloquant par l'operateur, ne pas le representer comme un obstacle. L'effet sur le hook de nudge : nul, `CANDIDATE_RE` n'admet pas l'espace donc un pattern multi-mots n'atteint jamais l'oracle. Le volume : mesure a +5,5 pourcent apres reindexation reelle, contre +29,9 pourcent annonces par une prevision obtenue en dupliquant les gardes dans un script jetable, soit un facteur 5,5 d'erreur.
 
-**How to apply:** Ne pas rouvrir b2d17b5d ni aucune variante d'optimisation du matching `contains` sans une plainte utilisateur reelle : le profilage montre que le matching pese 5 a 12 pour cent du cout d'un appel, le point chaud etant la jointure d'occurrences, proportionnelle au fanout. Ne pas presenter le cout de reindexation comme un obstacle a l'operateur. Si f08aeeb1 aboutit, la question suivante est l'usage reel avant de planifier 10096483, pas 10096483 par automatisme. Voir [[feedback-measure-before-prescribing]] et [[project-aidex-team-dispatch]].
+**How to apply:** Ne pas rouvrir `b2d17b5d` ni aucune variante d'optimisation du matching `contains` sans plainte utilisateur reelle : le matching pese 5 a 12 pourcent du cout d'un appel et le point chaud est la jointure d'occurrences, proportionnelle au fanout. Avant de planifier `10096483`, observer l'usage reel : `f08aeeb1` sert la phrase exacte et la sous-chaine contigue, ce qui couvre deja le geste de coller un message d'erreur. La seule piste vraiment nouvelle est l'elargissement de `LITERAL_SHAPE` a la ponctuation courante (virgule, parenthese, apostrophe), et elle demande une mesure avant toute decision. Voir [[feedback-measure-before-prescribing]], [[feedback-demand-the-predicted-signature]] et [[project-aidex-team-dispatch]].
