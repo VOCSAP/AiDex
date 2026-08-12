@@ -45,7 +45,17 @@ export const COVERAGE_METADATA_KEY = 'literal_coverage';
  * would not catch it, because the tables are unchanged; only the semantics move.
  */
 export const LITERAL_RULE_ID = 'strict+typepos';
-export const LITERAL_RULE_VERSION = 1;
+/**
+ * Bumped 1 -> 2 (f08aeeb1): the whitespace guard in `classifyPattern` was
+ * lifted, so multi-word literals now qualify. An index built under version 1
+ * holds NONE of them -- not "few", none, by construction of the old guard.
+ * Without this bump `readCoverage` would keep reporting `literalsIndexed: true`
+ * on such an index and the oracle would answer `covered: true` for a
+ * multi-word pattern the index never held: exactly the false positive this
+ * module exists to prevent. The version bump forces `ruleOutdated: true`
+ * instead, so every consumer refuses until a full reindex.
+ */
+export const LITERAL_RULE_VERSION = 2;
 
 /**
  * NO configuration lever, by decision -- not for the `kinds` default, not for
@@ -97,13 +107,35 @@ export interface PatternClass {
     reason: PatternReason;
 }
 
-/** Chars allowed in an identifier-shaped literal. */
-const LITERAL_SHAPE = /^[A-Za-z0-9_:.\-/]+$/;
+/**
+ * Chars allowed in an identifier-shaped literal, plus a single interior space
+ * (f08aeeb1: multi-word literals). Only ONE space between words ever reaches
+ * this regex because `classifyPattern` normalizes its input first -- a run of
+ * whitespace never survives to be tested here.
+ */
+const LITERAL_SHAPE = /^[A-Za-z0-9_:.\-/ ]+$/;
 /** Chars allowed in a bare code symbol. */
 const SYMBOL_SHAPE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
 const MIN_LEN = 2;
 const MAX_LEN = 64;
+
+/**
+ * Collapse any run of whitespace (space, tab, newline, CR) to a single space,
+ * and trim the ends.
+ *
+ * This is the ONLY normalization form for a literal's text, and it must be
+ * applied at BOTH ends of the same pipe: `extractor.ts` calls it before
+ * storing a literal's term, `db/queries.ts` calls it before matching a query
+ * against those terms, and `classifyPattern` below calls it before shape/length
+ * checks so a caller never has to normalize by hand first. A drift between any
+ * of these call sites -- one normalizing, one not -- produces a silent miss:
+ * the index holds the canonical form, the query builds a raw one, and nothing
+ * ever matches even though the text is "the same" to a human reader.
+ */
+export function normalizeLiteralWhitespace(text: string): string {
+    return text.replace(/\s+/g, ' ').trim();
+}
 
 /**
  * Classify a search pattern against the indexing rules.
@@ -113,9 +145,9 @@ const MAX_LEN = 64;
  * an empty result interpretable.
  */
 export function classifyPattern(pattern: string): PatternClass {
-    const p = pattern ?? '';
+    const p = normalizeLiteralWhitespace(pattern ?? '');
 
-    if (p.length < MIN_LEN || p.length > MAX_LEN || /\s/.test(p) || /\$\{|\{\}|%[sdv]/.test(p)) {
+    if (p.length < MIN_LEN || p.length > MAX_LEN || /\$\{|\{\}|%[sdv]/.test(p)) {
         return {
             indexable: false, dimension: 'none', symbolShaped: false,
             literalRule: 'not_literal_shaped', reason: 'not_indexable',

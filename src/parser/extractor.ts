@@ -6,7 +6,7 @@ import type Parser from 'tree-sitter';
 import { detectLanguage, parseFile, type SupportedLanguage } from './tree-sitter.js';
 import { getLanguageConfig } from './languages/index.js';
 import type { LineRow, OccurrenceKind } from '../db/queries.js';
-import { literalQualifies, type LiteralPosition } from '../coverage/rule.js';
+import { literalQualifies, normalizeLiteralWhitespace, type LiteralPosition } from '../coverage/rule.js';
 
 // ============================================================
 // Types
@@ -264,10 +264,17 @@ export function extract(sourceCode: string, filePath: string): ExtractionResult 
             literalStats.seen++;
 
             const text = literalText(node);
-            if (text !== null && literalQualifies(text, literalPosition(node))) {
+            // Normalized ONCE here and reused for both the qualification check
+            // and the stored term: `classifyPattern` (inside `literalQualifies`)
+            // normalizes again internally, but that is idempotent -- the point
+            // of normalizing here too is that the term actually WRITTEN to the
+            // index is the canonical form, matching what db/queries.ts builds
+            // its query params against (f08aeeb1).
+            const normalized = text !== null ? normalizeLiteralWhitespace(text) : null;
+            if (normalized !== null && literalQualifies(normalized, literalPosition(node))) {
                 literalStats.indexed++;
                 items.push({
-                    term: text,
+                    term: normalized,
                     lineNumber,
                     // Deliberately NOT setLineType: LINE_TYPE_PRIORITY ranks
                     // 'string' above 'code', so flagging the line would flip

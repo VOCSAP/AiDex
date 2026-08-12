@@ -324,8 +324,10 @@ describe('coverage oracle differential', () => {
         for (const pattern of ['ok', 'field']) {
             expect(can({ path: dir, pattern }).covered).toBe(false);
         }
-        // Prose is not indexable in any dimension, whatever the index holds.
-        expect(can({ path: dir, pattern: 'hello world' }).reason).toBe('pattern_not_indexable');
+        // f08aeeb1: an all-lowercase, unpunctuated phrase is now literal-shaped
+        // (whitespace guard lifted), but still 'below' the literal rule -- same
+        // trap as a bare lowercase word, never claimed covered.
+        expect(can({ path: dir, pattern: 'hello world' }).reason).toBe('pattern_below_literal_rule');
         // The symbol dimension stays answerable.
         expect(query({ path: dir, term: 'restoreWorkspace' }).totalMatches).toBeGreaterThan(0);
     });
@@ -350,7 +352,8 @@ describe('coverage oracle differential', () => {
         db.close();
 
         expect(record.ruleId).toBe('strict+typepos');
-        expect(record.ruleVersion).toBe(1);
+        // f08aeeb1 bumped 1 -> 2 (whitespace guard lifted for multi-word literals).
+        expect(record.ruleVersion).toBe(2);
         // The percentage is measured, so it is never asserted to a value -- only
         // that it exists, is a real percentage, and came from this fixture.
         const ts = record.perLanguage.typescript;
@@ -792,6 +795,10 @@ describe('coverage oracle differential', () => {
         expect(classifyPattern('ok').symbolShaped).toBe(true);
         expect(classifyPattern('roadmap:search').literalRule).toBe('above');
         expect(classifyPattern('restoreWorkspace').literalRule).toBe('above');
-        expect(classifyPattern('hello world').reason).toBe('not_indexable');
+        // f08aeeb1: whitespace no longer disqualifies outright; an
+        // unpunctuated, all-lowercase phrase lands 'below' the literal rule,
+        // same bucket as a bare lowercase word.
+        expect(classifyPattern('hello world').literalRule).toBe('below');
+        expect(classifyPattern('hello world').reason).toBe('below_literal_rule');
     });
 });
