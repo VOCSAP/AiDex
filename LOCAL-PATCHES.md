@@ -291,6 +291,22 @@ Mesures a citer, prises avec un vrai Claude Code : `PostToolUse` 45 a 53 ms par 
 
 ---
 
-## 14. Prefiltre trigramme -- commit `e7a0c8d`, EN ATTENTE DE DECISION
+## 14. Prefiltre trigramme -- tente puis REVERTE (commits `e7a0c8d` puis `7ca37e2`)
 
-Existe sur la branche (`src/db/queries.ts`, mode `contains` de `aidex_query`) mais n'est **pas** acquis : la revue a etabli qu'il est 12 a 19 fois plus lent que le scan qu'il remplace, dans la forme d'execution reelle. Sort suspendu a une decision de l'operateur, qui pourrait le revert.
+Patch tente sur `src/db/queries.ts` (mode `contains` de `aidex_query`), puis reverte sur decision de l'operateur par le commit `7ca37e2` (382 lignes retirees, `tests/trigram-prefilter.test.js` supprime avec). Suite complete : 118 tests verts apres revert, contre 134 avant -- l'ecart correspond aux 16 tests du prefilter partis avec le patch.
+
+**Ecart carte / implementation.** La carte de tracage prescrivait un index trigramme FTS5 persiste dans SQLite. L'implementation livree etait une Map JavaScript en memoire. L'ecart n'a ete detecte qu'a la revue, parce que la chaine de supervision a lu les mesures rapportees et non le code.
+
+**Mecanisme de l'echec, coeur du probleme.** `withDatabase`, dans `src/commands/shared.ts`, ouvre la base, cree un objet `Queries`, et le ferme dans son `finally`. Chaque appel MCP `aidex_query` passe par la, donc obtient un `Queries` neuf au cache vide, jete a la fin. L'index trigramme, mesure a 43 ms de construction et 19 Mo de tas pour 25000 items, etait donc reconstruit puis jete a chaque requete. Mesure sur index reel de 25136 items, avec un `Queries` froid comme en production : 34.95 ms pour le prefilter contre 2.13 ms pour le scan complet, soit 16.4 fois plus lent, et jusqu'a 18.6 fois sur une aiguille absente de l'index.
+
+Le gain rapporte par l'auteur, 0.40 ms contre 2.20 ms, etait reel mais mesure dans une forme d'execution que la production n'a jamais : son harnais creait l'objet `Queries` une seule fois puis bouclait vingt fois dessus, cache deja chaud. C'est un piege de harnais a signaler comme tel, pas une faute de mesure.
+
+**Piege couple, mesure.** Le cache etant porte par l'instance `Queries`, et un troisieme chemin d'ecriture sur la table `items` (un `DELETE FROM items` en SQL brut dans `src/db/database.ts`) contournant `Queries` sans rien invalider, trois scenarios ont ete mesures ou un cache perime fait disparaitre silencieusement des lignes. Ce bug etait inoffensif pour une seule raison : le cache ne vivait jamais assez longtemps pour perimer. Le patch etait donc protege du bug de coherence par ce qui detruisait sa performance, et corriger l'un ouvrait l'autre.
+
+**Ce qui etait irreprochable et reste acquis.** La correction du prefilter a ete validee par 45507 assertions octet-identiques au scan complet, sur index reel et sur un corpus adversarial construit pour provoquer les collisions d'ordre, avec un compteur prouvant que le prefilter s'etait reellement declenche plutot que d'avoir repondu null. Ordre total et pagination intacts, aucune regression sur les modes `exact` et `starts_with` ni sur le filtre `kinds`.
+
+**Deux faits pour une reprise future.** La garde de selectivite a 10 pour cent ne se declenche jamais sur un corpus reel, les trigrammes les plus communs plafonnant a environ 6.4 pour cent du corpus. Et `src/commands/global/global-query.ts`, la recherche multi-projets qui scanne N bases attachees, c'est-a-dire le seul endroit ou un `LIKE` fait vraiment souffrir, a son propre SQL brut et ne beneficiait pas du prefilter : l'optimisation visait un chemin rapide et ratait le chemin lent.
+
+**Contradiction non resolue, a mentionner.** Deux mesures du scan complet sur des index de taille comparable ne concordent pas : 19 a 29 ms sur graphify-8 (22816 items) contre 2.1 ms sur Kleos (25136 items), un facteur 10 jamais explique. Tant qu'il ne l'est pas, on ne sait pas s'il y a un probleme a resoudre. C'est cette contradiction qui a motive le revert plutot qu'une reecriture en FTS5.
+
+**Lecon generale.** La carte prescrivait une technique avant d'avoir localise le probleme, et c'est cela qui a coute le travail. Une carte de tracage a ete creee pour la possibilite d'accelerer la recherche `contains`, cadree autour de la mesure prealable.
