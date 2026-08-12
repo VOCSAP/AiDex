@@ -26,13 +26,15 @@
  * - identifier: mono-term, mode=exact. Neither roadmap item touches this path
  *   (single exact term resolves to a single item). Control group: if this
  *   family ever regresses, the bug is not in Lot B.
- * - multiword: literal string constants containing whitespace. Proven absent
- *   from the index by construction (see the note in the fixture meta, backed
- *   by reading src/coverage/rule.ts classifyPattern and src/parser/
- *   extractor.ts literalText/literalQualifies): a string literal with a space
- *   is rejected at INDEX time, not just unreachable through a single-term
- *   query. This is the structural gap 10096483 exists to close. Asserted to
- *   return zero today, not skipped -- that zero is the baseline.
+ * - multiword: literal string constants containing whitespace. Was proven
+ *   absent from the index by construction (a string literal with a space was
+ *   rejected at INDEX time, see src/coverage/rule.ts classifyPattern) until
+ *   f08aeeb1 lifted that guard and added whitespace normalization shared by
+ *   index and query (normalizeLiteralWhitespace, applied in extractor.ts and
+ *   db/queries.ts). All 10 entries in this family happen to sit in
+ *   object-value position, so they now resolve to exactly one item each. The
+ *   remaining gap -- partial/out-of-order keyword matching over these phrases
+ *   -- is 10096483, still open.
  * - contains: substring queries against many candidate items, the target of
  *   b27f5663. RANK is measured as the exact minimal `itemLimit` at which the
  *   expected occurrence enters the window returned by query() (binary search;
@@ -46,8 +48,7 @@
  *
  * THIS FILE IS THE COMPARISON POINT. Re-run it before and after a Lot B change
  * and diff the printed table (afterAll) -- rank should fall or hold for every
- * `contains` entry, itemsTotal for `multiword` should turn nonzero once
- * 10096483 lands, and the `identifier` family must not move at all.
+ * `contains` entry, and the `identifier` family must not move at all.
  */
 
 import { mkdtempSync, rmSync, readFileSync, readdirSync, statSync, existsSync } from 'fs';
@@ -228,11 +229,14 @@ describe('query corpus baseline (spec_fd1ed424)', () => {
                 expect(res.itemsTotal).toBeGreaterThan(0);
                 expect(res.totalMatches).toBeGreaterThan(0);
             } else if (entry.family === 'multiword') {
-                // The structural gap 10096483 exists to close: a phrase with
-                // whitespace is provably present in source (freshGroundTruth
-                // above already proved that) yet absent from the index.
-                expect(res.itemsTotal).toBe(0);
-                expect(res.totalMatches).toBe(0);
+                // f08aeeb1 lifted the whitespace guard: these are all
+                // object-value-position, all-lowercase literals (literalRule
+                // 'below', position 'object_value'), which qualify under the
+                // existing positional rule once whitespace no longer disqualifies
+                // them outright. Each now resolves to exactly one item (one
+                // normalized term), whose match count equals the ground truth.
+                expect(res.itemsTotal).toBe(1);
+                expect(res.totalMatches).toBe(entry.grepGroundTruth.count);
             } else {
                 const { rank, itemsTotal, found } = findRank(dir, base, entry.targetOccurrence);
                 expect(found).toBe(true);

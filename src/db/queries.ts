@@ -4,6 +4,7 @@
 
 import type Database from 'better-sqlite3';
 import type { AiDexDatabase } from './database.js';
+import { normalizeLiteralWhitespace } from '../coverage/rule.js';
 
 /** Escape a term for SQLite LIKE queries (with ESCAPE '\'). */
 function escapeLike(term: string): string {
@@ -504,8 +505,13 @@ export class Queries {
         mode: 'exact' | 'contains' | 'starts_with' = 'exact',
         includeLiteralOnly = true
     ): number {
+        // Normalized the same way a literal is normalized before it is stored
+        // (extractor.ts, f08aeeb1): an un-normalized query term against a
+        // normalized index term is a silent miss on any whitespace difference
+        // (double space, tab, indentation) even for an exact substring.
+        const normTerm = normalizeLiteralWhitespace(term);
         const sql = `SELECT COUNT(*) n FROM items i WHERE ${this.itemMatchClause(mode, includeLiteralOnly)}`;
-        return (this.db.prepare(sql).get(this.itemMatchParam(term, mode)) as { n: number }).n;
+        return (this.db.prepare(sql).get(this.itemMatchParam(normTerm, mode)) as { n: number }).n;
     }
 
     searchItems(
@@ -515,6 +521,9 @@ export class Queries {
         offset = 0,
         includeLiteralOnly = true
     ): ItemRow[] {
+        // Same normalization as countItems above -- must agree, or a caller
+        // could see a nonzero count and an empty page.
+        const normTerm = normalizeLiteralWhitespace(term);
         // ORDER BY is not cosmetic here, it is what makes `offset` mean
         // anything: SQL guarantees no row order without it, so paging through
         // an unordered LIMIT can repeat rows and skip others.
@@ -537,9 +546,9 @@ export class Queries {
             LIMIT ? OFFSET ?
         `;
         return this.db.prepare(sql).all(
-            this.itemMatchParam(term, mode),
-            term,
-            `${escapeLike(term)}%`,
+            this.itemMatchParam(normTerm, mode),
+            normTerm,
+            `${escapeLike(normTerm)}%`,
             limit,
             offset
         ) as ItemRow[];
