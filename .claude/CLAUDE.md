@@ -10,6 +10,131 @@ Ce repo est un fork local `VOCSAP/AiDex`, base sur `CSCSoftware/AiDex`. Voir `gi
 
 Patches locaux versionnes sur la branche `local-patches`. Notes de developpement privees au fork sous `docs/dev-notes/` (exclus de git via `.gitignore` -- commit `e3dff85`).
 
+## Doctrine de developpement
+
+Cette section arbitre TOUTE decision de feature sur AiDex. La lire avant d'ouvrir,
+d'instruire ou d'implementer une carte de roadmap.
+
+### Pourquoi AiDex existe
+
+AiDex existe pour reduire fortement la consommation de TOKENS des agents. Ce n'est pas
+un outil pour humain, et ce n'est pas d'abord un outil de confort de lecture. La valeur
+livree est la substitution : un appel `aidex_query` ou `aidex_signature` remplace une
+sequence `Grep` puis `Read` qui aurait deverse des fichiers entiers dans le contexte de
+l'agent. Plus rapide est un effet secondaire ; moins cher est le but.
+
+**Pour qui.** Upstream est un projet public ; ce depot est un fork que l'operateur
+customise POUR SA PROPRE STATION. D'autres peuvent l'utiliser, ils ne sont pas la cible.
+Consequence : une calibration ou une mesure faite sur le corpus local de cette machine
+est legitime et suffisante. Ne pas exiger qu'un resultat generalise cross-utilisateurs,
+ne pas ajouter de complexite pour couvrir des profils d'usage hypothetiques. Le
+caractere mono-machine d'un corpus se mentionne une fois comme limite, jamais comme
+obstacle.
+
+**Unite de jugement : le NOMBRE DE LIGNES DE SORTIE rendues a l'agent.** Pas le nombre
+d'items indexes, pas le nombre de matchs, pas la couverture de l'index. `aidex_query`
+plafonne deja sa sortie a 100 lignes et l'annonce (`Found 629 match(es) ... [showing
+first 100]`). Le cout d'un appel est donc BORNE ; ce qui varie est la densite utile sous
+le plafond.
+
+Consequence directe, contre-intuitive et deja verifiee plusieurs fois : **indexer plus
+n'est pas ameliorer**. Ajouter des items qui ne rendent aucune requete nouvellement
+satisfaite degrade l'outil, parce que ces items concurrencent les bons sous un plafond
+fixe et polluent le mode `contains`.
+
+### Comment juger une feature candidate
+
+Quatre questions, dans cet ordre. Un `non` a la premiere ou a la deuxieme suffit a
+fermer la piste.
+
+1. **Supprime-t-elle un `grep` que l'agent devait lancer ?** Ou augmente-t-elle la
+   densite utile sous le plafond de 100 lignes ? Si elle ne fait ni l'un ni l'autre,
+   elle ne vaut rien, quel que soit le nombre d'items qu'elle ajoute.
+2. **Le besoin est-il MESURE, ou seulement plausible ?** Ce projet a paye un revert
+   complet pour une feature ajoutee sans besoin mesure (prefilter trigramme, `e7a0c8d`
+   puis `7ca37e2`).
+3. **Le residu vise est-il du signal ou du bruit ?** Mesurer avant de coder, sur un
+   corpus reel, avec un echantillon aleatoire lu verbatim.
+4. **Le defaut choisi sera-t-il fige dans la surface MCP ?** Si oui, il doit etre
+   calibre sur des requetes reellement emises, pas sur des exemples ecrits a la main.
+
+### Discipline de mesure
+
+**Mesurer avant de prescrire, y compris ses propres intuitions.** Sur la session
+d'etude du 2026-08-12, quatre hypotheses portees par le team-lead ont ete detruites par
+la mesure, sur quatre. Invalider sa propre recommandation est le resultat attendu, pas
+un echec.
+
+**Etiqueter chaque affirmation MESURE / DEDUIT / SUPPOSE.** Une affirmation MESURE
+s'accompagne de sa commande et de la ligne de sortie decisive. Une affirmation nue se
+renvoie a qui tient le contexte plutot que de se verifier soi-meme.
+
+**Piege d'echantillonnage mesure le 2026-08-13, a ne pas reproduire.** Echantillonner un
+ensemble de termes au niveau OCCURRENCE au lieu du TERME DISTINCT sur-represente les
+mots frequents et fabrique une conclusion fausse. Un echantillon par occurrence rendait
+0 sur 45 des litteraux rejetes deja atteignables par la dimension `symbol` ; le batch
+complet au niveau terme distinct a rendu 61 pourcent NON atteignables. Sur toute mesure
+de couverture d'index : echantillonner au niveau du terme distinct, et rendre SEPAREMENT
+le poids en occurrences. Jamais un seul des deux chiffres.
+
+**Corpus de mesure en place**, indexes et gitignores sous `docs/reference/` :
+`Kleos-local-patches` (Rust, 629 fichiers) et `koryphaios-experimental` (TypeScript).
+
+**Trace de requetes reelles** : les transcripts Claude Code `~/.claude/projects/<repo>/
+*.jsonl` portent chaque appel `aidex_query` avec son `term` et son `mode` (absent quand
+le defaut serveur s'applique), extractibles par `jq` sans toucher au code. C'est le seul
+corpus d'usage reel disponible ; il est par-operateur et par-machine, pas
+cross-utilisateurs.
+
+### Pistes CLOSES, ne pas rouvrir sans fait nouveau
+
+Chacune a ete fermee par une mesure, pas par une opinion.
+
+1. **Elargir `LITERAL_SHAPE` a la ponctuation.** +106 items sur 4977, deux tiers de
+   boilerplate SQL duplique. La condition de reouverture ecrite dans la carte (tester un
+   autre langage) a ete executee sur 629 fichiers Rust : meme profil, refuse.
+2. **Assouplir le SEUIL de la gate de position.** Elle ecarte 5 fois plus que
+   `LITERAL_SHAPE`, mais c'est un choix de conception mesure en amont, pas un accident.
+3. **Etendre `literalPosition` aux positions Rust** (carte `abf0f501`, archivee `wont`
+   le 2026-08-13). 61 pourcent des 4105 termes distincts rejetes ne sont pas atteignables
+   par `symbol`, mais ils ne pesent que 24,7 pourcent des occurrences, sont singleton, et
+   40 sur 40 en relecture aleatoire tombent dans trois buckets deja refuses : messages de
+   diagnostic et de log, descriptions et fixtures de test, lexique de sentiment. Meme
+   profil mesure deux fois, sur TypeScript puis sur Rust. Reouverture uniquement si un
+   langage tiers exhibe des cles de protocole ou de configuration REPETEES en position
+   rejetee.
+4. **Optimiser le matching `contains`.** Il pese 5 a 12 pourcent du cout d'un appel ; le
+   point chaud est la jointure d'occurrences, proportionnelle au fanout.
+5. **Indexer les commentaires de rationale** (carte `70e5d584`, `wont`). 0,03 a 0,21
+   pourcent des lignes de commentaire, et un `grep` fait mieux en 0,1 seconde.
+6. **Le cout de reindexation comme argument contre une feature.** Tranche par
+   l'operateur : ponctuel, non bloquant, definitivement. Ne plus l'invoquer.
+
+### Pieges d'environnement, a recopier dans tout brief d'execution
+
+- Le `node` du PATH est en v24.18.0 et casse l'ABI de `better-sqlite3` : toute la suite
+  de tests echoue en bloc avec une cause qui n'a rien a voir. Utiliser
+  `C:/Users/Olivier/AppData/Local/nvm/v22.11.0/node.exe`.
+- `--runInBand` et `--maxWorkers=1` sont INTERDITS sur la suite de tests. L'addon natif
+  tree-sitter est charge une fois par processus alors que jest cree un contexte vm par
+  fichier : des le deuxieme fichier d'un meme processus le parseur rend un arbre mort.
+  Mesure : mono-processus 66 echecs sur 138, parallele par defaut 138 sur 138. Le compte
+  varie d'un run a l'autre parce que jest tire l'ordre des fichiers de son cache de
+  timings, ce qui donne l'illusion d'un defaut non deterministe dans le code. Ce piege a
+  coute trois rapports de diagnostic dont deux avec une cause racine fausse.
+- `agent-forge` collisionne sur son repertoire de travail partage quand plusieurs agents
+  tournent : verifier que le stdout lu est bien le sien.
+
+### Sequencement du lot en cours
+
+L'ordre d'implementation des cartes vit dans `docs/dev-notes/roadmap-implementation-
+order.md` (prive au fork, gitignore). Il donne pour chaque carte son rang, la raison du
+rang, le premier pas obligatoire et les pieges mesures. Les cartes elles-memes portent
+un briefing autoportant : faire `roadmap_get <id>` plutot que se le faire recopier.
+
+**Regle qui prime sur ce document : chaque rang demarre par une MESURE, pas par du
+code.**
+
 ## Contrainte runtime
 
 **Node 22.x obligatoire** sur Windows 11 (builds recents type 26200). Un bug libuv dans Node 20.20.0 fait planter `npm install` au build natif (`tree-sitter`, `better-sqlite3`) avec `AssignProcessToJobObject: ERROR_INVALID_PARAMETER (87)` qui abort le process.
@@ -30,113 +155,19 @@ npm install                     # First-time install
 npm run build                   # After code changes (tsc + copy-assets)
 ```
 
-Si tu veux skip les optional deps (`@xenova/transformers` ~50 MB, `sqlite-vec` ~5 MB), utilise :
-```bash
-npm install --omit=optional
-```
-Mais dans ce cas les embeddings semantiques restent inactifs (stub).
-
-### Enregistrement MCP
-
-Le serveur est expose sous le nom `aidex`. Prefixe des outils : `mcp__aidex__aidex_*`.
-
-**Claude Code** (`~/.claude.json`) :
-```json
-"mcpServers": {
-  "aidex": {
-    "command": "C:\\Users\\Olivier\\AppData\\Local\\nvm\\v22.11.0\\node.exe",
-    "args": ["D:\\AI\\MCPServer\\AiDex\\build\\index.js"]
-  }
-}
-```
-
-**Claude Desktop** (`%APPDATA%/Claude/claude_desktop_config.json`) :
-```json
-"mcpServers": {
-  "aidex": {
-    "command": "C:\\Users\\Olivier\\AppData\\Local\\nvm\\v22.11.0\\node.exe",
-    "args": ["D:\\AI\\MCPServer\\AiDex\\build\\index.js"]
-  }
-}
-```
-
-Note sur le path Node : il est version-pinned a 22.11.0. Si tu installes 22.12 et desinstalles 22.11, ce path casse. Alternative : pointer vers le junction `C:\nvm4w\nodejs\node.exe` qui suit la version active de nvm4w (au risque d'ABI mismatch si tu fais `nvm use 20.x`).
+Si tu veux skip les optional deps (`@xenova/transformers` ~50 MB, `sqlite-vec` ~5 MB), utilise `npm install --omit=optional` (embeddings semantiques restent alors inactifs, stub).
 
 **Apres modification du code** : `npm run build`, puis redemarrer Claude Code / Desktop pour que le serveur MCP soit relance.
 
+L'enregistrement du serveur MCP (JSON `mcpServers`, chemins node par client) est documente dans `README.md` -- section "Install". Le nom du serveur est `aidex`, prefixe des outils `mcp__aidex__aidex_*`.
+
 ## Outils
 
-### Recherche & Index
-| Outil | Description |
-|-------|-------------|
-| `aidex_init` | Indexer un projet (param optionnel `embeddings: true`) |
-| `aidex_query` | Rechercher un terme (modes exact/contains/starts_with) avec filtres temporels |
-| `aidex_search` | Recherche semantique (vector KNN) + exact + hybrid via RRF (v1.22+) |
-| `aidex_status` | Statistiques d'index |
-| `aidex_update` | Reindexer un fichier |
-| `aidex_remove` | Retirer un fichier de l'index |
-
-### Signatures (a privilegier sur `Read`)
-| Outil | Description |
-|-------|-------------|
-| `aidex_signature` | Signature d'un fichier (Types + Methods) |
-| `aidex_signatures` | Signatures de plusieurs fichiers via glob |
-
-### Vue d'ensemble du projet
-| Outil | Description |
-|-------|-------------|
-| `aidex_summary` | Apercu projet + entry points |
-| `aidex_tree` | Arborescence avec stats |
-| `aidex_describe` | Documentation auto vers `summary.md` |
-| `aidex_files` | Lister les fichiers par type, avec `modified_since` |
-
-### Cross-projet
-| Outil | Description |
-|-------|-------------|
-| `aidex_link` / `aidex_unlink` / `aidex_links` | Lier des dependances entre projets |
-| `aidex_scan` | Trouver les projets deja indexes |
-
-### Session (v1.2+)
-| Outil | Description |
-|-------|-------------|
-| `aidex_session` | Demarrer une session, detecter les modifs externes |
-| `aidex_note` | Notes de session (persistees en DB) |
-| `aidex_viewer` | Explorateur navigateur avec live-reload (v1.3) |
-
-### Task Backlog (v1.8+)
-| Outil | Description |
-|-------|-------------|
-| `aidex_task` | CRUD task + log + scheduler (due/interval/action/auto_go) |
-| `aidex_tasks` | Lister tasks, filtrer par status/priority/tag |
-
-Etats : `backlog -> active -> done | cancelled`.
-
-### Log Hub (v1.16+)
-| Outil | Description |
-|-------|-------------|
-| `aidex_log` | Universal-Logging : init/free/status/query/clear/write + control_get/control_set. Serveur HTTP recoit des logs externes |
-
-Actions : `init` (start server) -> `query` (read logs) -> `free` (stop server).
-Controles (v2.2+) : `control_get` lit toutes les valeurs du dashboard, `control_set` en modifie une (meme set-point que le slider cote utilisateur).
-
-### Screenshots (v1.9+, optim v1.13)
-| Outil | Description |
-|-------|-------------|
-| `aidex_screenshot` | Capture d'ecran + optim (`scale`, `colors`) |
-| `aidex_windows` | Lister les fenetres ouvertes (helper pour le mode `window`) |
-
-### Global Search (v1.11+)
-| Outil | Description |
-|-------|-------------|
-| `aidex_global_init` | Scanner un arbre, enregistrer les projets dans `~/.aidex/global.db`. `index_unindexed` : auto-index <=500 fichiers. `show_progress` : UI navigateur |
-| `aidex_global_status` | Lister les projets enregistres avec leurs stats |
-| `aidex_global_query` | Rechercher un terme sur TOUS les projets (ATTACH DATABASE, cache 5 min) |
-| `aidex_global_signatures` | Methodes/types par nom sur tous les projets |
-| `aidex_global_refresh` | Rafraichir les stats, retirer les projets obsoletes |
+Tous les outils MCP (`aidex_query`, `aidex_signature`, `aidex_task`, `aidex_log`, `aidex_global_*`, etc.) sont declares nativement par le serveur MCP a chaque session : leurs descriptions n'ont pas besoin d'etre dupliquees ici. Reference complete des parametres et exemples : `MCP-API-REFERENCE.md`. Guide detaille du dashboard Live/panels/controles du Log Hub : `docs/loghub-panel-dashboard.md`.
 
 ## Langues supportees
 
-C#, TypeScript, JavaScript, Rust, Python, C, C++, Java, Go, PHP, Ruby, HCL/Terraform, Kotlin, Swift (14 langages depuis 2.3.0).
+C#, TypeScript, JavaScript, Rust, Python, C, C++, Java, Go, PHP, Ruby, HCL/Terraform, Kotlin, Swift (14 langages).
 Egalement indexes : `.astro` (frontmatter TypeScript parse via la grammaire TSX, template blanke pour preserver les numeros de ligne).
 
 ## Architecture
@@ -152,13 +183,13 @@ src/
 │   ├── summary.ts, link.ts, scan.ts, files.ts
 │   ├── session.ts, note.ts, task.ts, log.ts
 │   ├── screenshot/              # Platform screenshots
-│   └── global/                  # Global Search (v1.11)
+│   └── global/                  # Global Search
 │       ├── global-init.ts       # Scan + bulk index
 │       ├── global-query.ts      # ATTACH DATABASE queries
 │       ├── global-signatures.ts # Symbol search
 │       ├── global-status.ts     # Project overview
 │       └── global-refresh.ts    # Stats refresh
-├── embeddings/                  # Semantic search subsystem (v1.19+)
+├── embeddings/                  # Semantic search subsystem
 │   ├── index.ts          # Public API (lazy-loading stub)
 │   ├── pipeline.ts       # Real impl, instantiated on enable()
 │   ├── embedder.ts       # Transformers.js wrapper (ONNX)
@@ -167,12 +198,12 @@ src/
 │   ├── search.ts         # vec0 KNN + RRF hybrid
 │   ├── store.ts          # SQLite schema migration
 │   └── schema.sql        # embeddings table + projects columns
-├── loghub/                      # Log Hub (v1.16) + Dashboard (v2.1/2.2)
+├── loghub/                      # Log Hub + Dashboard
 │   ├── log-types.ts       # Shared types
 │   ├── log-buffer.ts      # Ring buffer (FIFO)
 │   ├── panel-types.ts     # Widget types (label/progress/gauge/plot/slider/number/toggle/button)
 │   ├── panel-store.ts     # Etat des slots du dashboard
-│   ├── control-store.ts   # Back-channel { id: value } (v2.2)
+│   ├── control-store.ts   # Back-channel { id: value }
 │   └── log-server.ts      # HTTP server singleton (port 3335)
 ├── viewer/
 │   ├── server.ts         # Interactive viewer (port 3333)
@@ -206,254 +237,12 @@ src/
 | `scheduled_tasks` | Mirror global dans `~/.aidex/global.db` |
 | `embeddings` | Vecteurs (vec0 virtual table) + content_hash |
 
-## Fonctionnalites cles
-
-### Embeddings semantiques (v1.19+, stable v2.1)
-
-L'embedder est **100% local** via `@xenova/transformers` (runtime ONNX). Aucun appel reseau hors du 1er DL du modele.
-
-```
-aidex_init({ path: ".", embeddings: true })          # Active + indexe
-aidex_search({ query: "retry with backoff",          # Recherche naturelle
-               mode: "hybrid", k: 20 })
-aidex_search({ query: "specific_fn", mode: "exact" }) # Identifier match
-```
-
-Modeles disponibles (cf. `src/embeddings/model-registry.ts`) :
-- `jina-code` (defaut) : `jinaai/jina-embeddings-v2-base-code`, 768 dims, 30 langages, Apache-2.0
-- `nomic-text` : 768 dims, Apache-2.0, generaliste
-- `bge-small` : 384 dims, MIT, English only, compact
-
-Stockage :
-- Modele cache : `~/.aidex/models/` (custom, survit aux `npm install`)
-- Vecteurs : `~/.aidex/global.db` table `embeddings`, partagee cross-projets
-
-LLM-layer optionnel (pour reranking, expansion de query) via `llm_endpoint` + `llm_model` + privacy switch `llm_send_code` (defaut `false`).
-
-### Filtres temporels (v1.1)
-```
-aidex_query({ term: "render", modified_since: "2h" })
-aidex_files({ path: ".", modified_since: "30m" })
-```
-Formats acceptes : `30m`, `2h`, `1d`, `1w`, ISO date.
-
-### Notes de session (v1.2)
-```
-aidex_note({ path: ".", note: "Test the fix" })          # Write
-aidex_note({ path: ".", append: true, note: "+" })       # Append
-aidex_note({ path: "." })                                # Read
-aidex_note({ path: ".", clear: true })                   # Delete
-```
-
-### Viewer interactif (v1.3)
-```
-aidex_viewer({ path: "." })                              # http://localhost:3333
-aidex_viewer({ path: ".", action: "close" })
-```
-Arborescence clic, signatures, live-reload (chokidar), syntax-highlight, git-status avec icones chat (v1.3.1).
-
-### Task Backlog (v1.8)
-```
-aidex_task({ path: ".", action: "create", title: "Fix bug",
-             priority: 1, tags: "bug" })
-aidex_task({ path: ".", action: "read", id: 1 })
-aidex_task({ path: ".", action: "update", id: 1, status: "done" })
-aidex_task({ path: ".", action: "log", id: 1, note: "Root cause found" })
-aidex_tasks({ path: ".", status: "active", tag: "bug" })
-```
-Priorities : 1=high, 2=medium (default), 3=low.
-Auto-log sur changement de statut. Viewer expose un onglet Tasks.
-
-### Task Scheduler (v1.17)
-```
-aidex_task({ path: ".", action: "create", title: "Check PR",
-             due: "3d", interval: "3d", task_action: "gh pr list" })
-aidex_task({ path: ".", action: "create", title: "One-shot", due: "1w" })
-```
-- `due` : `"30m"`, `"2h"`, `"3d"`, `"1w"` ou ISO date
-- `interval` : automatiquement re-arme apres trigger
-- One-shot : `due` est supprime apres trigger
-- Cross-project : `aidex_session` rapporte les tasks dues de tous les projets
-- `auto_go: true` execute la commande sans confirmation
-
-### Screenshots (v1.9, optim v1.13)
-```
-aidex_screenshot()                                       # Full screen
-aidex_screenshot({ mode: "active_window" })
-aidex_screenshot({ mode: "window", window_title: "VS Code" })
-aidex_screenshot({ scale: 0.5, colors: 2 })              # B&W, half-size
-aidex_screenshot({ colors: 16 })                         # 16 colors
-aidex_screenshot({ mode: "region" })                     # Drag rectangle
-aidex_windows({ filter: "chrome" })                      # Find windows
-```
-- Pas d'index requis (outil standalone)
-- Cross-platform : Windows (PowerShell), macOS (screencapture), Linux (maim/scrot)
-- Defaut : `os.tmpdir()/aidex-screenshot.png` (ecrasement systematique)
-- Options : `filename`, `save_path`
-- Strategie LLM : commencer par `scale: 0.5, colors: 2`, monter a `colors: 16` si illisible, puis `scale: 0.75`
-
-### Global Search (v1.11)
-```
-aidex_global_init({ path: "D:/AI" })                                # Register only
-aidex_global_init({ path: "D:/AI", index_unindexed: true,
-                    show_progress: true })                          # Index + UI
-aidex_global_query({ term: "JobObject", mode: "contains" })
-aidex_global_signatures({ term: "Render", kind: "method" })
-aidex_global_status({ sort: "recent" })
-aidex_global_refresh()
-```
-- `~/.aidex/global.db` reference toutes les DB de projet
-- SQLite `ATTACH DATABASE`, pas de copie de donnees
-- Cache de session (TTL 5 min) pour les queries repetees
-- Bulk-index : <=500 fichiers code auto, sinon liste pour validation manuelle
-- Progress UI : SSE port 3334, auto-open navigateur
-- Auto-dedup : projets parents avec sous-projets indexes sont skips
-
-### Log Hub (v1.16)
-```
-aidex_log({ action: "init" })                            # Port 3335
-aidex_log({ action: "init", port: 3336, buffer_size: 5000 })
-aidex_log({ action: "init", persist: true, path: "." })  # DB persistence
-aidex_log({ action: "query" })                           # Last 50 entries
-aidex_log({ action: "query", since: "10m", level: "error" })
-aidex_log({ action: "query", source: "MyApp", contains: "crash" })
-aidex_log({ action: "write", message: "Debug started" })
-aidex_log({ action: "status" })
-aidex_log({ action: "clear" })
-aidex_log({ action: "free" })
-```
-- API HTTP : `POST /log`, `POST /logs`, `GET /health`
-- Ring buffer fixed-size FIFO
-- Viewer : onglet Logs avec WS live-stream + filtres
-- Zero-cost : pas de serveur ni de buffer tant que `init` n'est pas appele
-
-### Auto-cleanup (v1.3.1)
-`aidex_init` retire automatiquement les fichiers desormais exclus (ex. `build/` ajoute aux ignores). Sortie : `Files removed: N`.
-
-## CLI
-
-```bash
-node build/index.js              # MCP server (stdin/stdout)
-node build/index.js scan <path>  # Discover projects
-node build/index.js init <path>  # Index a project
-```
-
 ## Details d'implementation
 
 - **Tree-sitter** : buffer 1 MB pour les gros fichiers
 - **Hash-diff** : les timestamps de ligne sont preserves si le hash ne change pas
 - **Arrow functions** : detectees comme methodes (volontaire, un peu de bruit)
 - **Filtres keyword** : par langue dans `src/parser/languages/`
-
-## LogHub Developer Guide
-
-### Vue d'ensemble
-
-LogHub est un recepteur de logs universel. N'importe quel programme peut envoyer des logs via HTTP POST, sans library ni SDK. L'IA peut interroger les logs, l'utilisateur les voit en live dans le Viewer.
-
-### Setup (cote IA)
-
-```
-1. aidex_log({ action: "init" })             # Start server (port 3335)
-2. aidex_viewer({ path: "." })                # Open Viewer -> Logs tab
-3. Wire logging into the target program (see below)
-4. aidex_log({ action: "query", since: "5m" })
-5. aidex_log({ action: "free" })              # Stop server
-```
-
-### API HTTP
-
-| Endpoint | Methode | Body | Description |
-|----------|---------|------|-------------|
-| `/log` | POST | `{ level, source, message, data? }` | Single entry |
-| `/logs` | POST | `[{ level, source, message, data? }, ...]` | Batch |
-| `/health` | GET | -- | Status + buffer fill |
-| `/panel` | POST | `{ id, type, value, ... }` | Widget du dashboard (slot fixe, ecrase en place) |
-| `/panel/clear` | POST | -- | Vide widgets + valeurs de controle |
-| `/control` | POST / GET | `{ id, value }` / -- | Set une valeur ; GET renvoie tout en `{ id: value }` (la source poll) |
-| `/control/press` | POST | `{ id }` | Signale un appui bouton -- c'est le hub qui incremente, pas l'appelant |
-
-Champs :
-- `level` : `"debug"` / `"info"` / `"warn"` / `"error"` (defaut `info`)
-- `source` : nom de l'app/composant (ex. `"MyApp"`, `"Parser"`)
-- `message` : texte du log (requis)
-- `data` : objet JSON libre (optionnel)
-- `timestamp` : Unix ms (optionnel, sinon heure serveur)
-
-### Dashboard Live (v2.1, controles v2.2/2.3)
-
-A cote du flux de logs qui defile, un dashboard a slots fixes : chaque valeur a une `id`, renvoyer la meme `id` ecrase la valeur en place au lieu de scroller. Adapte aux valeurs haute frequence (niveau audio, remplissage de buffer, FPS, capteurs). Visible dans l'onglet **Live** du viewer (nomme `Debug` jusqu'a 2.2.2 ; l'id de tab `debug` reste inchange cote API).
-
-Types de widgets :
-- **Affichage** : `label`, `progress`, `gauge` (champ `state` = couleur LED, independant du texte), `plot` (champs `scale` `linear`/`log`, `autoMin`, `decimals`)
-- **Interactifs** (la valeur redescend vers la source qui la recupere via `GET /control`) : `slider`, `number` (`min`/`max`/`step`), `toggle` (0/1, `unit` = `"ON|OFF"`), `button`
-
-Piege du `button` : sa valeur est un **compteur monotone**, pas un booleen. La source poll a son propre rythme, donc un flag serait perdu entre deux polls. Elle compare avec le dernier compte vu -- la difference donne le nombre d'appuis. Un saut vers le bas (overflow a 1e6, `/panel/clear`, redemarrage du hub) signifie "redemarrage, adopter la valeur", pas un million d'appuis.
-
-Cote IA : `aidex_log({ action: "control_get" })` lit toutes les valeurs, `aidex_log({ action: "control_set", id, value })` en pilote une. C'est le meme set-point que le slider de l'utilisateur, donc Claude peut regler un programme en cours d'execution (seuil, gain, sample rate) et observer l'effet.
-
-### Exemples par langage
-
-**C# (.NET)**
-```csharp
-using var http = new HttpClient();
-http.PostAsJsonAsync("http://localhost:3335/log", new {
-    level = "info",
-    source = "MyApp",
-    message = "Player spawned",
-    data = new { x = 10, y = 20 }
-});
-```
-
-**C# (helper minimal)**
-```csharp
-static readonly HttpClient _log = new();
-static void Log(string msg, string level = "info", object? data = null) {
-    var body = new { level, source = "MyApp", message = msg, data };
-    _ = _log.PostAsJsonAsync("http://localhost:3335/log", body);
-}
-```
-
-**Python**
-```python
-import requests
-requests.post("http://localhost:3335/log", json={
-    "level": "info",
-    "source": "MyScript",
-    "message": "Processing complete",
-    "data": {"items": 42}
-})
-```
-
-**JavaScript / Node.js**
-```javascript
-fetch("http://localhost:3335/log", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-        level: "info",
-        source: "MyApp",
-        message: "Server started",
-    })
-});
-```
-
-**PowerShell**
-```powershell
-Invoke-RestMethod -Uri "http://localhost:3335/log" -Method POST `
-  -ContentType "application/json" `
-  -Body '{"level":"info","source":"MyApp","message":"Task done"}'
-```
-
-### Tips pour l'IA
-
-- Proposer le Viewer (`aidex_viewer`) pour streamer les logs en live.
-- Choisir un `source` parlant -> facilite le filtrage cote query.
-- Niveaux : `error` pour les erreurs, `warn` pour les warnings, `debug` pour le verbose.
-- Batch (`POST /logs`) si le programme genere beaucoup de logs/seconde.
-- Pattern consume : `aidex_log({ action: "query", consume: true })` retire les entries lues du buffer (poll-style).
-- Fire-and-forget cote client : pas besoin d'attendre la reponse, ca evite de bloquer le code metier.
-- Aucune gestion d'erreur cote client : si LogHub n'est pas demarre, le POST echoue silencieusement, c'est OK.
 
 ## Posture securite du fork
 
@@ -468,18 +257,14 @@ Aucun n'est une dependance directe du fork -- ce sont les transitifs d'upstream.
 
 Le seul `overrides` du fork est `protobufjs: ^7.5.8`. Il force protobufjs 7.6.5 sur `onnx-proto@4.0.4`, qui declare pourtant `^6.8.8` : violation semver majeure assumee, chemin embeddings uniquement. **Verifie fonctionnel le 2026-08-10** (embedding jina-code, vecteur 768 dims non degenere). A re-tester apres chaque refresh de dependances.
 
-Plan de hardening candidat pour un patch fork futur :
-1. `npm audit fix` couvre `ws` et `simple-git` sans breaking change -- a valider isolement.
-2. Ajouter des `overrides` pour forcer `glob@^11`, `rimraf@^6`, `minimatch` recents sur les transitives.
-3. Surveiller les CVE upstream sur `tree-sitter` et `better-sqlite3`, les addons natifs les plus exposes.
-
-Ces actions ne sont **pas urgentes** : aucun warning ne casse le build. A traiter dans une session dediee, pas pendant un fix fonctionnel ni pendant un merge upstream.
+Hardening candidat (npm audit fix sur `ws`/`simple-git`, overrides `glob`/`rimraf`/`minimatch`, veille CVE tree-sitter/better-sqlite3) pas urgent, aucun warning ne casse le build : a traiter en session dediee, jamais pendant un fix fonctionnel ni un merge upstream. Plan detaille en trois etapes : `docs/dev-notes/security-hardening-plan.md` (prive au fork).
 
 ## Documentation complementaire
 
 | Fichier | Contenu |
 |---------|---------|
-| `README.md` | Documentation publique (upstream + VOCSAP) |
-| `MCP-API-REFERENCE.md` | API MCP complete |
+| `README.md` | Documentation publique (upstream + VOCSAP), y compris l'enregistrement MCP par client et l'usage CLI |
+| `MCP-API-REFERENCE.md` | API MCP complete : tous les outils, leurs parametres et exemples d'appel, y compris le Log Hub (endpoints HTTP, exemples client par langage) |
+| `docs/loghub-panel-dashboard.md` | Guide detaille du dashboard Live du Log Hub (widgets, endpoints `/panel` et `/control`, piege du compteur `button`) |
 | `CHANGELOG.md` | Historique des versions |
-| `docs/dev-notes/` | Notes privees au fork VOCSAP (exclues de git) |
+| `docs/dev-notes/` | Notes privees au fork VOCSAP (exclues de git), dont `security-hardening-plan.md` (plan detaille en trois etapes) et `roadmap-implementation-order.md` |
