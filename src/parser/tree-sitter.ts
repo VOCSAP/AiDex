@@ -146,7 +146,20 @@ export function extractAstroFrontmatter(source: string): string | null {
     const lines = source.split('\n');
     if (lines[0]?.trimEnd() !== '---') return null;
 
-    const closeIdx = lines.indexOf('---', 1);
+    // Both fences are matched with the SAME rule: exact `---` once trailing
+    // whitespace is stripped. That makes the scan tolerate the trailing CR left
+    // by `split('\n')` on a CRLF working tree; a strict `lines.indexOf('---', 1)`
+    // here silently rejected every .astro file checked out with core.autocrlf.
+    // `trimEnd()` and not `trim()` keeps the fence anchored at column 0. That is
+    // a conservative indexer choice, STRICTER than the Astro grammar itself,
+    // not a restatement of it.
+    let closeIdx = -1;
+    for (let i = 1; i < lines.length; i++) {
+        if (lines[i]?.trimEnd() === '---') {
+            closeIdx = i;
+            break;
+        }
+    }
     if (closeIdx === -1) return null;
 
     // Keep frontmatter lines at their original positions; blank out everything else
