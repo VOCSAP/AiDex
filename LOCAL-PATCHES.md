@@ -495,3 +495,51 @@ La fonction blanchit les deux fences et le template, mais **conserve les `\r` en
 ### Defaut voisin, volontairement NON corrige ici -- carte `a9d43516`
 
 Un `.astro` legitimement **sans** frontmatter (composant template pur) est un cas normal : `extractAstroFrontmatter` rend `null` par conception, et `init()` le rapporte comme une erreur. C'est un defaut de CLASSIFICATION, pas de parsing, et le melanger a celui-ci aurait masque la difference de nature entre les deux. Mesure : 0 fichier sur 31 dans ce cas, contribution nulle aux 30 avertissements observes.
+
+---
+
+## 19. Deux grandeurs "items" distinctes portaient le meme mot -- carte `740c6f5d`
+
+### Le defaut, en une phrase
+
+`init()` et `aidex_status`/`aidex_scan` rendaient deux quantites totalement differentes sous le meme mot "Items", ce qui a produit une fausse alerte de croissance/perte de donnees le 2026-08-13 avant d'etre tranchee (`hyp_f372407c`) : il n'y avait AUCUNE perte, seulement une unite ambigue.
+
+### Les deux grandeurs, precisement
+
+- **Grandeur A -- paires terme-fichier, casse brute.** `init()`/CLI `init`/CLI `rebuild-index` rendent la somme, sur tous les fichiers reindexes, d'un `Set` PAR FICHIER (`itemsInserted.size`, `src/commands/init.ts:556` et `:902`), jamais dedoublonne entre fichiers ni case-folde.
+- **Grandeur B -- termes globalement distincts, casse repliee.** CLI `scan`/`aidex_status`/`aidex_scan`/`aidex_global_init` rendent `SELECT COUNT(*) FROM items` (`src/db/database.ts:242`), une table `COLLATE NOCASE`.
+
+Le rapport entre les deux vaut le nombre moyen de fichiers par terme -- il VARIE par projet, donc aucune comparaison directe des deux valeurs n'a de sens, meme sur le meme projet au meme run.
+
+### Le correctif, et ce qu'il ne touche PAS
+
+**Texte et une seule cle JSON, aucun mecanisme.** Le calcul de `itemsFound`/`itemsInserted` dans `init.ts` et la requete `COUNT(*)` de `getStats()` dans `database.ts` sont restes identiques, octet pour octet -- la carte les declare corrects par construction, le defaut est uniquement dans le RENDU.
+
+Sept surfaces renommees, chacune identifiee en lisant sa source jusqu'a la grandeur qu'elle rend plutot qu'en filtrant sur le mot "items" :
+
+- CLI `init` et CLI `rebuild-index` (`src/index.ts`, meme texte aux deux emplacements) : `"Items: N"` -> `"Term-file pairs (raw case): N"` (grandeur A).
+- CLI `scan` (`src/index.ts`) : `"Items: N"` -> `"Distinct terms (case-folded): N"` (grandeur B).
+- `aidex_init` (`handleInit`, `src/server/tools.ts`) : `"Items found: N"` -> `"Term-file pairs found (raw case): N"` (grandeur A).
+- `aidex_scan` (`handleScan`, `src/server/tools.ts`) : `"**Items:** N"` -> `"**Distinct terms (case-folded):** N"` (grandeur B).
+- `aidex_global_init` (`handleGlobalInit`, `src/server/tools.ts`) : ligne de tableau `"Items | N"` -> `"Distinct terms (case-folded, summed) | N"` (grandeur B, sommee sur plusieurs projets).
+- `aidex_status` (`handleStatus`, `src/server/tools.ts`) : la cle JSON `items` de `statistics` est renommee `distinctTerms` par une destructure/spread LOCALE juste avant `JSON.stringify` -- `db.getStats()` elle-meme garde son champ `items` partout ailleurs dans le code, seule la sortie MCP change.
+
+`MCP-API-REFERENCE.md` mis a jour en miroir pour les sections `aidex_init`/`aidex_status`/`aidex_scan`.
+
+### Ce qui a ete refuse en revue, et pourquoi
+
+- **`aidex_update` (`itemsAdded`/`itemsRemoved`)** : le calcul sous-jacent est DEDUIT faux par lecture de code (`update.ts:181` case-folded contre `update.ts:275` casse brute), NON MESURE -- un mot precis colle sur un nombre dont l'exactitude n'est pas etablie serait pire que le mot ambigu qu'il remplacerait. Laisse en l'etat, hors carte : la mesure elle-meme est le premier pas obligatoire de la carte de suite `d42a01a5`.
+- **`aidex_tree`/`entry.itemCount`** : le RENDU porte toujours le mot "items" nu (`tools.ts:1707`), mais son UNITE est MESUREE a la source (`summary.ts:288-292`, `COUNT(DISTINCT item_id) GROUP BY file_id`), portee PER-FICHIER -- donc hors du critere d'acceptation de cette carte, qui porte sur un total-de-run compare a un total-de-status, pas sur un compte per-fichier. Volontairement non retouche plus avant sur instruction explicite.
+- **Tableaux de benchmark historiques (`README.md`, `docs/MARKETING.md`)** : la grandeur qu'ils mesuraient a l'epoque n'est plus connue avec certitude ; les renommer affirmerait une unite non verifiee. Carte de suite `d74f9101` deposee pour couvrir ce residu (libelle `aidex_tree` inclus).
+
+### Reste NON VERIFIE
+
+La puce `aidex_update` ci-dessus reste une DEDUCTION de lecture de code, pas une mesure executee : `update.ts:181` (case-folded) contre `update.ts:275` (casse brute) n'ont pas ete confrontes sur un cas reel ou les deux comptes divergent effectivement. La carte `d42a01a5` porte cette mesure comme premier pas obligatoire, avec sa propre condition de fermeture -- ne pas la relire comme un fait etabli tant qu'elle n'est pas cloturee.
+
+### Test de regression -- `tests/items-label-rename.test.js`
+
+Deux passes. Pass 1, trois cas via `handleToolCall()` en-processus (`aidex_init`, `aidex_scan`, `aidex_status` JSON key), qui n'exercent QUE le chemin MCP (`src/server/tools.ts`) -- confirme separement necessaire quand la revue a releve que le texte CLI et le texte MCP avaient deja diverge une fois (`"Term-file pairs (raw case): "` cote CLI contre `"Term-file pairs found (raw case): "` cote MCP), donc un vert sur l'un ne prouve rien sur l'autre. Pass 2, deux cas supplementaires par PROCESSUS SPAWNE (`spawnSync`, harnais repris de `tests/init-success-modes.test.js`, PAS de `tests/cli-warnings.test.js` qui ne fait que mocker `console.log`) pinnant `src/index.ts` `init` (ligne ~131) et `scan` (ligne ~103) -- les deux lignes que le critere d'acceptation de la carte designe explicitement ("la derniere ligne d'un run d'indexation mise cote a cote avec la sortie de `aidex_status`"). `rebuild-index` (meme texte que `init`, ligne ~183) et `handleGlobalInit` (`tools.ts`) sont deliberement laisses NON pinnes par ce fichier -- hors du critere d'acceptation, portes par une carte de suite.
+
+**Prouve par mutation** : la ligne CLI `init` (`src/index.ts:131`) remise a l'ancien texte `"Items: N"`, `npm run build`, re-run -> **1 rouge (CLI init) sur 5, 4 verts inchanges**, dont le cas CLI `scan` qui partage le meme fichier source mais une ligne differente. Restaure, rebuild, re-run -> 5/5 vert.
+
+**Verifie** : `C:/Users/USERNAME/AppData/Local/nvm/v22.11.0/node.exe --experimental-vm-modules node_modules/jest/bin/jest.js tests/items-label-rename.test.js` -> `Tests: 5 passed, 5 total`, via `agent-forge verify` (tsc-build + targeted-test, 2/2 steps).

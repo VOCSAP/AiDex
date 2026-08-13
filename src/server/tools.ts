@@ -1150,7 +1150,7 @@ async function handleInit(args: Record<string, unknown>): Promise<{ content: Arr
         if (result.filesRemoved > 0) {
             message += `Files removed: ${result.filesRemoved} (now excluded)\n`;
         }
-        message += `Items found: ${result.itemsFound}\n`;
+        message += `Term-file pairs found (raw case): ${result.itemsFound}\n`;
         message += `Methods found: ${result.methodsFound}\n`;
         message += `Types found: ${result.typesFound}\n`;
         message += `Duration: ${result.durationMs}ms`;
@@ -1383,6 +1383,13 @@ async function handleStatus(args: Record<string, unknown>): Promise<{ content: A
         // module unavailable or DB error → leave embeddings as { enabled: false }
     }
 
+    // Rename items -> distinctTerms on the way out (card 740c6f5d): the items
+    // table is COLLATE NOCASE, a globally-distinct count, unlike the raw-case
+    // term-file pairs reported by aidex_init/aidex_scan under the same word.
+    // Local relabel only -- getStats()'s field name stays "items" everywhere
+    // else in the codebase.
+    const { items: distinctTerms, ...restStats } = stats;
+
     return {
         content: [
             {
@@ -1390,7 +1397,7 @@ async function handleStatus(args: Record<string, unknown>): Promise<{ content: A
                 text: JSON.stringify({
                     project: projectName,
                     schemaVersion,
-                    statistics: stats,
+                    statistics: { ...restStats, distinctTerms },
                     embeddings,
                     databasePath: dbPath,
                 }, null, 2),
@@ -1889,7 +1896,7 @@ function handleScan(args: Record<string, unknown>): { content: Array<{ type: str
     for (const proj of result.projects) {
         message += `## ${proj.name}\n`;
         message += `- **Path:** ${proj.path}\n`;
-        message += `- **Files:** ${proj.files} | **Items:** ${proj.items} | **Methods:** ${proj.methods} | **Types:** ${proj.types}\n`;
+        message += `- **Files:** ${proj.files} | **Distinct terms (case-folded):** ${proj.items} | **Methods:** ${proj.methods} | **Types:** ${proj.types}\n`;
         message += `- **Last indexed:** ${proj.lastIndexed}\n`;
         message += '\n';
     }
@@ -2569,7 +2576,7 @@ async function handleGlobalInit(args: Record<string, unknown>): Promise<{ conten
     message += `| | Count |\n|---|---|\n`;
     message += `| Projects | ${result.totals.projects} |\n`;
     message += `| Files | ${result.totals.files} |\n`;
-    message += `| Items | ${result.totals.items} |\n`;
+    message += `| Distinct terms (case-folded, summed) | ${result.totals.items} |\n`;
     message += `| Methods | ${result.totals.methods} |\n`;
     message += `| Types | ${result.totals.types} |\n`;
 

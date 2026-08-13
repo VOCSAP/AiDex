@@ -100,7 +100,7 @@ async function main() {
             for (const proj of result.projects) {
                 console.log(`${proj.name}`);
                 console.log(`  Path: ${proj.path}`);
-                console.log(`  Files: ${proj.files} | Items: ${proj.items} | Methods: ${proj.methods} | Types: ${proj.types}`);
+                console.log(`  Files: ${proj.files} | Distinct terms (case-folded): ${proj.items} | Methods: ${proj.methods} | Types: ${proj.types}`);
                 console.log(`  Last indexed: ${proj.lastIndexed}`);
                 console.log();
             }
@@ -128,7 +128,7 @@ async function main() {
 
         console.log(`Done!`);
         console.log(`  Files: ${result.filesIndexed}`);
-        console.log(`  Items: ${result.itemsFound}`);
+        console.log(`  Term-file pairs (raw case): ${result.itemsFound}`);
         console.log(`  Methods: ${result.methodsFound}`);
         console.log(`  Types: ${result.typesFound}`);
         console.log(`  Time: ${result.durationMs}ms`);
@@ -180,7 +180,7 @@ async function main() {
 
         console.log(`Done!`);
         console.log(`  Files: ${result.filesIndexed}`);
-        console.log(`  Items: ${result.itemsFound}`);
+        console.log(`  Term-file pairs (raw case): ${result.itemsFound}`);
         console.log(`  Time: ${result.durationMs}ms`);
 
         // bfb7bf8f: same visibility gap as init() before 16d8512 -- errors[]

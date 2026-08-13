@@ -65,7 +65,7 @@ Initialize or re-index a project. Creates `.aidex/` directory with SQLite databa
 
 **Returns:**
 - Files indexed count
-- Items/methods/types found
+- Term-file pairs (raw case) / methods / types found
 - Duration in ms
 - Warnings (if any)
 
@@ -299,7 +299,7 @@ Get index statistics for a project.
 
 **Returns:**
 - Schema version
-- Counts: files, lines, items, occurrences, methods, types, dependencies
+- Counts: files, lines, distinctTerms (case-folded, distinct from the raw-case term-file pairs reported by `aidex_init`/`aidex_scan`), occurrences, methods, types, dependencies
 - Database size in bytes
 - Database path
 
@@ -529,7 +529,7 @@ Find all projects with AiDex indexes in a directory tree.
 - List of indexed projects with:
   - Name
   - Path
-  - Statistics (files, items, methods, types)
+  - Statistics (files, distinct terms [case-folded], methods, types)
   - Last indexed timestamp
 
 **Example:**
