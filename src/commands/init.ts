@@ -143,11 +143,19 @@ export interface InitResult {
 // react to errors[], gated behind ONE env var so existing callers are not
 // silently changed underneath them.
 //
-// AIDEX_INIT_SUCCESS_MODE is the single choke point the value flows
-// through -- resolveInitSuccessMode() is the only place that reads
-// process.env, and computeInitSuccess() is the only place that branches on
-// the resolved mode. Renaming a mode identifier later costs one line in
-// each.
+// AIDEX_SUCCESS_MODE is the single choke point the value flows through --
+// resolveSuccessMode() is the only place that reads process.env, and
+// computeInitSuccess() is the only place that branches on the resolved
+// mode. Renaming a mode identifier later costs one line in each.
+//
+// bfb7bf8f (2nd pass): originally AIDEX_INIT_SUCCESS_MODE, scoped to init()
+// only. Widened by explicit operator arbitration to also gate rebuild-index
+// (src/index.ts) -- which needed no new plumbing, since rebuild-index's CLI
+// branch already calls this same init() on every run and therefore already
+// went through resolveSuccessMode()/computeInitSuccess() by construction.
+// The rename is the only substantive change; AIDEX_INIT_SUCCESS_MODE is kept
+// as a back-compat alias (new name wins if both are set) so existing
+// operator config does not silently stop working.
 // ============================================================
 
 export type InitSuccessMode = 'default' | 'empty' | 'strict';
@@ -164,7 +172,9 @@ export interface InitSuccessCounts {
 }
 
 /**
- * Resolves AIDEX_INIT_SUCCESS_MODE. Unset or exactly 'default' -> 'default'.
+ * Resolves AIDEX_SUCCESS_MODE, falling back to the deprecated
+ * AIDEX_INIT_SUCCESS_MODE alias when the new name is unset. If BOTH are set,
+ * the new name wins. Unset (both) or exactly 'default' -> 'default'.
  * Anything else that is not one of the three known modes THROWS -- a typo'd
  * or stale value must never silently fall back to 'default', because that
  * would reintroduce exactly the invisible-bad-state failure mode this card
@@ -174,11 +184,13 @@ export interface InitSuccessCounts {
  * turn a thrown Error into a visible, non-zero-exit / error-text response,
  * so throwing here is safe in both callers without extra plumbing.
  */
-export function resolveInitSuccessMode(raw: string | undefined): InitSuccessMode {
-    if (raw === undefined || raw === '') return 'default';
-    if (raw === 'default' || raw === 'empty' || raw === 'strict') return raw;
+export function resolveSuccessMode(raw: string | undefined, legacyRaw?: string | undefined): InitSuccessMode {
+    const effective = raw !== undefined && raw !== '' ? raw : legacyRaw;
+    const envName = raw !== undefined && raw !== '' ? 'AIDEX_SUCCESS_MODE' : 'AIDEX_INIT_SUCCESS_MODE';
+    if (effective === undefined || effective === '') return 'default';
+    if (effective === 'default' || effective === 'empty' || effective === 'strict') return effective;
     throw new Error(
-        `Invalid AIDEX_INIT_SUCCESS_MODE "${raw}": expected "default", "empty" or "strict".`
+        `Invalid ${envName} "${effective}": expected "default", "empty" or "strict".`
     );
 }
 
@@ -398,7 +410,7 @@ export async function init(params: InitParams): Promise<InitResult> {
     // be -- an operator who typo'd the env var deserves that surfaced
     // immediately, not only on the runs that happen to reach the main
     // return path (see computeInitSuccess() above for how this is used).
-    const successMode = resolveInitSuccessMode(process.env.AIDEX_INIT_SUCCESS_MODE);
+    const successMode = resolveSuccessMode(process.env.AIDEX_SUCCESS_MODE, process.env.AIDEX_INIT_SUCCESS_MODE);
 
     // Validate project path
     if (!existsSync(params.path)) {

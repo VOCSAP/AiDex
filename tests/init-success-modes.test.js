@@ -15,13 +15,21 @@
  *      this" test below, which pins that pre-existing behavior so a future
  *      refactor cannot silently drop it while "only" changing the CLI side).
  *  [B] success itself can now react to errors[], gated behind ONE env var,
- *      AIDEX_INIT_SUCCESS_MODE, resolved through resolveInitSuccessMode()
- *      and applied through computeInitSuccess() -- both exported from
- *      build/commands/init.js specifically so this suite can pin the
- *      decision logic directly, without needing to force real per-file
- *      indexing failures (fragile and platform-dependent to construct: no
- *      reliable, portable way to make a real file fail mid-index on both
- *      POSIX and Windows CI without symlink privileges or ACL shelling).
+ *      AIDEX_SUCCESS_MODE, resolved through resolveSuccessMode() and applied
+ *      through computeInitSuccess() -- both exported from build/commands/
+ *      init.js specifically so this suite can pin the decision logic
+ *      directly, without needing to force real per-file indexing failures
+ *      (fragile and platform-dependent to construct: no reliable, portable
+ *      way to make a real file fail mid-index on both POSIX and Windows CI
+ *      without symlink privileges or ACL shelling).
+ *
+ * bfb7bf8f (2nd pass, later): the env var was originally AIDEX_INIT_SUCCESS_
+ * MODE, scoped to init() only, and resolveSuccessMode() was originally named
+ * resolveInitSuccessMode(). Widened by explicit operator arbitration to also
+ * gate the rebuild-index CLI subcommand (src/index.ts), which needed no new
+ * gating logic -- it already calls this same init() on every run. The old
+ * name is kept as a back-compat alias (resolveSuccessMode's second
+ * parameter); the new name wins if both are set.
  *
  * A DEVIATION FROM THE CARD'S LITERAL WORDING is exercised deliberately in
  * the "idempotent re-run" cases below: the card defines the 'empty' mode's
@@ -38,11 +46,19 @@
  */
 
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { tmpdir } from 'os';
+import { spawnSync } from 'child_process';
 
-import { init, resolveInitSuccessMode, computeInitSuccess } from '../build/commands/init.js';
-import { isNativeAbiMismatch, nodeAbiGuardMessage } from './helpers/node-interpreter-guard.js';
+import { init, resolveSuccessMode, computeInitSuccess } from '../build/commands/init.js';
+import { isNativeAbiMismatch, nodeAbiGuardMessage, resolveAidexNode } from './helpers/node-interpreter-guard.js';
+
+// Anchored on this file's own location, not process.cwd() -- see roadmap
+// card 39e02f07 (defect 2) and tests/cli-update-summary-contract.test.js.
+const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+const CLI_ENTRY = join(REPO_ROOT, 'build', 'index.js');
+const NODE_BIN = resolveAidexNode();
 
 const tempDirs = [];
 
@@ -74,37 +90,64 @@ afterAll(() => {
 });
 
 // ============================================================
-// [B1] resolveInitSuccessMode -- the single choke point reading the env var
+// [B1] resolveSuccessMode -- the single choke point reading the env var,
+// now with the AIDEX_INIT_SUCCESS_MODE back-compat alias (bfb7bf8f 2nd pass)
 // ============================================================
 
-describe('resolveInitSuccessMode', () => {
-    test('unset -> default', () => {
-        expect(resolveInitSuccessMode(undefined)).toBe('default');
+describe('resolveSuccessMode', () => {
+    test('both unset -> default', () => {
+        expect(resolveSuccessMode(undefined, undefined)).toBe('default');
     });
 
-    test('empty string -> default', () => {
-        expect(resolveInitSuccessMode('')).toBe('default');
+    test('empty string (new var only) -> default', () => {
+        expect(resolveSuccessMode('', undefined)).toBe('default');
     });
 
-    test('"default" -> default', () => {
-        expect(resolveInitSuccessMode('default')).toBe('default');
+    test('"default" (new var) -> default', () => {
+        expect(resolveSuccessMode('default', undefined)).toBe('default');
     });
 
-    test('"empty" -> empty', () => {
-        expect(resolveInitSuccessMode('empty')).toBe('empty');
+    test('"empty" (new var) -> empty', () => {
+        expect(resolveSuccessMode('empty', undefined)).toBe('empty');
     });
 
-    test('"strict" -> strict', () => {
-        expect(resolveInitSuccessMode('strict')).toBe('strict');
+    test('"strict" (new var) -> strict', () => {
+        expect(resolveSuccessMode('strict', undefined)).toBe('strict');
     });
 
     // Unknown-value design decision: throw, not a silent fallback to
     // 'default' -- a silent fallback would reintroduce exactly the
     // invisible-bad-state bug this card exists to fix, one layer up.
-    test('unknown value throws, naming the offending value and the valid set', () => {
-        expect(() => resolveInitSuccessMode('partial')).toThrow(/AIDEX_INIT_SUCCESS_MODE.*partial/);
-        expect(() => resolveInitSuccessMode('PARTIAL')).toThrow(/AIDEX_INIT_SUCCESS_MODE/);
-        expect(() => resolveInitSuccessMode('typo')).toThrow(/default.*empty.*strict/);
+    test('unknown value on the new var throws, naming AIDEX_SUCCESS_MODE, the value, and the valid set', () => {
+        expect(() => resolveSuccessMode('partial', undefined)).toThrow(/AIDEX_SUCCESS_MODE.*partial/);
+        expect(() => resolveSuccessMode('PARTIAL', undefined)).toThrow(/AIDEX_SUCCESS_MODE/);
+        expect(() => resolveSuccessMode('typo', undefined)).toThrow(/default.*empty.*strict/);
+    });
+
+    describe('AIDEX_INIT_SUCCESS_MODE back-compat alias', () => {
+        test('new var unset, legacy set -> legacy value used', () => {
+            expect(resolveSuccessMode(undefined, 'strict')).toBe('strict');
+        });
+
+        test('new var empty string, legacy set -> legacy value used', () => {
+            expect(resolveSuccessMode('', 'empty')).toBe('empty');
+        });
+
+        test('unknown value on the legacy-only var throws, naming AIDEX_INIT_SUCCESS_MODE (not the new name)', () => {
+            expect(() => resolveSuccessMode(undefined, 'partial')).toThrow(/AIDEX_INIT_SUCCESS_MODE.*partial/);
+        });
+
+        test('both set -> new var wins over legacy', () => {
+            expect(resolveSuccessMode('strict', 'empty')).toBe('strict');
+        });
+
+        test('both set, new var invalid -> throws naming the new var, legacy value never consulted', () => {
+            expect(() => resolveSuccessMode('bogus', 'empty')).toThrow(/AIDEX_SUCCESS_MODE.*bogus/);
+        });
+
+        test('both unset -> default (no alias fallback needed)', () => {
+            expect(resolveSuccessMode(undefined, undefined)).toBe('default');
+        });
     });
 });
 
@@ -234,5 +277,88 @@ describe('init() end-to-end, an unknown AIDEX_INIT_SUCCESS_MODE value rejects vi
             if (prev === undefined) delete process.env.AIDEX_INIT_SUCCESS_MODE;
             else process.env.AIDEX_INIT_SUCCESS_MODE = prev;
         }
+    });
+});
+
+describe('init() end-to-end, the new AIDEX_SUCCESS_MODE name works directly (not just via the alias)', () => {
+    test('unknown value on the new name rejects, naming AIDEX_SUCCESS_MODE', async () => {
+        const dir = makeProjectDir();
+        const prev = process.env.AIDEX_SUCCESS_MODE;
+        process.env.AIDEX_SUCCESS_MODE = 'partial';
+        try {
+            await expect(init({ path: dir })).rejects.toThrow(/AIDEX_SUCCESS_MODE/);
+        } finally {
+            if (prev === undefined) delete process.env.AIDEX_SUCCESS_MODE;
+            else process.env.AIDEX_SUCCESS_MODE = prev;
+        }
+    });
+
+    test('valid value on the new name is honored end-to-end', async () => {
+        const dir = makeProjectDir();
+        writeFile(dir, 'a.ts', 'export function a() { return "a"; }\n');
+        const prev = process.env.AIDEX_SUCCESS_MODE;
+        process.env.AIDEX_SUCCESS_MODE = 'strict';
+        try {
+            const result = await safeInit({ path: dir });
+            expect(result.success).toBe(true); // no errors[] entries -> strict still passes
+            expect(result.filesIndexed).toBe(1);
+        } finally {
+            if (prev === undefined) delete process.env.AIDEX_SUCCESS_MODE;
+            else process.env.AIDEX_SUCCESS_MODE = prev;
+        }
+    });
+});
+
+// ============================================================
+// rebuild-index CLI end-to-end -- bfb7bf8f (2nd pass): AIDEX_SUCCESS_MODE
+// (and its AIDEX_INIT_SUCCESS_MODE alias) must reach rebuild-index too. No
+// new gating code exists for rebuild-index: its CLI branch (src/index.ts)
+// calls the SAME init() as above, so this suite proves the wiring at the
+// process boundary rather than re-testing computeInitSuccess()'s decision
+// table (already fully covered above).
+// ============================================================
+
+function runRebuildIndexCli(projectDir, envOverrides) {
+    const result = spawnSync(NODE_BIN, [CLI_ENTRY, 'rebuild-index', projectDir], {
+        cwd: REPO_ROOT,
+        encoding: 'utf-8',
+        env: { ...process.env, ...envOverrides },
+    });
+    if (result.error && isNativeAbiMismatch(result.error)) {
+        throw new Error(nodeAbiGuardMessage(result.error));
+    }
+    return result;
+}
+
+describe('rebuild-index CLI end-to-end honors AIDEX_SUCCESS_MODE via the shared init() call', () => {
+    test('new name, unknown value: CLI exits non-zero and names AIDEX_SUCCESS_MODE', () => {
+        const dir = makeProjectDir();
+        writeFile(dir, 'a.ts', 'export function a() { return "a"; }\n');
+
+        const res = runRebuildIndexCli(dir, { AIDEX_SUCCESS_MODE: 'partial', AIDEX_INIT_SUCCESS_MODE: '' });
+
+        expect(res.status).not.toBe(0);
+        expect(res.stderr).toMatch(/AIDEX_SUCCESS_MODE/);
+    });
+
+    test('legacy alias, unknown value: CLI exits non-zero and names AIDEX_INIT_SUCCESS_MODE (new var unset)', () => {
+        const dir = makeProjectDir();
+        writeFile(dir, 'b.ts', 'export function b() { return "b"; }\n');
+
+        const res = runRebuildIndexCli(dir, { AIDEX_SUCCESS_MODE: '', AIDEX_INIT_SUCCESS_MODE: 'partial' });
+
+        expect(res.status).not.toBe(0);
+        expect(res.stderr).toMatch(/AIDEX_INIT_SUCCESS_MODE/);
+    });
+
+    test('healthy run under strict mode (new name): exit 0, Done!, no Warnings block', () => {
+        const dir = makeProjectDir();
+        writeFile(dir, 'c.ts', 'export function c() { return "c"; }\n');
+
+        const res = runRebuildIndexCli(dir, { AIDEX_SUCCESS_MODE: 'strict', AIDEX_INIT_SUCCESS_MODE: '' });
+
+        expect(res.status).toBe(0);
+        expect(res.stdout).toMatch(/Done!/);
+        expect(res.stdout).not.toMatch(/Warnings:/);
     });
 });
