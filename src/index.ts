@@ -137,10 +137,14 @@ async function main() {
         // during indexing used to fill errors[] invisibly behind a "Done!"
         // and a silently-reduced Files count. Mirrors the Warnings block
         // handleInit (src/server/tools.ts) already prints on the MCP side.
-        if (result.errors.length > 0) {
-            console.log(`  Warnings: ${result.errors.length} file(s) reported errors during indexing`);
-            for (const e of result.errors.slice(0, 10)) console.log(`    - ${e}`);
-            if (result.errors.length > 10) console.log(`    ... and ${result.errors.length - 10} more`);
+        // Shared with the rebuild-index block below (bfb7bf8f): the two were
+        // character-for-character identical, extracted to avoid duplication.
+        try {
+            const { printIndexWarnings } = await import('./utils/cli-warnings.js');
+            printIndexWarnings(result.errors);
+        } catch {
+            // A diagnostic printer must never turn an already-successful run
+            // into a failure (e.g. a stale/partial build/ missing this module).
         }
 
         return;
@@ -178,6 +182,24 @@ async function main() {
         console.log(`  Files: ${result.filesIndexed}`);
         console.log(`  Items: ${result.itemsFound}`);
         console.log(`  Time: ${result.durationMs}ms`);
+
+        // bfb7bf8f: same visibility gap as init() before 16d8512 -- errors[]
+        // was only printed when success was false, so a partially-successful
+        // rebuild showed "Done!" with a silently-reduced Files count and the
+        // diagnostic in errors[] was thrown away. Shared with the init block
+        // above via printIndexWarnings() (the two were character-for-
+        // character identical). `result.success` above is already gated by
+        // AIDEX_SUCCESS_MODE (default/empty/strict, alias
+        // AIDEX_INIT_SUCCESS_MODE) via the init() call in this same branch -- no
+        // separate resolution needed here, since rebuild-index always goes
+        // through init()'s own resolveSuccessMode()/computeInitSuccess().
+        try {
+            const { printIndexWarnings } = await import('./utils/cli-warnings.js');
+            printIndexWarnings(result.errors);
+        } catch {
+            // A diagnostic printer must never turn an already-successful run
+            // into a failure (e.g. a stale/partial build/ missing this module).
+        }
 
         return;
     }
