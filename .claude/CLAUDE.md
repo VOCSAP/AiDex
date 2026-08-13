@@ -77,6 +77,37 @@ complet au niveau terme distinct a rendu 61 pourcent NON atteignables. Sur toute
 de couverture d'index : echantillonner au niveau du terme distinct, et rendre SEPAREMENT
 le poids en occurrences. Jamais un seul des deux chiffres.
 
+**Ne jamais publier un RATIO sans avoir verifie que ses deux nombres viennent du meme
+chemin.** Deux nombres qui portent le meme nom ne mesurent pas forcement la meme
+grandeur. Ce depot a paye DEUX FOIS pour cette exacte erreur : la section 14 de
+`LOCAL-PATCHES.md` raconte un facteur 10 inexplique, ne comparant en fait qu'un agregat
+sur 20 repetitions a un appel unique, qui a motive un revert complet ; et le 2026-08-13,
+des facteurs de croissance de 1,4 a 8,7 ont ete publies puis stockes en memoire longue
+pour une reindexation qui n'avait fait bouger les index que de quelques pourcents.
+Le piege exact, toujours present dans le code : `init()` rend dans `itemsFound` une
+somme de PAIRES TERME-FICHIER (`src/commands/init.ts:556`), tandis qu'`aidex_status` et
+`aidex_scan` rendent un compte de TERMES GLOBALEMENT DISTINCTS
+(`src/db/database.ts:242`). Le rapport entre les deux vaut le nombre moyen de fichiers
+par terme, donc il VARIE par projet : des facteurs qui melangent les deux sources ne
+sont comparables ni a la realite, ni entre eux. Carte `740c6f5d` ouverte sur la cause
+racine cote produit.
+
+Trois reflexes qui en decoulent, par ordre d'efficacite :
+1. Quand un ecart depasse un facteur 2 sans cause evidente, **suspecter l'unite avant de
+   suspecter les donnees**. L'hypothese de depart etait une perte de 76 pourcent de
+   l'index ; il n'y avait aucune perte.
+2. **Preferer une question a reponse BINAIRE a un compte** quand la question s'y prete.
+   Savoir si un index detient des litteraux multi-mots se tranche par un `aidex_query`
+   en `kinds: ["literal"]`, en un appel. Aucun compte, quelle que soit son unite, ne
+   repond a cette question.
+3. **Une explication qui reproduit la valeur exacte ne se discute pas.** Le diagnostic a
+   ete accepte parce qu'il rendait 55250 au chiffre pres, pas parce qu'il etait
+   plausible.
+
+**Une deduction qui reposait sur un chiffre faux devient INCONNUE, pas FAUSSE.** La
+retenir comme refutee serait une seconde erreur, symetrique de la premiere. Retirer une
+conclusion sans la remplacer est une fin legitime.
+
 **Corpus de mesure en place**, indexes et gitignores sous `docs/reference/` :
 `Kleos-local-patches` (Rust, 629 fichiers) et `koryphaios-experimental` (TypeScript).
 
