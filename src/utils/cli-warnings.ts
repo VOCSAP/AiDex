@@ -20,3 +20,17 @@ export function printIndexWarnings(errors: string[]): void {
     for (const e of errors.slice(0, 10)) console.log(`    - ${e}`);
     if (errors.length > 10) console.log(`    ... and ${errors.length - 10} more`);
 }
+
+/**
+ * a9d43516: a third, NORMAL outcome distinct from both "indexed" and
+ * "failed" -- a file that legitimately had nothing to index (e.g. a
+ * template-only .astro component with no frontmatter block). Deliberately
+ * printed outside the Warnings block above and worded "normal, not an
+ * error": conflating it with printIndexWarnings would be exactly the defect
+ * this card fixed, one layer up in the pipeline. Silent when filesEmpty is
+ * 0 or undefined, so the common case (no such files) prints nothing.
+ */
+export function printEmptyFilesNote(filesEmpty: number | undefined): void {
+    if (!filesEmpty) return;
+    console.log(`  ${filesEmpty} file(s) had nothing to index (normal, not an error -- e.g. a template-only .astro component with no frontmatter block)`);
+}

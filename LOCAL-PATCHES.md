@@ -543,3 +543,46 @@ Deux passes. Pass 1, trois cas via `handleToolCall()` en-processus (`aidex_init`
 **Prouve par mutation** : la ligne CLI `init` (`src/index.ts:131`) remise a l'ancien texte `"Items: N"`, `npm run build`, re-run -> **1 rouge (CLI init) sur 5, 4 verts inchanges**, dont le cas CLI `scan` qui partage le meme fichier source mais une ligne differente. Restaure, rebuild, re-run -> 5/5 vert.
 
 **Verifie** : `C:/Users/USERNAME/AppData/Local/nvm/v22.11.0/node.exe --experimental-vm-modules node_modules/jest/bin/jest.js tests/items-label-rename.test.js` -> `Tests: 5 passed, 5 total`, via `agent-forge verify` (tsc-build + targeted-test, 2/2 steps).
+
+---
+
+## 20. `.astro` sans frontmatter classe comme erreur -- carte `a9d43516`
+
+### Le defaut, en une phrase
+
+Un `.astro` legitimement sans frontmatter (composant template pur, sans fence `---` du tout) est un cas NORMAL, mais `init()` le rapportait dans `errors[]` sous le meme message generique qu'un vrai echec de parsing -- c'est le "defaut voisin" identifie et deliberement NON corrige en section 18 (`hyp_7d7728d9`), traite ici.
+
+### La chaine mesuree
+
+`extractAstroFrontmatter` (`src/parser/tree-sitter.ts:145`) rend `null` par conception des qu'aucune fence n'est trouvee -- et rend le MEME `null` pour un fichier reellement casse (fence ouvrante presente, fermante absente). `extract()` propage ce `null` sans distinction. `indexFile()` (`src/commands/init.ts`) traitait tout `null` comme un echec, poussant `"Unsupported file type or parse error"` dans `errors[]`. MESURE via CLI le 2026-08-13 : un dossier avec un seul `.astro` sans fence produisait `Warnings: 1 file(s) reported errors during indexing` / `Files: 0`.
+
+### Le correctif : classification, pas parsing
+
+Deliberement PAS un changement de regle de fence -- la carte l'interdisait explicitement, la regle etant partagee avec de vrais echecs sur d'autres langages. Le correctif ajoute UNE COUCHE AU-DESSUS de `extractAstroFrontmatter` :
+
+- `astroHasNoFrontmatterFence` (`src/parser/tree-sitter.ts`, exporte via `src/parser/index.ts`) : predicat pur qui reutilise EXACTEMENT la meme regle de premiere ligne que `extractAstroFrontmatter` (`trimEnd() !== '---'`), sans la dupliquer ni la modifier -- il repond a "pourquoi `null`", pas a "y a-t-il une fence".
+- `indexFile()` (`src/commands/init.ts`) : sur `extraction === null`, si le fichier est `.astro` ET `astroHasNoFrontmatterFence` est vrai, rend `{success: true, empty: true, emptyReason: 'astro-no-frontmatter'}` au lieu de `{success: false, error: ...}`. Tout autre `null` (y compris `.astro` avec fence ouvrante sans fermante) garde le chemin d'erreur generique inchange.
+- `run()` (`src/commands/init.ts`) : nouveau compteur `filesEmpty`, incremente a part de `filesIndexed` (aucune ligne `files` inseree pour ces fichiers) et a part de `errors[]` -- rendu dans `InitResult.filesEmpty`.
+- **Visibilite CLI (exigence explicite du critere d'acceptation, pas une extension)** : un champ non imprime dans la structure de retour ne suffit pas -- l'operateur ne lit que le texte du terminal. `printEmptyFilesNote` (`src/utils/cli-warnings.ts`), silencieuse si `filesEmpty` est `0`/`undefined`, appelee depuis les DEUX branches CLI de `src/index.ts` (`init` et `rebuild-index`) juste apres `printIndexWarnings`, dans le meme bloc try/catch. Message volontairement `.astro` en EXEMPLE ("e.g.") et non en cause exclusive, `filesEmpty` etant destine a servir de futurs cas non-Astro.
+
+### Ce qui n'a PAS ete touche
+
+`InitSuccessCounts` (section 16, carte `a7039829`) et l'objet de comptage passe a `computeInitSuccess` sont restes intacts -- `filesEmpty` n'entre pas dans ce calcul, pour ne pas interferer avec l'heuristique zero-compte deja en place.
+
+### Test de regression
+
+`tests/astro-no-frontmatter.test.js` (7 tests, 4 blocs) : 2 tests unitaires confirmant que `extractAstroFrontmatter` rend `null` pour les deux cas (sans fence / fence non fermee), 2 tests confirmant que `extract()` propage ce `null`, 3 tests d'integration via `init()` (fichier sans fence -> `errors` vide ; fichier casse -> `errors` contient l'entree generique ; run mixte -> seul le fichier casse apparait). **MESURE rouge avant correctif** : 2 des 3 tests d'integration en echec (celui sur `errors` vide, et le run mixte). **MESURE vert apres correctif** : 7/7.
+
+`tests/init-success-modes.test.js`, bloc `init CLI prints the third outcome (filesEmpty) separately from Warnings` (2 tests, harnais `spawnSync`/`CLI_ENTRY`/`NODE_BIN` deja en place dans ce fichier, PAS `tests/cli-warnings.test.js` qui ne fait que mocker `console.log`) : un projet TS normal ne doit JAMAIS imprimer la note (priorite haute -- prouve l'absence de bruit sur le chemin sain), un `.astro` sans fence doit imprimer `"1 file(s) had nothing to index (normal, not an error..."` et ne doit PAS imprimer `"Warnings:"`. **MESURE** : `C:/Users/USERNAME/AppData/Local/nvm/v22.11.0/node.exe --experimental-vm-modules node_modules/jest/bin/jest.js tests/init-success-modes.test.js` -> `Tests: 36 passed, 36 total`.
+
+**Prouve par mutation**, sur les DEUX nouvelles assertions specifiquement : `printEmptyFilesNote` court-circuitee (`if (true) return;`), rebuild, re-run cible sur le bloc -> **1 rouge (cas `.astro` sans fence) sur 2, le cas "projet TS normal" reste vert** -- directionnalite exacte demandee : le mutant ne fait rougir QUE le cas qu'il est cense casser, ce qui prouve que les deux assertions ne testent pas la meme chose. Restaure, rebuild, re-run -> 36/36 vert de nouveau.
+
+**Verifie** : `agent-forge verify` (build + targeted-test sur `tests/astro-no-frontmatter.test.js` et `tests/init-success-modes.test.js`).
+
+**Mutation dans l'autre sens (revue, bloquante)** : la mutation ci-dessus prouve que le correctif SERT, pas qu'il ne s'ELARGIT pas -- un test qui reste vert sous une desactivation du predicat mais qui restait DEJA vert avant le correctif ne prouve rien. `astroHasNoFrontmatterFence` sur-elargie (`return true;` inconditionnel, tout `.astro` declare sans fence), rebuild, re-run cible sur `tests/astro-no-frontmatter.test.js` seul -> **3 rouges sur 8** (le fichier casse, le run mixte, le cas BOM ci-dessous), les 4 tests unitaires + le cas fenceless restant verts a juste titre (ils pinnent le substrat inchange). Restaure, rebuild, re-run -> 8/8 vert.
+
+**Quatrieme etat decouvert en revue (bloquant, corrige avant commit)** : un `.astro` avec un frontmatter VALIDE mais precede d'un BOM UTF-8 (`EF BB BF`) devenait silencieusement classe `filesEmpty` par le correctif ci-dessus -- ni template pur, ni fichier casse, un etat que la carte n'avait pas prevu. Cause : `trimEnd()` ne coupe que la fin de chaine, le BOM en tete de `lines[0]` survit et le predicat conclut a tort "aucune fence". Avant ce commit ce fichier apparaissait dans `errors[]` (regression de VISIBILITE introduite par ce correctif, pas une perte d'indexation preexistante puisqu'un `.astro` avec BOM n'a jamais ete indexable). Fix, une ligne (`src/parser/tree-sitter.ts:193`, dans `astroHasNoFrontmatterFence`) : `source.replace(/^﻿/, '')` avant le `split('\n')`, restauration de comportement, pas amelioration. Rendre le BOM INDEXABLE (strip aussi dans `extractAstroFrontmatter`) est deliberement hors carte, suivi par `029e11ac`.
+
+Pin par `tests/astro-no-frontmatter.test.js` (fixture `ASTRO_BOM_WITH_VALID_FRONTMATTER`) : `errors.length === 1`, contient `'Bom.astro'` et le message generique, `filesEmpty` reste `0`. Prouve par mutation cible (retirer `.replace(/^﻿/, '')` seul, distinct de la mutation sur-elargie ci-dessus -- pour toute entree SANS BOM, `.replace(/^﻿/, '')` est l'identite octet pour octet, donc cette mutation ne peut changer le verdict que sur l'entree qui porte un BOM) : sur `tests/astro-no-frontmatter.test.js` seul, build refait et sa fraicheur verifiee AVANT lecture (`ls -l --time-style=full-iso`, build posterieur au source), **1 rouge/8, uniquement le cas BOM** -- une premiere version de cette section affirmait a tort "3 rouges/8, meme empreinte que la sur-elargie" en reappliquant le resultat de l'AUTRE mutation sans reexecuter celle-ci ; corrige apres qu'une revue a montre que l'empreinte attendue ne pouvait mathematiquement porter que sur l'entree BOM, et confirme par re-execution. Egalement pin, cote API (pas seulement texte CLI) : `result.filesEmpty === 1` sur le cas fenceless (renommage silencieux du champ rougirait desormais). Et cote CLI, le bloc `rebuild-index` (`src/index.ts:204`, precedemment non pinne) recoit son propre cas dans `tests/init-success-modes.test.js`.
+
+**MESURE** : `node --experimental-vm-modules node_modules/jest/bin/jest.js tests/astro-no-frontmatter.test.js tests/init-success-modes.test.js` -> `Tests: 45 passed, 45 total`.
