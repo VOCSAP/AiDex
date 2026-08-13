@@ -83,7 +83,7 @@ export function shortHash(content: Buffer | string): string {
 
 import { createDatabase, createQueries, type AiDexDatabase, type Queries } from '../db/index.js';
 import { withDatabase } from './shared.js';
-import { extract, getSupportedExtensions } from '../parser/index.js';
+import { extract, getSupportedExtensions, astroHasNoFrontmatterFence } from '../parser/index.js';
 import { globalDbExists, readProjectStats, openGlobalDatabase } from '../db/global-database.js';
 
 // ============================================================
@@ -110,6 +110,13 @@ export interface InitResult {
     filesIndexed: number;
     filesSkipped: number;  // Unchanged files
     filesRemoved: number;  // Files removed due to exclude patterns
+    /**
+     * a9d43516: files with legitimately nothing to index (e.g. an Astro
+     * component with no frontmatter fence). Not counted in filesIndexed (no
+     * file row is inserted for them) and never reported in errors[] -- this
+     * is the normal, third outcome between "indexed" and "failed".
+     */
+    filesEmpty?: number;
     itemsFound: number;
     methodsFound: number;
     typesFound: number;
@@ -538,6 +545,13 @@ export async function init(params: InitParams): Promise<InitResult> {
     // Index each file
     let filesIndexed = 0;
     let filesSkipped = 0;
+    // a9d43516: files with legitimately nothing to index (e.g. a fenceless
+    // Astro component) -- tracked apart from filesIndexed (no file row was
+    // inserted for them, see indexFile's early return) and apart from
+    // errors[] (this is not a failure). Keeps the three outcomes -- indexed,
+    // nothing to index, failed -- distinguishable instead of collapsing the
+    // "normal, empty" case into either of the other two.
+    let filesEmpty = 0;
     let totalItems = 0;
     let totalMethods = 0;
     let totalTypes = 0;
@@ -551,6 +565,8 @@ export async function init(params: InitParams): Promise<InitResult> {
                 const result = indexFile(params.path, filePath, db, queries, incremental, storeBodies);
                 if (result.skipped) {
                     filesSkipped++;
+                } else if (result.empty) {
+                    filesEmpty++;
                 } else if (result.success) {
                     filesIndexed++;
                     totalItems += result.items;
@@ -745,6 +761,7 @@ export async function init(params: InitParams): Promise<InitResult> {
         filesIndexed,
         filesSkipped,
         filesRemoved,
+        filesEmpty,
         itemsFound: totalItems,
         methodsFound: totalMethods,
         typesFound: totalTypes,
@@ -762,6 +779,14 @@ export async function init(params: InitParams): Promise<InitResult> {
 interface IndexFileResult {
     success: boolean;
     skipped?: boolean;
+    /**
+     * a9d43516: this file legitimately has nothing to index (e.g. an Astro
+     * component with no frontmatter fence at all) -- a NORMAL outcome,
+     * distinct from both an ordinary successful extraction and a parse
+     * failure. Never paired with `error`.
+     */
+    empty?: boolean;
+    emptyReason?: string;
     items: number;
     methods: number;
     types: number;
@@ -821,6 +846,27 @@ function indexFile(
     // Extract data from file
     const extraction = extract(content, relativePath);
     if (!extraction) {
+        // a9d43516: extract()/parseFile() return the SAME null for two
+        // different situations -- "nothing to index here, this is normal"
+        // and "this file failed to parse". A .astro file with no opening
+        // frontmatter fence at all is the former: a pure-template component,
+        // fully valid Astro, with no TypeScript frontmatter to extract. That
+        // is not an indexing failure and must not surface in errors[]. A
+        // .astro file that opens a frontmatter fence but never closes it is
+        // still the latter (a real, reportable failure) -- this check only
+        // widens the "empty" classification to the specific fenceless case,
+        // it does not touch the generic error path used by every other
+        // unparseable file, on Astro or any other language.
+        if (relativePath.toLowerCase().endsWith('.astro') && astroHasNoFrontmatterFence(content)) {
+            return {
+                success: true,
+                empty: true,
+                emptyReason: 'astro-no-frontmatter',
+                items: 0,
+                methods: 0,
+                types: 0,
+            };
+        }
         return {
             success: false,
             items: 0,

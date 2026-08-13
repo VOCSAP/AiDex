@@ -330,6 +330,76 @@ function runRebuildIndexCli(projectDir, envOverrides) {
     return result;
 }
 
+// ============================================================
+// init CLI end-to-end -- a9d43516: the third outcome (filesEmpty, e.g. a
+// fenceless .astro component) must be VISIBLE to the operator in the CLI
+// text output, not merely present as an unprinted field on the returned
+// result object. printEmptyFilesNote (src/utils/cli-warnings.ts), called
+// from both CLI branches in src/index.ts right after printIndexWarnings.
+// ============================================================
+
+function runInitCli(projectDir, envOverrides) {
+    const result = spawnSync(NODE_BIN, [CLI_ENTRY, 'init', projectDir], {
+        cwd: REPO_ROOT,
+        encoding: 'utf-8',
+        env: { ...process.env, ...envOverrides },
+    });
+    if (result.error && isNativeAbiMismatch(result.error)) {
+        throw new Error(nodeAbiGuardMessage(result.error));
+    }
+    return result;
+}
+
+describe('init CLI prints the third outcome (filesEmpty) separately from Warnings', () => {
+    // Higher priority (per team-lead): proves the common healthy-run path
+    // gets no added noise -- the line must be entirely absent, not merely
+    // absent for a "0 files" case that could hide a bug where it always
+    // prints "0 file(s)...".
+    test('a normal TS project (no empty files) never prints the note', () => {
+        const dir = makeProjectDir();
+        writeFile(dir, 'a.ts', 'export function a() { return "a"; }\n');
+
+        const res = runInitCli(dir, {});
+
+        expect(res.status).toBe(0);
+        expect(res.stdout).not.toMatch(/file\(s\) had nothing to index/);
+    });
+
+    test('a fenceless .astro component prints the note, not a Warnings block', () => {
+        const dir = makeProjectDir();
+        writeFile(dir, 'src/NoFrontmatter.astro', [
+            '<div class="hero">',
+            '  <h1>Hello world</h1>',
+            '</div>',
+            '',
+        ].join('\n'));
+
+        const res = runInitCli(dir, {});
+
+        expect(res.status).toBe(0);
+        expect(res.stdout).toMatch(/1 file\(s\) had nothing to index \(normal, not an error/);
+        expect(res.stdout).not.toMatch(/Warnings:/);
+    });
+
+    // a9d43516 review follow-up: the rebuild-index CLI branch (src/index.ts,
+    // its own printEmptyFilesNote call site) was previously unpinned by any
+    // test -- only init's call site was covered above.
+    test('rebuild-index CLI also prints the note for a fenceless .astro component', () => {
+        const dir = makeProjectDir();
+        writeFile(dir, 'src/NoFrontmatter.astro', [
+            '<div class="hero">',
+            '  <h1>Hello world</h1>',
+            '</div>',
+            '',
+        ].join('\n'));
+
+        const res = runRebuildIndexCli(dir, {});
+
+        expect(res.status).toBe(0);
+        expect(res.stdout).toMatch(/1 file\(s\) had nothing to index \(normal, not an error/);
+    });
+});
+
 describe('rebuild-index CLI end-to-end honors AIDEX_SUCCESS_MODE via the shared init() call', () => {
     test('new name, unknown value: CLI exits non-zero and names AIDEX_SUCCESS_MODE', () => {
         const dir = makeProjectDir();

@@ -139,9 +139,15 @@ async function main() {
         // handleInit (src/server/tools.ts) already prints on the MCP side.
         // Shared with the rebuild-index block below (bfb7bf8f): the two were
         // character-for-character identical, extracted to avoid duplication.
+        //
+        // a9d43516: printEmptyFilesNote is the THIRD outcome, not a warning --
+        // a file that legitimately had nothing to index (e.g. a fenceless
+        // .astro component). Printed separately from printIndexWarnings so
+        // that block stays reserved for genuine failures.
         try {
-            const { printIndexWarnings } = await import('./utils/cli-warnings.js');
+            const { printIndexWarnings, printEmptyFilesNote } = await import('./utils/cli-warnings.js');
             printIndexWarnings(result.errors);
+            printEmptyFilesNote(result.filesEmpty);
         } catch {
             // A diagnostic printer must never turn an already-successful run
             // into a failure (e.g. a stale/partial build/ missing this module).
@@ -194,8 +200,9 @@ async function main() {
         // separate resolution needed here, since rebuild-index always goes
         // through init()'s own resolveSuccessMode()/computeInitSuccess().
         try {
-            const { printIndexWarnings } = await import('./utils/cli-warnings.js');
+            const { printIndexWarnings, printEmptyFilesNote } = await import('./utils/cli-warnings.js');
             printIndexWarnings(result.errors);
+            printEmptyFilesNote(result.filesEmpty);
         } catch {
             // A diagnostic printer must never turn an already-successful run
             // into a failure (e.g. a stale/partial build/ missing this module).
