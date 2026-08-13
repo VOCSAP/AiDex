@@ -424,3 +424,74 @@ Deux approches ecartees en amont, pour la meme raison -- la dependance a l'ordre
 Quatre fichiers de test (`tests/cli-update-summary-contract.test.js`, `tests/cli-update.test.js`, `tests/query-corpus.test.js`, `tests/coverage-oracle.test.js` via `cwdRoot()`) resolvaient `REPO_ROOT` depuis `process.cwd()`, cassant (`ENOENT` / module introuvable) des que la suite etait lancee depuis un repertoire hors du depot. Corrige en ancrant sur `dirname(dirname(fileURLToPath(import.meta.url)))`, une ligne par fichier.
 
 **Verifie** : mode par defaut 138/138 (deux fois), `--maxWorkers=1` et `--runInBand` declenchent tous les deux le garde-fou avec le message descriptif, suite complete lancee depuis `/tmp` (hors de l'arbre du depot) 138/138 propre.
+
+---
+
+## 18. Fence de frontmatter `.astro` -- correctif d'un defaut UPSTREAM (hypothese `hyp_7d7728d9`)
+
+### Le defaut, en une phrase
+
+Les deux fences `---` d'un fichier `.astro` etaient reconnues par DEUX regles differentes, et seule l'une des deux tolerait le `\r` d'un fichier CRLF -- donc sur toute machine Windows, 100 % des fichiers `.astro` etaient rejetes comme non parsables.
+
+```js
+if (lines[0]?.trimEnd() !== '---') return null;   // ouvrante : tolere le CR
+const closeIdx = lines.indexOf('---', 1);         // fermante : ne matche JAMAIS '---\r'
+```
+
+`source.split('\n')` laisse un `\r` en fin de chaque ligne d'un fichier CRLF. Git stocke ces blobs en LF, un checkout Windows avec `core.autocrlf=true` les materialise en CRLF (`git ls-files --eol` rend `i/lf  w/crlf`). L'ouvrante passait, la fermante ne matchait jamais : `closeIdx === -1`, `return null`, `parseFile` rendait `null`, `extract` rendait `null`, et `init()` classait le fichier en `Unsupported file type or parse error` -- sur un fichier bien forme d'un type que le projet declare supporter.
+
+### Pourquoi il a survecu si longtemps : deux causes, aucune dans le parseur
+
+1. **`.astro` n'avait aucun test.** `grep -rli "astro" tests/` ne rendait rien. La suite restait verte pendant que la totalite des `.astro` d'un arbre Windows echouaient.
+2. **Le tableau `errors[]` d'un run `init()` REUSSI n'etait pas rendu a l'appelant** avant la carte `bfb7bf8f` (section 16). La premiere reindexation apres cette livraison est exactement ce qui a fait sortir les 30 avertissements. Le defaut de rapport masquait le defaut de parsing.
+
+### Mesures
+
+Sur le corpus `cocoindex` (338 fichiers indexes), `extract()` appele en direct sur chaque `.astro`, sans toucher aucun index :
+
+| | fichiers en echec | items extraits |
+|---|---|---|
+| avant | **31 sur 31** | 0 |
+| apres | **0 sur 31** | **2906** |
+
+2906 items etaient silencieusement perdus. Aucun des 31 fichiers ne manque reellement de fence fermante.
+
+**Portee sur la station** : compte de `*.astro` hors `node_modules` sur les dix racines indexees -- `31` cocoindex, `31` Argus (les MEMES fichiers physiques, sous `Argus/references/cocoindex`), `0` sur les huit autres (koryphaios, AiDex, Kleos, kerdoos, crawl4ai-rag-mcp, koryphaios-mcp, Semantic_Video_Search, `_aidex-hookbench`). La dette est donc bornee a un seul projet, et une reindexation de `cocoindex` apres commit doit rendre `errors[]` vide et un `itemsFound` en hausse d'environ 2900.
+
+### Le correctif, et la decision qu'il fige
+
+Les deux fences utilisent desormais la MEME regle, `trimEnd() === '---'`, via une boucle explicite qui remplace l'`indexOf`.
+
+C'est un **elargissement DELIBERE** cote fermante : elle accepte maintenant `'---   '` avec des espaces en fin, ce que l'`indexOf` strict refusait. C'est voulu, par symetrie avec l'ouvrante qui le tolerait deja depuis l'arrivee de la feature -- l'incoherence etait de le refuser d'un cote seulement. **Ne pas "resserrer" cette moitie en croyant corriger une laxite** : `tests/astro-frontmatter-eol.test.js` la fige explicitement, et le commentaire en place nomme la cause pour que personne ne "simplifie" la boucle en revenant a `indexOf`.
+
+`trimEnd()` et **pas** `trim()` : la fence reste ancree en colonne 0. C'est un **choix conservateur d'indexeur, plus strict que la grammaire Astro**, pas une restitution de cette grammaire -- ne pas lire les deux cas de test correspondants comme une affirmation sur ce qu'Astro accepte. Fige par test dans les deux sens (fence ouvrante indentee ET fence fermante indentee), pour qu'un futur `trimEnd` -> `trim` ne passe pas inapercu.
+
+### Origine : UPSTREAM, pas le fork -- meilleur candidat de PR produit ici
+
+Le support `.astro` vient d'upstream :
+
+```
+git log -1 --format='%h %an %ad %s' 31d478c
+  31d478c Legein, Zach (SP) Tue May 19 19:25:52 2026 -0500 feat: add .astro file support
+git branch -r --contains 31d478c   -> inclut upstream/master
+```
+
+Ce n'est donc pas un defaut du fork, c'est un **defaut d'upstream que le fork vient de trouver** : tout utilisateur Windows d'AiDex perd 100 % de ses fichiers `.astro`, silencieusement, depuis mai 2026. C'est le meilleur candidat de PR upstream produit par ce fork, et il ne depend d'aucun lot de la section 8 : correctif minimal, aucun changement de surface publique, aucun lien avec la couverture litterale, argument universel qui n'exige de citer aucune mesure faite sur un depot prive (il se reproduit sur n'importe quel depot `.astro` public clone sous Windows). A porter separement, et en premier.
+
+### Test de regression -- `tests/astro-frontmatter-eol.test.js`
+
+16 cas en cinq blocs : agnosticisme LF/CRLF (dont l'egalite des deux frontmatters apres normalisation du CR et la preservation des numeros de ligne), traversee complete de la chaine `extractAstroFrontmatter` -> `parseFile` -> `extract`, tolerance d'espaces en fin sur les DEUX fences (la decision figee) contre refus d'une fence indentee, cas negatifs legitimes (pas de fence, ouvrante sans fermante en LF ET en CRLF, source vide), et un cas d'integration `init()` sur un vrai `.astro` ecrit en CRLF qui exige `errors[]` STRICTEMENT vide.
+
+**Prouve par mutation**, selon la discipline maison : le correctif remis a l'etat d'avant (`git stash push src/parser/tree-sitter.ts` puis `npm run build`) fait passer le fichier a **8 echecs sur 16**, et le cas d'integration rend alors la chaine de production exacte, `"src/Probe.astro: Unsupported file type or parse error"`.
+
+Le critere exact du partage, qui est ce qui rend la mutation concluante : **rougissent les cas ou la fence fermante n'est pas `'---'` octet pour octet ET ou le resultat attendu est NON-NULL.** Les 8 verts ne sont donc pas "les cas independants de la fence fermante" -- deux d'entre eux en dependent bel et bien (ouvrante sans fermante, en LF et en CRLF), mais ils attendent `null`, verdict que les deux versions du code rendent. Un fichier qui aurait rougi EN BLOC aurait prouve qu'il teste autre chose que ce qu'il annonce.
+
+**Verifie** : `npm run build` puis `node --experimental-vm-modules node_modules/jest/bin/jest.js tests/astro-frontmatter-eol.test.js` -> 16/16, via `agent-forge verify` (2/2 steps). Attention, `npx jest` echoue en `Cannot use import statement outside a module` : le depot est `"type": "module"`, le `--experimental-vm-modules` du script `npm test` est obligatoire.
+
+### Reste NON VERIFIE
+
+La fonction blanchit les deux fences et le template, mais **conserve les `\r` en fin des lignes du CORPS du frontmatter**, qui partent tels quels dans la grammaire TSX. Les tests montrent que l'extraction rend les bons items, donc c'est benin sur ce qu'ils couvrent. Mais **personne n'a verifie qu'aucune position de COLONNE rapportee** (signatures, prototypes) ne compte ce `\r` en trop. A ecrire comme non verifie, pas comme sain.
+
+### Defaut voisin, volontairement NON corrige ici -- carte `a9d43516`
+
+Un `.astro` legitimement **sans** frontmatter (composant template pur) est un cas normal : `extractAstroFrontmatter` rend `null` par conception, et `init()` le rapporte comme une erreur. C'est un defaut de CLASSIFICATION, pas de parsing, et le melanger a celui-ci aurait masque la difference de nature entre les deux. Mesure : 0 fichier sur 31 dans ce cas, contribution nulle aux 30 avertissements observes.
