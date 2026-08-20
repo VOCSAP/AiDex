@@ -249,15 +249,81 @@ le premier appel sémantique fait l'ensure (juste un cold start visible).
 
 ## 7. Surface MCP
 
-Deux outils nouveaux (pilote) :
+Analyse faite le 2026-08-20 contre la liste complète des outils Serena (README
+upstream). Principe d'arbitrage, doctrinal : chaque outil ne vaut que s'il supprime
+un `Grep`/`Read` ou augmente la densité sous le plafond de sortie. Second principe,
+propre au MCP : **chaque description d'outil est injectée dans le contexte de CHAQUE
+session** — une surface large est un coût en tokens payé à chaque session, même sans
+appel. Donc surface minimale : 3 outils nouveaux au pilote, le reste sur mesure.
 
-- `aidex_refs { file, line, symbol? }` → références réelles du symbole à cette
-  position. Sortie **plafonnée en lignes** comme `aidex_query` (100 lignes,
-  `[showing first N]`) — l'unité de jugement de la doctrine s'applique à cette
-  surface aussi. Format : `file:line: excerpt` groupé par fichier.
-- `aidex_def { file, line, symbol? }` → définition(s).
+### 7.1 Retenus pour le pilote (3 outils)
 
-États non-nominaux à rendre TELS QUELS à l'agent (pas d'échec silencieux) :
+- `aidex_refs { file, line, symbol?, targets?[] }` → références réelles du symbole à
+  cette position (LSP `textDocument/references`). Accepte en option un **batch** de
+  cibles (`targets: [{file,line}]`) : le daemon parallélise en interne (D12), un seul
+  aller-retour MCP là où Serena impose un appel par symbole. Sortie **plafonnée en
+  lignes** comme `aidex_query` (100 lignes, `[showing first N]`), groupée par
+  fichier, format `file:line: excerpt`.
+- `aidex_def { file, line, kind? }` → définition(s). `kind: definition (défaut) |
+  implementations | type_definition` : couvre en UN outil le `find_declaration` et le
+  `find_implementations` de Serena (LSP `definition`, `implementation`,
+  `typeDefinition`) sans élargir la surface.
+- `aidex_check { files? }` → diagnostics (erreurs/warnings) sur les fichiers donnés,
+  ou par défaut sur **les fichiers modifiés depuis le dernier index** (info déjà dans
+  la DB : hash-diff de `files`/`lines`). C'est le « mes édits cassent-ils quelque
+  chose ? » en un appel : remplace un `tsc`/`cargo check` complet dont la sortie
+  brute se déverse dans le contexte. Sortie = uniquement les diagnostics, plafonnée.
+  (Équivalent du `diagnostics` de Serena, mais scoppé par défaut sur le delta de la
+  session grâce à l'index — c'est le croisement index+LSP qu'eux ne peuvent pas faire.)
+
+### 7.2 Candidats à MESURER avant d'exposer (lot suivant, pas au pilote)
+
+- `aidex_calls { file, line, direction: in|out, depth<=2 }` → hiérarchie d'appels
+  compressée (LSP `callHierarchy`, supporté par tsserver et rust-analyzer). Un arbre
+  `caller ← caller` en quelques lignes remplace des chaînes entières de Grep/Read.
+  Serena ne l'offre que via son plugin JetBrains payant — ici gratuit via LSP :
+  différenciateur, mais à ne câbler que si la phase 0 montre le motif « remonter les
+  appelants » dans les transcripts.
+- `aidex_hover { file, line }` → type résolu + doc d'un symbole ; remplace la lecture
+  du fichier de définition juste pour connaître un type. Même condition : mesurer le
+  motif d'abord.
+- Compteur de références à coût quasi nul (`refs_count`) intégré à la sortie
+  d'`aidex_signature` — détecte le code mort (« 0 usage ») sans rien lister. Une
+  ligne de plus par signature : à ne faire que si ça ne dégrade pas la densité.
+- Hiérarchie de types (`typeHierarchy` LSP, sub/supertypes) : JetBrains-only chez
+  Serena, disponible via LSP 3.17 sur tsserver/rust-analyzer. Sur mesure uniquement.
+
+### 7.3 Outils Serena explicitement ÉCARTÉS (ne pas rouvrir sans fait nouveau)
+
+| Outil Serena | Pourquoi écarté |
+|---|---|
+| `find_symbol`, `symbol_overview` | Déjà couverts et MIEUX par l'index persistant : `aidex_query` (dimension symbol) et `aidex_signature` sont instantanés, sans warm-up, et multi-projets via `aidex_global_*`. C'est l'avantage structurel d'AiDex sur Serena — ne pas le remplacer par du LSP plus lent. |
+| `search_for_pattern`, `read_file`, `list_dir`, `find_file`, `replace_content`, `execute_shell_command` | Claude Code les a nativement (Grep/Read/Glob/Edit/Bash). Les dupliquer gonfle la surface d'outils (coût par session) et crée de la confusion de routage pour l'agent. Chez Serena ils existent parce que Serena vise des clients MCP nus ; AiDex tourne dans CC. |
+| `rename`, `move`, `inline`, `safe_delete`, `propagate_deletions`, `replace_symbol_body`, `insert_before/after_symbol` | Écriture → exclu par D11 (sérialisation inter-sessions requise, hors périmètre). L'édition par `Edit` de CC suffit ; la valeur marginale de l'édition symbolique ne justifie pas le chemin d'écriture. Réévaluable dans un lot dédié si un besoin est mesuré. |
+| `type_hierarchy`, `search_in_project_dependencies`, debug/REPL | JetBrains-only chez Serena (backend payant). La hiérarchie de types passe en candidat §7.2 via LSP pur ; le reste sans équivalent LSP raisonnable. |
+| memories / notes de projet | `aidex_note`, `aidex_task`, `aidex_session` existent déjà. |
+
+### 7.4 Différenciateurs vs Serena (ce qui nous rendrait PLUS performants)
+
+Le levier unique d'AiDex : **posséder à la fois l'index persistant et le LSP**, et
+fusionner les deux dans chaque réponse.
+
+1. **Réponses enrichies sans re-lecture** : chaque référence rendue par `aidex_refs`
+   est enrichie depuis SQLite (prototype de la méthode englobante via `methods`,
+   type de ligne) sans rouvrir les fichiers — plus dense que les extraits bruts de
+   Serena, à plafond égal.
+2. **Delta de session** : l'index sait ce qui a changé (hash-diff) → `aidex_check`
+   sans argument vérifie exactement le travail de la session, rien d'autre.
+3. **Batch + multiplexage** (D12) : plusieurs cibles par appel, parallélisées dans le
+   daemon — Serena est mono-requête.
+4. **Multi-projets simultanés** (D3/D4) : N daemons indépendants, la limite
+   structurelle de Serena n'existe pas ici.
+5. **Zéro re-warm-up entre sessions** : le daemon survit aux sessions CC ; Serena
+   repaye son démarrage à chaque changement de projet.
+
+### 7.5 Règles transverses de la surface
+
+États non-nominaux rendus TELS QUELS à l'agent (pas d'échec silencieux) :
 `warming` (avec consigne de réessayer), `no language server for .ext`,
 `daemon unreachable` (après une tentative d'ensure).
 
@@ -275,7 +341,7 @@ textuelle, littéraux) — c'est ce qui pilote le comportement de l'agent.
 |---|---|---|
 | **0** | Mesure (§3). | Rapport + décision go/no-go validée par l'opérateur. **Aucun code avant.** |
 | **1** | Squelette daemon : portfile, bind-or-connect, `ensure`, `GET /status`, `POST /shutdown`, cycle de vie sans aucun LSP. CLI `aidex lsp ensure/status/stop`. | Tests : 2 « sessions » (process) concurrentes → 1 seul daemon ; respawn après kill ; portfile stale nettoyé. |
-| **2** | Pilote TypeScript : `ls-child` + `ls-protocol` + tsserver (dépendance `typescript` déjà présente dans l'arbre — vérifier, sinon dep explicite), `aidex_refs`/`aidex_def` bout en bout, watcher. | Mesure avant/après sur 3 requêtes réelles de la station : lignes rendues vs séquence Grep/Read équivalente. |
+| **2** | Pilote TypeScript : `ls-child` + `ls-protocol` + tsserver (dépendance `typescript` déjà présente dans l'arbre — vérifier, sinon dep explicite), les 3 outils §7.1 (`aidex_refs`/`aidex_def`/`aidex_check`) bout en bout, watcher. | Mesure avant/après sur 3 requêtes réelles de la station : lignes rendues vs séquence Grep/Read équivalente. |
 | **3** | Hook SessionStart + préchauffage (§5, §6) + idle-timeouts + calibration seuil/cap sur les repos réels de la station. | Cold start masqué : premier `aidex_refs` d'une session « normale » répond `ready`. |
 | **4** | rust-analyzer (binaire attendu sur PATH via rustup ; sinon état `language server not installed` explicite). Attention cold start long : vérifier que `warming` + préchauffage suffisent sur un vrai workspace (Kleos, corpus Rust de `docs/reference/`). | Idem phase 2, sur le corpus Rust. |
 | **5** | pyright (`pyright` npm) puis gopls, si l'usage mesuré le justifie. | Décision par langage sur mesure, pas par symétrie. |
@@ -310,7 +376,9 @@ Chaque phase = commits sur `claude/serena-lsp-layer-6c9f6t`, puis merge dans
 
 1. Critère go/no-go chiffré de la phase 0 (proposition §3 pt 6 — à valider par
    l'opérateur AVEC le résultat de mesure sous les yeux).
-2. `aidex_hover` dans le pilote, ou lot suivant ?
+2. Lesquels des candidats §7.2 (`aidex_calls`, `aidex_hover`, `refs_count`,
+   hiérarchie de types) la phase 0 justifie-t-elle ? Trancher sur les motifs
+   réellement présents dans les transcripts, pas par symétrie avec Serena.
 3. Monorepos multi-`tsconfig` : un tsserver à la racine suffit-il sur les repos réels
    de la station, ou faut-il un enfant par sous-workspace ? (Mesurer sur cas réel en
    phase 2 — koryphaios-experimental dans `docs/reference/` comme corpus TS.)
