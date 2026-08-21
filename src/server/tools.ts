@@ -929,7 +929,7 @@ export function registerTools(): Tool[] {
         },
         {
             name: `${TOOL_PREFIX}search`,
-            description: `Semantic search across embedded code, docs, and workspace items (tasks/notes/history). Best for natural-language questions like "how do we handle retry with backoff" or "what does the error logging do" — finds the right file even when you don't know the identifier name. Requires \`embeddings: true\` on aidex_init for the project. Three modes: semantic (pure vector KNN), exact (identifier match like aidex_query), hybrid (RRF fusion of both — default and recommended).`,
+            description: `Semantic/hybrid search across embedded code, docs, workspace -- for natural-language intent when you don't know the identifier. No embeddings yet? Returns empty, no error: safe to try first. Modes: semantic, exact, hybrid (default).`,
             inputSchema: {
                 type: 'object',
                 properties: {
