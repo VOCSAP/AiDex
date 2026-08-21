@@ -1,6 +1,13 @@
 # Plan — Couche LSP AiDex : daemon par projet, LSP par langage
 
-**Statut** : plan approuvé sur le principe par l'opérateur, en attente d'exécution.
+> **Statut (mise à jour 2026-08-21)** : plan mesuré sur TypeScript le 2026-08-21 --
+> gain négligeable sur un dépôt témoin. La piste TypeScript est fermée par la mesure.
+> Elle reste ouverte pour Rust, à mesurer sur le dépôt Kleos. Voir la section
+> « 0. Mesure du 2026-08-21 » ci-dessous pour le détail et les conditions de reprise.
+> Rapports source (privés au fork, `docs/dev-notes/`) : `lsp-daemon-phase0-mesure.md`,
+> `lsp-ablation-protocol.md`, `mcp-tool-surface-deny-measure.md`,
+> `aidex-embeddings-value.md`.
+
 **Date** : 2026-08-20.
 **Branche de travail** : `claude/serena-lsp-layer-6c9f6t` (basée sur `local-patches`).
 **Origine** : étude comparative avec [Serena](https://github.com/oraios/serena) (session CC du 2026-08-20).
@@ -9,6 +16,67 @@ Ce document est autoportant : il consigne toutes les décisions déjà arbitrée
 l'opérateur pour qu'un agent CC ultérieur puisse exécuter sans re-poser de questions
 résolues. Lire d'abord `.claude/CLAUDE.md` (doctrine de développement) — ce plan s'y
 conforme, en particulier : **chaque phase démarre par une MESURE, pas par du code**.
+
+---
+
+## 0. Mesure du 2026-08-21 -- verdict TypeScript, piste Rust maintenue
+
+Cette section documente la mesure de la Phase 0 (§3) exécutée le 2026-08-21 sur un
+dépôt TypeScript témoin, et son verdict. Elle ne remplace aucune décision arbitrée
+(§2) : elle ferme la piste TypeScript par la mesure et rouvre la question pour Rust.
+
+### 0.1 Faits mesurés sur TypeScript
+
+- 27 des 28 mutations de refactor testées ne produisent que des erreurs de
+  compilation portant fichier, ligne et colonne de chaque site. Le compilateur
+  TypeScript remplit déjà la fonction de recherche exhaustive de références,
+  gratuitement.
+- Campagne d'ablation de 24 runs, 3 bras, 8 tâches de refactor sur un dépôt
+  TypeScript réel : 6 tâches sur 8 rendent un score parfait dans les trois bras et ne
+  discriminent rien, 1 est inexploitable pour cause de troncature, il reste 1 tâche
+  exploitable avec un écart de 0,09 en faveur du bras outil. Non significatif.
+- Le bras où l'outil est simplement disponible ne l'a appelé AUCUNE fois sur les 8
+  tâches. Le bras portant une consigne explicite de faire confiance à sa sortie l'a
+  appelé 7 fois sur 8.
+- Zéro cas de désambiguïsation d'homonymes sur 36 termes distincts, deux échantillons
+  aléatoires indépendants. L'homonymie -- seul terrain où un language server bat
+  structurellement une recherche textuelle -- est absente de l'usage réel.
+- La capacité de l'outil n'est PAS en cause : vérifié, il distingue correctement un
+  symbole de son homonyme dans une autre classe. C'est le besoin qui ne se présente
+  pas.
+
+### 0.2 Pourquoi la piste Rust reste ouverte
+
+Sur le corpus mesuré, le coût des erreurs STATIQUES évitables par session touchant du
+code vaut environ 1,4 ligne sur le dépôt TypeScript contre environ 7,7 lignes sur le
+dépôt Rust -- soit un facteur 5. Cause structurelle relevée : `cargo check` n'exécute
+jamais de code, donc tout échec sur ce canal est statique par construction, alors que
+sur le dépôt TypeScript l'essentiel du coût est du runtime, qu'aucun language server
+ne peut prévenir.
+
+### 0.3 Ce qui est périmé dans le plan si le lot repart
+
+La justification du daemon par le temps de démarrage (D7, §3, §6) est PÉRIMÉE.
+Mesuré : la construction d'un service TypeScript en process prend 0,5 milliseconde et
+la première résolution 92 millisecondes -- contre les 2 à 10 secondes que le plan
+supposait (D7). **Ce qui est périmé est la JUSTIFICATION par le démarrage, pas le
+daemon lui-même.** Le daemon reste justifié par le PARTAGE entre sessions concurrentes,
+qui est le cas d'usage réel de la station (plusieurs agents travaillant en parallèle sur
+le même dépôt, D3 et D4) : sans lui, chaque process MCP instancie son propre service, ce
+qui coûte environ 450 Mo par instance ET refait intégralement l'analyse du même code,
+autant de fois qu'il y a de sessions. C'est la mutualisation de la mémoire et du travail
+d'analyse qui le porte, plus le coût de démarrage. Les phases et sections qui
+reposent sur le préchauffage et le hook de démarrage de session (§5 « Préchauffage »,
+§6 « Hook SessionStart », phase 3 du §8) sont donc à revoir si le lot repart, sur
+Rust ou ailleurs -- le texte d'origine est conservé plus bas pour référence, mais son
+prémisse de coût de démarrage ne tient plus sur TypeScript.
+
+### 0.4 Condition de reprise pour Rust
+
+Avant de rouvrir le lot sur Rust, il faut mesurer : est-ce que `cargo check` énumère
+les sites d'appel avec la même précision que `tsc`, auquel cas la même redondance
+constatée en 0.1 s'appliquerait telle quelle -- ou est-ce que son coût ou sa
+verbosité changent l'équilibre par rapport à TypeScript ?
 
 ---
 
@@ -50,7 +118,7 @@ npm, trivial à embarquer dans l'écosystème Node d'AiDex).
 | D4 | Partage entre sessions CC ? | **Oui, natif.** N sessions CC sur un repo = N process MCP → 1 seul daemon → 1 seul LSP par langage sollicité. | Même modèle que la DB SQLite : chaque session a son process MCP mais tous ouvrent `<projet>/.aidex/index.db` en WAL (`src/db/database.ts:36`). Le daemon réplique ce pattern « état partagé, process par session ». |
 | D5 | Découverte/élection du daemon ? | **bind-or-connect + portfile.** Premier arrivé binde et écrit le portfile ; les autres lisent le portfile et se connectent. | Pattern singleton HTTP déjà présent (LogHub port 3335, `src/loghub/log-server.ts:285` — il ne lui manque que le réflexe « EADDRINUSE ⇒ se connecter » au lieu d'« erreur »). |
 | D6 | `aidex_query` dépend-il du LSP ? | **Jamais.** `aidex_query` lit SQLite directement, daemon vivant ou mort. | Seuls les nouveaux outils sémantiques (`aidex_refs`, `aidex_def`) touchent le daemon. |
-| D7 | Redémarrage après arrêt du daemon ? | **Automatique et transparent** : connexion refusée / portfile mort → l'instance MCP respawne le daemon. Coût = cold start du LSP (tsserver 2–10 s ; pyright 2–5 s ; gopls quelques s ; rust-analyzer 30 s à plusieurs minutes sur gros workspace). | Mitigé par D8 + D9. |
+| D7 | Redémarrage après arrêt du daemon ? | **Automatique et transparent** : connexion refusée / portfile mort → l'instance MCP respawne le daemon. Coût = cold start du LSP (tsserver 2–10 s ; pyright 2–5 s ; gopls quelques s ; rust-analyzer 30 s à plusieurs minutes sur gros workspace). *Prémisse de coût de démarrage périmée pour TypeScript, voir §0.3.* | Mitigé par D8 + D9. |
 | D8 | Timeouts | **Idle généreux (30–60 min) PAR LSP enfant** ; le daemon se termine quand plus aucun LSP enfant ni appel. Dans un repo mixte TS+Rust où le Rust n'est plus touché, rust-analyzer s'éteint seul, tsserver survit. | La réponse au coût RAM multi-projets, c'est le cycle de vie, pas la délocalisation. |
 | D9 | Démarrage | **Hook `SessionStart` de Claude Code** lance `aidex lsp ensure <projet>` (idempotent, non bloquant, spawn détaché) ; le préchauffage des LSP se fait en arrière-plan DANS le daemon. Un appel sémantique qui arrive avant la fin du warm-up reçoit `{"status":"warming"}`, pas un blocage. | L'agent gère très bien un « réessaie » ; le temps qu'il ait besoin d'un refs, c'est chaud. |
 | D10 | Quoi précharger ? | **Manifests à la racine (quels LSP PEUVENT tourner + leurs workspace roots) ∩ histogramme `project_files.extension` de la DB AiDex (quels langages PÈSENT dans le repo)**, cap à 2 LSP préchauffés, le reste lazy. Détail en §5. | La DB est déjà là (requête < 1 ms) ; les manifests sont nécessaires de toute façon pour les roots. |
@@ -189,6 +257,9 @@ le spawne s'il n'existe pas encore (réponse `warming` pendant ce temps).
 
 ## 5. Préchauffage : sur quoi se baser (réponse arbitrée, D10)
 
+> Section périmée dans sa justification (coût de démarrage) si le lot repart --
+> voir §0.3.
+
 Deux signaux, tous deux déjà disponibles sans rien indexer de plus :
 
 1. **Manifests** — détermine quels LSP *peuvent* tourner et où est leur workspace
@@ -219,6 +290,9 @@ pas au runtime).
 ---
 
 ## 6. Hook SessionStart
+
+> Section périmée dans sa justification (coût de démarrage) si le lot repart --
+> voir §0.3.
 
 Nouvelle commande CLI : `aidex lsp ensure [path]` (idempotente, retour immédiat, code
 0 même si le daemon existait déjà). Hook côté projet consommateur :
