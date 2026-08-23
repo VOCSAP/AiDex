@@ -150,6 +150,13 @@ export interface LlmSettings {
     };
     /** Per-project privacy switch. */
     sendCode: boolean;
+    /** Dedicated cross-encoder reranker (stored in ~/.aidex/llm.json). */
+    reranker: {
+        enabled: boolean;
+        endpoint: string | null;
+        model: string | null;
+        hasKey: boolean;
+    };
     /** System-prompt overrides from ~/.aidex/llm-prompts.json. */
     prompts: {
         path: string;
@@ -223,6 +230,12 @@ export async function getSettings(projectPath: string): Promise<ProjectSettings>
                 keyEnvName: file.api_key_env ?? null,
             },
             sendCode,
+            reranker: {
+                enabled: file.reranker?.enabled === true,
+                endpoint: file.reranker?.endpoint ?? null,
+                model: file.reranker?.model ?? null,
+                hasKey: !!file.reranker?.api_key,
+            },
             prompts: (() => {
                 const loaded = loadLlmPrompts();
                 return {
@@ -251,6 +264,11 @@ export interface SetSettingsPayload {
     llmModel?: string | null;
     llmApiKey?: string | null;
     llmSendCode?: boolean;
+    /** Dedicated reranker: toggle + endpoint/model/key (null clears a field). */
+    rerankerEnabled?: boolean;
+    rerankerEndpoint?: string | null;
+    rerankerModel?: string | null;
+    rerankerApiKey?: string | null;
 }
 
 const MAX_STRING_LEN = 2048;
@@ -303,6 +321,19 @@ export function validateSetSettingsPayload(raw: unknown): SetSettingsPayload {
         if (typeof src.llmEnabled !== 'boolean') throw new Error('llmEnabled must be boolean');
         out.llmEnabled = src.llmEnabled;
     }
+    if ('rerankerEnabled' in src) {
+        if (typeof src.rerankerEnabled !== 'boolean') throw new Error('rerankerEnabled must be boolean');
+        out.rerankerEnabled = src.rerankerEnabled;
+    }
+    if ('rerankerEndpoint' in src) {
+        out.rerankerEndpoint = checkStr('rerankerEndpoint', src.rerankerEndpoint, MAX_STRING_LEN);
+    }
+    if ('rerankerModel' in src) {
+        out.rerankerModel = checkStr('rerankerModel', src.rerankerModel, MAX_MODEL_LEN);
+    }
+    if ('rerankerApiKey' in src) {
+        out.rerankerApiKey = checkStr('rerankerApiKey', src.rerankerApiKey, MAX_API_KEY_LEN);
+    }
 
     return out;
 }
@@ -325,7 +356,11 @@ export async function setSettings(
             payload.llmEnabled !== undefined ||
             payload.llmEndpoint !== undefined ||
             payload.llmModel !== undefined ||
-            payload.llmApiKey !== undefined
+            payload.llmApiKey !== undefined ||
+            payload.rerankerEnabled !== undefined ||
+            payload.rerankerEndpoint !== undefined ||
+            payload.rerankerModel !== undefined ||
+            payload.rerankerApiKey !== undefined
         ) {
             const current = readLlmConfigFile() ?? {};
             const next = { ...current };
@@ -354,12 +389,41 @@ export async function setSettings(
                 }
             }
 
+            if (
+                payload.rerankerEnabled !== undefined ||
+                payload.rerankerEndpoint !== undefined ||
+                payload.rerankerModel !== undefined ||
+                payload.rerankerApiKey !== undefined
+            ) {
+                const reranker = { ...(next.reranker ?? {}) };
+                if (payload.rerankerEnabled !== undefined) {
+                    reranker.enabled = payload.rerankerEnabled;
+                }
+                if (payload.rerankerEndpoint !== undefined) {
+                    if (payload.rerankerEndpoint) reranker.endpoint = payload.rerankerEndpoint;
+                    else delete reranker.endpoint;
+                }
+                if (payload.rerankerModel !== undefined) {
+                    if (payload.rerankerModel) reranker.model = payload.rerankerModel;
+                    else delete reranker.model;
+                }
+                if (payload.rerankerApiKey !== undefined) {
+                    const trimmed = payload.rerankerApiKey?.trim() ?? '';
+                    if (trimmed) reranker.api_key = trimmed;
+                    else delete reranker.api_key;
+                }
+                next.reranker = reranker;
+            }
+
             // Validate ONLY when LLM layer is on. Off means the user wants no
             // provider resolved at all — no key required.
             if (next.enabled !== false) {
                 const validation = validateLlmConfigKey(next);
                 if (!validation.ok) {
                     return { success: false, error: validation.error };
+                }
+                if (next.reranker?.enabled === true && !next.reranker.endpoint?.trim()) {
+                    return { success: false, error: 'Dedicated reranker is enabled but has no endpoint URL' };
                 }
             }
 
