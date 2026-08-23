@@ -4201,6 +4201,7 @@ function getViewerHTML(projectPath: string): string {
             // becomes visible (form.apiKeyInput is the user's *pending* input).
             if (success && settingsState.form) {
                 settingsState.form.apiKeyInput = '';
+                settingsState.form.rerankerKeyInput = '';
             }
             render();
             setTimeout(() => {
@@ -4233,6 +4234,10 @@ function getViewerHTML(projectPath: string): string {
                 apiKeyVisible: false,     // toggle for show/hide button
                 sendCode: !!llm.sendCode,
                 llmEnabled: !!llm.enabled,
+                rerankerEnabled: !!(llm.reranker && llm.reranker.enabled),
+                rerankerEndpoint: (llm.reranker && llm.reranker.endpoint) || '',
+                rerankerModel: (llm.reranker && llm.reranker.model) || '',
+                rerankerKeyInput: '',     // user's pending input (stored key never echoed)
                 enableEmbeddings: !!data.embeddings.enabled,
                 embeddingModel: data.embeddings.modelId || (data.embeddings.availableModels[0] && data.embeddings.availableModels[0].id) || 'jina-code',
                 modelDropdownOpen: false, // custom dropdown state
@@ -4371,6 +4376,30 @@ function getViewerHTML(projectPath: string): string {
                           '<span class="label-help"><strong>Default: OFF.</strong> When off, only your query and metadata (file paths, names) leave the box. When on, snippets of method bodies and doc sections are sent during reranking — better results, but only for non-confidential projects.</span>' +
                         '</div>' +
                       '</label>' +
+
+                      // Dedicated reranker sub-toggle — replaces LLM-as-judge reranking.
+                      '<label class="settings-toggle" style="margin-top:14px;">' +
+                        '<input type="checkbox" id="rerankerEnabled"' + (form.rerankerEnabled ? ' checked' : '') + '>' +
+                        '<div>' +
+                          '<span class="label-main">Use a dedicated reranker (cross-encoder)</span>' +
+                          '<span class="label-help">Scores results with a rerank API instead of asking the chat LLM to sort them — more accurate and faster. Works with LiteLLM <code>/rerank</code>, llama.cpp <code>/v1/rerank</code>, TEI. The LLM above still handles query translation &amp; expansion. If the endpoint is down, search falls back to the un-reranked order.</span>' +
+                        '</div>' +
+                      '</label>' +
+                      (form.rerankerEnabled
+                        ? '<div class="settings-row">' +
+                            '<label for="rerankerEndpoint">Rerank URL</label>' +
+                            '<input type="text" id="rerankerEndpoint" value="' + escapeAttr(form.rerankerEndpoint) + '" placeholder="http://localhost:4000/rerank">' +
+                          '</div>' +
+                          '<div class="settings-row">' +
+                            '<label for="rerankerModel">Model</label>' +
+                            '<input type="text" id="rerankerModel" autocomplete="off" value="' + escapeAttr(form.rerankerModel) + '" placeholder="bge-reranker-v2-m3 (optional)">' +
+                          '</div>' +
+                          '<div class="settings-row">' +
+                            '<label for="rerankerKey">API Key</label>' +
+                            '<input type="password" id="rerankerKey" value="' + escapeAttr(form.rerankerKeyInput) + '" placeholder="' + ((llm.reranker && llm.reranker.hasKey) ? 'stored — type to replace' : 'optional (Bearer token)') + '">' +
+                          '</div>' +
+                          '<div class="settings-info">Full URL of the rerank route. The model field is passed through when your server routes by model name (LiteLLM); leave it blank for single-model servers.</div>'
+                        : '') +
                     '</div>'
                   : '') +
 
@@ -4471,6 +4500,18 @@ function getViewerHTML(projectPath: string): string {
             // --- Send-code privacy switch ---
             bindCheckbox('llmSendCode', v => form.sendCode = v);
 
+            // --- Dedicated reranker — toggle shows/hides its fields, so re-render.
+            const rerankerEnabledEl = document.getElementById('rerankerEnabled');
+            if (rerankerEnabledEl) {
+                rerankerEnabledEl.addEventListener('change', () => {
+                    form.rerankerEnabled = rerankerEnabledEl.checked;
+                    render();
+                });
+            }
+            bindInput('rerankerEndpoint', v => form.rerankerEndpoint = v);
+            bindInput('rerankerModel', v => form.rerankerModel = v);
+            bindInput('rerankerKey', v => form.rerankerKeyInput = v);
+
             // --- Show/Hide API key ---
             const showBtn = document.getElementById('toggleKeyVisible');
             if (showBtn) {
@@ -4541,8 +4582,12 @@ function getViewerHTML(projectPath: string): string {
                 llmEndpoint: f.endpoint || null,
                 llmModel: f.model || null,
                 llmSendCode: f.sendCode,
+                rerankerEnabled: f.rerankerEnabled,
+                rerankerEndpoint: f.rerankerEndpoint || null,
+                rerankerModel: f.rerankerModel || null,
             };
             if (f.apiKeyInput && f.apiKeyInput.trim()) payload.llmApiKey = f.apiKeyInput.trim();
+            if (f.rerankerKeyInput && f.rerankerKeyInput.trim()) payload.rerankerApiKey = f.rerankerKeyInput.trim();
             return payload;
         }
 
