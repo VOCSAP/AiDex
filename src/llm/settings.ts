@@ -28,6 +28,7 @@ import {
     writeLlmConfigFile,
 } from './config.js';
 import { createProvider } from './providers.js';
+import { llmPromptsPath, loadLlmPrompts } from './prompts.js';
 import {
     countProjectEmbeddings,
     ensureEmbeddingsSchema,
@@ -82,7 +83,7 @@ export const PROVIDER_OPTIONS: ProviderOption[] = [
         backend: 'ollama',
         label: 'Ollama (local, no key)',
         defaultEndpoint: 'http://localhost:11434',
-        suggestedModels: ['llama3.1:8b', 'llama3.2:3b', 'qwen2.5:7b', 'mistral:7b'],
+        suggestedModels: ['llama3.1:8b', 'llama3.2:3b', 'qwen3:8b', 'qwen2.5:7b', 'mistral:7b'],
         needsKey: false,
     },
     {
@@ -149,6 +150,14 @@ export interface LlmSettings {
     };
     /** Per-project privacy switch. */
     sendCode: boolean;
+    /** System-prompt overrides from ~/.aidex/llm-prompts.json. */
+    prompts: {
+        path: string;
+        /** File keys (snake_case) that override a default prompt. */
+        overridden: string[];
+        /** True when the file exists but is not valid JSON — defaults apply. */
+        parseError: boolean;
+    };
     providers: ProviderOption[];
 }
 
@@ -214,6 +223,14 @@ export async function getSettings(projectPath: string): Promise<ProjectSettings>
                 keyEnvName: file.api_key_env ?? null,
             },
             sendCode,
+            prompts: (() => {
+                const loaded = loadLlmPrompts();
+                return {
+                    path: llmPromptsPath(),
+                    overridden: loaded.overridden,
+                    parseError: loaded.parseError,
+                };
+            })(),
             providers: PROVIDER_OPTIONS,
         },
         lastSeenVersion: lastSeen,
