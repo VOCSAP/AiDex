@@ -277,6 +277,18 @@ export interface LlmConfigFile {
     api_key_env?: string;
     endpoint?: string;
     model?: string;
+    /**
+     * Dedicated cross-encoder reranker (LiteLLM /rerank, llama.cpp /v1/rerank,
+     * TEI...). When enabled, replaces LLM-as-judge reranking in the pipeline.
+     */
+    reranker?: {
+        enabled?: boolean;
+        /** Full URL of the rerank route (e.g. http://localhost:4000/rerank). */
+        endpoint?: string;
+        model?: string;
+        /** Optional Bearer token. */
+        api_key?: string;
+    };
 }
 
 /**
@@ -340,6 +352,14 @@ export function writeLlmConfigFile(cfg: LlmConfigFile): void {
     }
     if (cfg.endpoint && cfg.endpoint.trim()) clean.endpoint = cfg.endpoint.trim();
     if (cfg.model && cfg.model.trim()) clean.model = cfg.model.trim();
+    if (cfg.reranker && typeof cfg.reranker === 'object') {
+        const r: NonNullable<LlmConfigFile['reranker']> = {};
+        if (typeof cfg.reranker.enabled === 'boolean') r.enabled = cfg.reranker.enabled;
+        if (cfg.reranker.endpoint && cfg.reranker.endpoint.trim()) r.endpoint = cfg.reranker.endpoint.trim();
+        if (cfg.reranker.model && cfg.reranker.model.trim()) r.model = cfg.reranker.model.trim();
+        if (cfg.reranker.api_key && cfg.reranker.api_key.trim()) r.api_key = cfg.reranker.api_key.trim();
+        if (Object.keys(r).length > 0) clean.reranker = r;
+    }
 
     writeFileSync(path, JSON.stringify(clean, null, 2), 'utf-8');
     // Best-effort chmod 600 (no-op on Windows).
