@@ -683,6 +683,17 @@ Read or write session notes. Persists in the database between sessions.
 
 The Settings tab features a custom combobox for model selection, a live API-key field that auto-detects environment variable names (e.g. `OPENAI_API_KEY`), a master toggle for the LLM layer (LLM only enables when embeddings are enabled), and a "Test connection" button with latency measurement. API keys persist to `~/.aidex/llm.json` (chmod 600).
 
+The model combobox is a free-text field: the dropdown entries are only suggestions, any model name your endpoint serves can be typed directly (e.g. a custom Ollama tag like `qwen3:8b-ctx16k`).
+
+**Prompt overrides (`~/.aidex/llm-prompts.json`):** the four system prompts of the LLM layer can be overridden per-station to tune them for the configured model. Keys (all optional, non-empty strings, max 8192 chars each): `translate_system`, `expand_system`, `rerank_system_full`, `rerank_system_metadata`. Omitted keys keep the built-in defaults (see `src/llm/prompts.ts`); a malformed file falls back to defaults. The resolved state is reported by `aidex_settings` under `llm.prompts` (`overridden` key list + `parseError` flag), so a typo'd file is visible instead of silently ignored. The *user* message of each call is structured data (the raw query, or a JSON `{query, items}` payload for reranking) and is not overridable — the response parsers depend on its shape.
+
+```json
+// ~/.aidex/llm-prompts.json — example: tighter translate prompt for a small local model
+{
+  "translate_system": "Translate the code-search query to English. Reply ONLY with JSON: {\"queries\": [\"...\"]}. Max 3 short lowercase phrases."
+}
+```
+
 ---
 
 ### aidex_viewer
