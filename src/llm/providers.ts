@@ -137,6 +137,13 @@ const ollamaSpec: ProviderSpec = {
     buildBody: (c, r) => ({
         model: c.model,
         stream: false,
+        // Reasoning models (qwen3, deepseek-r1, ...) think by default, and the
+        // reasoning pass spends the whole num_predict budget before emitting a
+        // single answer token — message.content comes back empty and the stage
+        // silently falls back. Every stage here wants a short structured answer,
+        // never a chain of thought, so turn it off. Non-reasoning models ignore
+        // the field.
+        think: false,
         options: { temperature: r.temperature ?? 0.1, num_predict: r.maxTokens },
         messages: [
             { role: 'system', content: r.system },
