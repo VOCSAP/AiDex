@@ -84,13 +84,15 @@ grandeur. Ce depot a paye DEUX FOIS pour cette exacte erreur : la section 14 de
 sur 20 repetitions a un appel unique, qui a motive un revert complet ; et le 2026-08-13,
 des facteurs de croissance de 1,4 a 8,7 ont ete publies puis stockes en memoire longue
 pour une reindexation qui n'avait fait bouger les index que de quelques pourcents.
-Le piege exact, toujours present dans le code : `init()` rend dans `itemsFound` une
-somme de PAIRES TERME-FICHIER (`src/commands/init.ts:556`), tandis qu'`aidex_status` et
-`aidex_scan` rendent un compte de TERMES GLOBALEMENT DISTINCTS
-(`src/db/database.ts:242`). Le rapport entre les deux vaut le nombre moyen de fichiers
-par terme, donc il VARIE par projet : des facteurs qui melangent les deux sources ne
-sont comparables ni a la realite, ni entre eux. Carte `740c6f5d` ouverte sur la cause
-racine cote produit.
+Le piege exact : `init()` rend dans `itemsFound` une somme de PAIRES TERME-FICHIER,
+tandis qu'`aidex_status` et `aidex_scan` rendent un compte de TERMES GLOBALEMENT
+DISTINCTS (`src/db/database.ts:242`). Le rapport entre les deux vaut le nombre moyen de
+fichiers par terme, donc il VARIE par projet : des facteurs qui melangent les deux
+sources ne sont comparables ni a la realite, ni entre eux. Carte `740c6f5d` FERMEE : la
+sortie d'indexation nomme desormais la premiere grandeur `Term-file pairs (raw case)`,
+donc les deux chiffres ne sont plus confondables a la lecture. Les deux grandeurs
+existent toujours et restent non comparables : la vigilance porte maintenant sur tout
+NOUVEAU compteur rendu a un humain ou a un agent.
 
 Trois reflexes qui en decoulent, par ordre d'efficacite :
 1. Quand un ecart depasse un facteur 2 sans cause evidente, **suspecter l'unite avant de
@@ -109,7 +111,10 @@ retenir comme refutee serait une seconde erreur, symetrique de la premiere. Reti
 conclusion sans la remplacer est une fin legitime.
 
 **Corpus de mesure en place**, indexes et gitignores sous `docs/reference/` :
-`Kleos-local-patches` (Rust, 629 fichiers) et `koryphaios-experimental` (TypeScript).
+`kleos-rust` (Rust, 654 fichiers, clone local de `Kleos` branche `local/patches`) et
+`graphify-8` (Python, 296 fichiers). Aucun corpus TypeScript n'est en place : les
+mesures TypeScript se font sur AiDex lui-meme. Verifier l'existence d'un corpus avant
+de s'y fier, les anciens ont deja disparu sans que ce document soit mis a jour.
 
 **Trace de requetes reelles** : les transcripts Claude Code `~/.claude/projects/<repo>/
 *.jsonl` portent chaque appel `aidex_query` avec son `term` et son `mode` (absent quand
@@ -140,6 +145,32 @@ Chacune a ete fermee par une mesure, pas par une opinion.
    pourcent des lignes de commentaire, et un `grep` fait mieux en 0,1 seconde.
 6. **Le cout de reindexation comme argument contre une feature.** Tranche par
    l'operateur : ponctuel, non bloquant, definitivement. Ne plus l'invoquer.
+7. **Boost de recence au classement (`focus_paths` / `recent_paths`), repris du moteur
+   code-context de Kleos.** Mesure le 2026-08-23 sur la trace reelle, 880 sessions et
+   975 appels, proxy comportemental : le fichier ouvert juste apres une recherche revele
+   la cible. Sur 429 appels `aidex_query` exploitables, 211 soit 84,4 pourcent ont deja
+   la bonne cible dans le top 3 ; le boost n'aurait aide que 13 cas sur 429, soit 3,0
+   pourcent, et c'est une BORNE HAUTE qui suppose zero degradation des 211 cas deja
+   corrects. Fait qui tue l'argument de densite : le plafond de 100 lignes ne mord que
+   dans 5,4 pourcent des appels (50 sur 933). Les trois autres pistes du meme document
+   (`docs/dev-notes/code-context-engine-for-aidex.md`) sont fermees ou redondantes :
+   porter `extract.rs` serait une REGRESSION (AiDex couvre 14 langages contre 8), et
+   l'incrementalite par hash de contenu existe deja (`src/commands/init.ts`).
+8. **Couche LSP / graphe de relations, volet Rust.** Le volet TypeScript etait ferme
+   depuis le 2026-08-21 sur trois raisons ; le volet Rust restait ouvert. Mesure le
+   2026-08-23 sur le corpus `docs/reference/kleos-rust` : une seule des trois raisons
+   tombe. L'homonymie EXISTE bien en Rust, contrairement a TypeScript (6,9 pourcent des
+   noms de methodes et 8,5 pourcent des noms de types sont ambigus, pesant environ 20
+   pourcent des sites, et pas seulement sur des impls de traits : `SearchResult` 7 sites,
+   `StoreResult` 6, `LinkedMemory` 5, `get_stats` 14). Mais elle ne tombe PAS sur ce que
+   l'agent cherche : sur 18 termes reellement recherches, 1 seul est ambigu et 12 ne sont
+   pas des symboles definis du tout (constantes, variables d'environnement). Les deux
+   autres raisons tiennent : `rust-analyzer` joue le role de `tsc` pour le go-to-
+   definition, et l'agent ne reclame pas d'outil semantique (`aidex_search` pese 4,3
+   pourcent des recherches, 42 appels contre 933). **Condition de reouverture** : une
+   trace d'une VRAIE session de navigation dans le code Rust. Les 18 termes viennent de
+   sessions CLI et debug, corpus faible et probablement non representatif ; c'est la
+   seule reserve qui empeche de fermer definitivement.
 
 ### Pieges d'environnement, a recopier dans tout brief d'execution
 
