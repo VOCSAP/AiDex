@@ -3015,17 +3015,25 @@ async function handleSettings(args: Record<string, unknown>): Promise<{ content:
 
         if (open) {
             // Start viewer if not running, with the Settings tab pre-selected via URL hash.
-            await startViewer(path, 'settings');
-            // Mark the current version as seen so the update banner stops showing.
-            markVersionSeen();
+            const viewerMessage = await startViewer(path, 'settings');
+            const { broadcastFocusTab, isViewerServingProject, isViewerRunning } = await import('../viewer/server.js');
 
-            // Always queue a focus-tab message — works for fresh start, replay
-            // on first WS connect, or live broadcast if the browser is already there.
-            const { broadcastFocusTab } = await import('../viewer/server.js');
-            broadcastFocusTab('settings');
+            // The viewer is a single machine-wide instance, but each MCP server (Claude
+            // Code, Claude Desktop, ...) is normally its OWN process — so "no viewer
+            // running in THIS process" is the common case, not evidence of a mismatch.
+            // Only skip the cross-process focus broadcast when this process POSITIVELY
+            // knows the live viewer serves a different project.
+            if (!isViewerRunning() || isViewerServingProject(path)) {
+                // Mark the current version as seen so the update banner stops showing.
+                markVersionSeen();
+
+                // Always queue a focus-tab message — works for fresh start, replay
+                // on first WS connect, or live broadcast if the browser is already there.
+                broadcastFocusTab('settings');
+            }
 
             const lines: string[] = [];
-            lines.push('✓ Opening AiDex Settings in the viewer (http://localhost:3333).');
+            lines.push(`✓ ${viewerMessage}`);
             lines.push('');
             lines.push('Current configuration:');
             lines.push(`  Embeddings: ${s.embeddings.enabled ? 'enabled' : 'disabled'}` +
