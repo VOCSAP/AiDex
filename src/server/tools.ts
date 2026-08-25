@@ -19,42 +19,42 @@ export function registerTools(): Tool[] {
     return [
         {
             name: `${TOOL_PREFIX}init`,
-            description: `Initialize ${PRODUCT_NAME} indexing for a project. Scans all source files and builds a searchable index of identifiers, methods, types, and signatures.`,
+            description: `Initialize ${PRODUCT_NAME} indexing: scans source files, builds an index of identifiers, methods, types, signatures.`,
             inputSchema: {
                 type: 'object',
                 properties: {
                     path: {
                         type: 'string',
-                        description: 'Absolute path to the project directory to index',
+                        description: 'Absolute path to the project to index',
                     },
                     name: {
                         type: 'string',
-                        description: 'Optional project name (defaults to directory name)',
+                        description: 'Project name (default: directory name)',
                     },
                     exclude: {
                         type: 'array',
                         items: { type: 'string' },
-                        description: 'Additional glob patterns to exclude (e.g., ["**/test/**"])',
+                        description: 'Glob patterns to exclude (e.g., ["**/test/**"])',
                     },
                     store_bodies: {
                         type: 'boolean',
-                        description: 'Store full method bodies in DB. Required for embeddings. ~10-20 MB extra per project. Persisted across runs.',
+                        description: 'Store full method bodies (required for embeddings, ~10-20 MB/project, persisted).',
                     },
                     embeddings: {
                         type: 'boolean',
-                        description: 'Enable embeddings for this project (implies store_bodies=true). Builds semantic search vectors using jina-code by default.',
+                        description: 'Enable embeddings (implies store_bodies=true); semantic vectors, jina-code by default.',
                     },
                     llm_endpoint: {
                         type: 'string',
-                        description: 'LLM provider endpoint URL (https://api.anthropic.com / https://api.openai.com/v1 / https://openrouter.ai/api/v1 / http://localhost:11434 for Ollama). Persisted per project.',
+                        description: 'LLM endpoint URL (https://api.anthropic.com / https://api.openai.com/v1 / https://openrouter.ai/api/v1 / http://localhost:11434 for Ollama) (persisted)',
                     },
                     llm_model: {
                         type: 'string',
-                        description: 'LLM model name for the chosen endpoint (e.g. "claude-haiku-4-5", "gpt-4o-mini", "llama3.1:8b"). Persisted per project.',
+                        description: 'LLM model for the endpoint (e.g. "claude-haiku-4-5", "gpt-4o-mini", "llama3.1:8b")',
                     },
                     llm_send_code: {
                         type: 'boolean',
-                        description: 'PRIVACY SWITCH. If true, code snippets and doc bodies may be sent to the LLM during reranking. If false (default), only paths, names, and the user query are sent. Set true only for non-sensitive projects.',
+                        description: 'PRIVACY SWITCH: true sends code/doc snippets to the LLM for reranking; false (default) sends only paths/names/query. Non-sensitive projects only.',
                     },
                 },
                 required: ['path'],
@@ -62,13 +62,13 @@ export function registerTools(): Tool[] {
         },
         {
             name: `${TOOL_PREFIX}query`,
-            description: `Search for terms/identifiers in the ${PRODUCT_NAME} index. Returns file locations where the term appears. PREFERRED over Grep/Glob for code searches when ${INDEX_DIR}/ exists - faster and more precise. Use this instead of grep for finding functions, classes, variables by name.`,
+            description: `Search terms/identifiers in the ${PRODUCT_NAME} index; returns file locations. Prefer over Grep/Glob for known-name search (functions, classes, variables) when ${INDEX_DIR}/ exists.`,
             inputSchema: {
                 type: 'object',
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory`,
+                        description: `Path to the indexed project`,
                     },
                     term: {
                         type: 'string',
@@ -77,41 +77,41 @@ export function registerTools(): Tool[] {
                     mode: {
                         type: 'string',
                         enum: ['exact', 'contains', 'starts_with'],
-                        description: 'Search mode: exact match, contains, or starts_with (default: exact)',
+                        description: 'Search mode (default: exact)',
                     },
                     file_filter: {
                         type: 'string',
-                        description: 'Glob pattern to filter files (e.g., "src/commands/**")',
+                        description: 'Glob to filter files (e.g., "src/commands/**")',
                     },
                     type_filter: {
                         type: 'array',
                         items: { type: 'string' },
-                        description: 'Filter by LINE type: code, comment, method, struct, property, string. Not to be confused with `kinds`, which selects the index dimension.',
+                        description: 'LINE type filter: code, comment, method, struct, property, string. Not `kinds` (index dimension).',
                     },
                     kinds: {
                         type: 'array',
                         items: { type: 'string', enum: ['symbol', 'literal'] },
-                        description: 'Index dimension to search (default: ["symbol"]). "literal" searches indexed string literals, and only an index rebuilt for literal coverage holds any. Check with aidex_coverage before reading a zero as an absence.',
+                        description: 'Index dimension (default ["symbol"]); "literal" only populated after a literal-coverage rebuild. Zero result != absence unless aidex_coverage confirms.',
                     },
                     item_offset: {
                         type: 'number',
-                        description: 'Matching TERMS to skip. A broad `contains` can match more terms than one call examines; when that happens the answer says so, and this reads the next slice.',
+                        description: 'Matching TERMS to skip; a broad `contains` can exceed one call, this reads the next slice.',
                     },
                     item_limit: {
                         type: 'number',
-                        description: 'Matching TERMS to examine in this call (default 1000). Distinct from `limit`, which caps the result LINES shown.',
+                        description: 'Matching TERMS to examine (default 1000); distinct from `limit` (result LINES).',
                     },
                     modified_since: {
                         type: 'string',
-                        description: 'Only include lines modified after this time. Supports: "2h" (hours), "30m" (minutes), "1d" (days), "1w" (weeks), or ISO date string',
+                        description: 'Lines modified after this time: "2h", "30m", "1d", "1w", or ISO date',
                     },
                     modified_before: {
                         type: 'string',
-                        description: 'Only include lines modified before this time. Same format as modified_since',
+                        description: 'Lines modified before this time; same format as modified_since',
                     },
                     limit: {
                         type: 'number',
-                        description: 'Maximum number of results (default: 100)',
+                        description: 'Max results (default: 100)',
                     },
                 },
                 required: ['path', 'term'],
@@ -119,23 +119,17 @@ export function registerTools(): Tool[] {
         },
         {
             name: `${TOOL_PREFIX}coverage`,
-            description: `Ask whether ${PRODUCT_NAME} can actually answer a search, BEFORE trusting a zero result. `
-                + `Returns {covered, reason, advice}. \`covered: true\` means this index can answer both the symbol `
-                + `and the literal dimension for that pattern and path -- and only then is an empty result proof of absence. `
-                + `Every other reason means "ask something else" (grep), never "the term is absent". `
-                + `Reasons: covered, covered_symbols_only, literal_coverage_absent, pattern_below_literal_rule, `
-                + `pattern_not_indexable, path_out_of_scope, index_stale_on_file, project_not_indexed, oracle_error. `
-                + `Background: ${PRODUCT_NAME} indexes symbols always; string literals only on an index rebuilt for it, `
-                + `and only in identifier form (a separator or mixed case, or a single lowercase word in type/JSX/object-value `
-                + `position). Measured literal coverage varies far too much to quote once -- 9.8% on Go against 29.9% on `
-                + `TypeScript, and 18.8% vs 29.9% between two TypeScript projects -- so each index reports its own figures. `
-                + `Reindexing is manual: an index is lifted only by \`${PRODUCT_NAME_LOWER} rebuild-index <path>\`, run by the operator.`,
+            description: `Check whether ${PRODUCT_NAME} can actually answer a search BEFORE trusting a zero result from aidex_query. `
+                + `Returns {covered, reason, advice}. \`covered: true\` means both the symbol and literal dimensions are indexed `
+                + `for that pattern and path -- only then is an empty aidex_query result proof of absence. `
+                + `Any other reason means "ask something else" (grep), never "the term is absent". `
+                + `Reindexing is manual, run by the operator via \`${PRODUCT_NAME_LOWER} rebuild-index <path>\`.`,
             inputSchema: {
                 type: 'object',
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory`,
+                        description: `Path to the indexed project`,
                     },
                     pattern: {
                         type: 'string',
@@ -157,7 +151,7 @@ export function registerTools(): Tool[] {
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory (optional, shows server status if not provided)`,
+                        description: `Indexed project path (optional; omit for server-wide status)`,
                     },
                 },
                 required: [],
@@ -165,17 +159,17 @@ export function registerTools(): Tool[] {
         },
         {
             name: `${TOOL_PREFIX}signature`,
-            description: 'Get the signature of a single file: header comments, types (classes/structs/interfaces), and method prototypes. Use this INSTEAD of reading entire files when you only need to know what methods/classes exist. Much faster than Read tool for understanding file structure.',
+            description: 'Get a file\'s signature (header comments, types, method prototypes) without reading it whole. Use instead of Read when you only need to know what exists in the file.',
             inputSchema: {
                 type: 'object',
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory`,
+                        description: `Path to the indexed project`,
                     },
                     file: {
                         type: 'string',
-                        description: 'Relative path to the file within the project (e.g., "src/Core/Engine.cs")',
+                        description: 'Relative file path (e.g., "src/Core/Engine.cs")',
                     },
                 },
                 required: ['path', 'file'],
@@ -183,13 +177,13 @@ export function registerTools(): Tool[] {
         },
         {
             name: `${TOOL_PREFIX}signatures`,
-            description: 'Get signatures for multiple files at once using glob pattern or file list. Returns types and method prototypes. Use INSTEAD of reading multiple files when exploring codebase structure. Much more efficient than multiple Read calls.',
+            description: 'Get signatures for multiple files at once (glob pattern or file list). Returns types and method prototypes. Use instead of multiple Read calls when exploring codebase structure.',
             inputSchema: {
                 type: 'object',
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory`,
+                        description: `Path to the indexed project`,
                     },
                     pattern: {
                         type: 'string',
@@ -206,17 +200,17 @@ export function registerTools(): Tool[] {
         },
         {
             name: `${TOOL_PREFIX}update`,
-            description: `Re-index a single file. Use after editing a file to update the ${PRODUCT_NAME} index. If the file is new, it will be added to the index. If unchanged (same hash), no update is performed.`,
+            description: `Re-index a single file after editing it. New files are added; unchanged files (same hash) are skipped.`,
             inputSchema: {
                 type: 'object',
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory`,
+                        description: `Path to the indexed project`,
                     },
                     file: {
                         type: 'string',
-                        description: 'Relative path to the file to update (e.g., "src/Core/Engine.cs")',
+                        description: 'Relative file path (e.g., "src/Core/Engine.cs")',
                     },
                 },
                 required: ['path', 'file'],
@@ -230,7 +224,7 @@ export function registerTools(): Tool[] {
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory`,
+                        description: `Path to the indexed project`,
                     },
                     file: {
                         type: 'string',
@@ -248,7 +242,7 @@ export function registerTools(): Tool[] {
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory`,
+                        description: `Path to the indexed project`,
                     },
                 },
                 required: ['path'],
@@ -262,7 +256,7 @@ export function registerTools(): Tool[] {
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory`,
+                        description: `Path to the indexed project`,
                     },
                     subpath: {
                         type: 'string',
@@ -288,7 +282,7 @@ export function registerTools(): Tool[] {
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory`,
+                        description: `Path to the indexed project`,
                     },
                     section: {
                         type: 'string',
@@ -315,7 +309,7 @@ export function registerTools(): Tool[] {
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to current project with ${INDEX_DIR} directory`,
+                        description: `Path to the current indexed project`,
                     },
                     dependency: {
                         type: 'string',
@@ -337,7 +331,7 @@ export function registerTools(): Tool[] {
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to current project with ${INDEX_DIR} directory`,
+                        description: `Path to the current indexed project`,
                     },
                     dependency: {
                         type: 'string',
@@ -355,7 +349,7 @@ export function registerTools(): Tool[] {
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory`,
+                        description: `Path to the indexed project`,
                     },
                 },
                 required: ['path'],
@@ -381,13 +375,13 @@ export function registerTools(): Tool[] {
         },
         {
             name: `${TOOL_PREFIX}files`,
-            description: 'List all files and directories in the indexed project. Returns the complete project structure with file types (code, config, doc, asset, test, other) and whether each file is indexed for code search. Use modified_since to find files changed in this session.',
+            description: 'List all files/directories in the indexed project, with file type (code, config, doc, asset, test, other) and whether each is indexed for code search. Use modified_since to find files changed this session.',
             inputSchema: {
                 type: 'object',
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory`,
+                        description: `Path to the indexed project`,
                     },
                     type: {
                         type: 'string',
@@ -414,7 +408,7 @@ export function registerTools(): Tool[] {
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory`,
+                        description: `Path to the indexed project`,
                     },
                     note: {
                         type: 'string',
@@ -450,13 +444,13 @@ export function registerTools(): Tool[] {
         },
         {
             name: `${TOOL_PREFIX}session`,
-            description: `Start or check an ${PRODUCT_NAME} session. Call this at the beginning of a new chat session to: (1) detect files changed externally since last session, (2) auto-reindex modified files, (3) get session note and last session times. Returns info for "What did we do last session?" queries.`,
+            description: `Start/check an ${PRODUCT_NAME} session: detects externally changed files, auto-reindexes them, and returns the session note + last-session times. Call at the start of a new chat session, or to answer "what did we do last session?".`,
             inputSchema: {
                 type: 'object',
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory`,
+                        description: `Path to the indexed project`,
                     },
                 },
                 required: ['path'],
@@ -464,13 +458,13 @@ export function registerTools(): Tool[] {
         },
         {
             name: `${TOOL_PREFIX}viewer`,
-            description: 'Open an interactive project tree viewer in the browser. Shows the indexed file structure with clickable nodes - click on a file to see its signature (header comments, types, methods). Uses a local HTTP server with WebSocket for live updates.',
+            description: 'Open an interactive project tree viewer in the browser: click a file to see its signature (header comments, types, methods).',
             inputSchema: {
                 type: 'object',
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory`,
+                        description: `Path to the indexed project`,
                     },
                     action: {
                         type: 'string',
@@ -489,7 +483,7 @@ export function registerTools(): Tool[] {
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory`,
+                        description: `Path to the indexed project`,
                     },
                     action: {
                         type: 'string',
@@ -510,7 +504,7 @@ export function registerTools(): Tool[] {
                     },
                     summary: {
                         type: 'string',
-                        description: 'One-sentence summary (~150 chars). Shown in task list as table-of-contents. Write it on create, update on changes.',
+                        description: 'One-sentence summary (~150 chars) shown in task list. Write on create, update on changes.',
                     },
                     priority: {
                         type: 'number',
@@ -528,7 +522,7 @@ export function registerTools(): Tool[] {
                     },
                     source: {
                         type: 'string',
-                        description: 'Where the task came from (freetext, e.g., "code review of parser.ts:142")',
+                        description: 'Freetext origin (e.g., "code review of parser.ts:142")',
                     },
                     sort_order: {
                         type: 'number',
@@ -548,7 +542,7 @@ export function registerTools(): Tool[] {
                     },
                     task_action: {
                         type: 'string',
-                        description: 'What to do when triggered (description of the action to perform)',
+                        description: 'Action to perform when triggered',
                     },
                     auto_go: {
                         type: 'boolean',
@@ -560,13 +554,13 @@ export function registerTools(): Tool[] {
         },
         {
             name: `${TOOL_PREFIX}tasks`,
-            description: `List and filter tasks in the project backlog. Returns tasks grouped by status (active, backlog, done, cancelled) and sorted by priority. Use to get an overview of all open and completed work.`,
+            description: `List and filter tasks in the project backlog, grouped by status and sorted by priority.`,
             inputSchema: {
                 type: 'object',
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory`,
+                        description: `Path to the indexed project`,
                     },
                     status: {
                         type: 'string',
@@ -588,14 +582,14 @@ export function registerTools(): Tool[] {
         },
         {
             name: `${TOOL_PREFIX}screenshot`,
-            description: 'Take a screenshot. Returns file path for Read. No index required. OPTIMIZATION STRATEGY: Always start with scale=0.5 + colors=2 (smallest). If text is unreadable, retry with colors=16. If still unclear, try scale=0.75 or omit colors for full quality. Remember what works for each window/app during the session to avoid retries.',
+            description: 'Take a screenshot. Returns a file path for Read. No index required. Start with scale=0.5 + colors=2 (smallest); raise colors/scale only if the result is unreadable.',
             inputSchema: {
                 type: 'object',
                 properties: {
                     mode: {
                         type: 'string',
                         enum: ['fullscreen', 'active_window', 'window', 'region', 'rect'],
-                        description: 'Capture mode: fullscreen (default), active_window, window (by title), region (interactive selection), or rect (specific coordinates)',
+                        description: 'Capture mode (default: fullscreen). window needs window_title; region is interactive; rect needs x/y/width/height.',
                     },
                     window_title: {
                         type: 'string',
@@ -635,12 +629,12 @@ export function registerTools(): Tool[] {
                     },
                     scale: {
                         type: 'number',
-                        description: 'Scale factor 0.1-1.0 (e.g., 0.5 = half size). Reduces resolution to save tokens. Default: no scaling.',
+                        description: 'Scale factor 0.1-1.0 (e.g., 0.5 = half size), lowers token cost. Default: no scaling.',
                     },
                     colors: {
                         type: 'number',
                         enum: [2, 4, 16, 256],
-                        description: 'Reduce color palette: 2 (B&W, ideal for text), 4 (text + light shading), 16 (UI readable), 256 (good quality). Default: full color. Tip: Use 2 for text-only screenshots to dramatically reduce file size.',
+                        description: 'Palette size: 2=B&W text, 4=text+shading, 16=UI-readable, 256=photo-quality. Default: full color.',
                     },
                 },
                 required: [],
@@ -665,7 +659,7 @@ export function registerTools(): Tool[] {
         // ============================================================
         {
             name: `${TOOL_PREFIX}global_init`,
-            description: `Scan a directory tree for ${PRODUCT_NAME}-indexed projects and register them in the global database (~/.aidex/global.db). Also finds unindexed projects (by markers like .csproj, package.json, Cargo.toml, etc.). Use this to enable cross-project searches with aidex_global_query.`,
+            description: `Scan a directory tree, register ${PRODUCT_NAME}-indexed projects in the global DB (~/.aidex/global.db), and find unindexed ones (by .csproj/package.json/Cargo.toml markers). Enables cross-project search via aidex_global_query.`,
             inputSchema: {
                 type: 'object',
                 properties: {
@@ -812,7 +806,7 @@ export function registerTools(): Tool[] {
         },
         {
             name: `${TOOL_PREFIX}global_guideline`,
-            description: `Manage persistent guidelines in the global ${PRODUCT_NAME} database (~/.aidex/global.db). Guidelines are named key-value instructions that apply across all projects — e.g. "review" → detailed review checklist, "release-prep" → release steps, "new-feature" → conventions to follow. Use \`list\` at session start to load active guidelines. Works without prior global_init.`,
+            description: `Manage persistent guidelines in the global ${PRODUCT_NAME} database (~/.aidex/global.db): named key-value instructions applied across all projects (e.g. "review" -> checklist). Use \`list\` at session start to load active guidelines. Works without prior global_init.`,
             inputSchema: {
                 type: 'object',
                 properties: {
@@ -839,7 +833,7 @@ export function registerTools(): Tool[] {
         },
         {
             name: `${TOOL_PREFIX}log`,
-            description: `Universal Log Hub — receive and query logs from any external program (C#, Python, Node, etc.) via HTTP. Zero-cost when not used. Actions: init (start HTTP server), free (stop server), status (show stats), query (search logs), clear (reset buffer), write (inject entry as "claude"), control_get (read all interactive dashboard control values), control_set (change one control — same set-point the user's dashboard slider drives, so the AI can tune live).`,
+            description: `Universal Log Hub: receive and query logs from any external program (C#, Python, Node, etc.) via HTTP. Zero-cost when not used. See \`action\` for operations.`,
             inputSchema: {
                 type: 'object',
                 properties: {
@@ -887,7 +881,7 @@ export function registerTools(): Tool[] {
                     },
                     consume: {
                         type: 'boolean',
-                        description: 'If true, returned entries are removed from the buffer — ideal for polling without duplicates (default: false, used with query)',
+                        description: 'If true, removes returned entries from the buffer (poll without duplicates). Default: false. Used with query.',
                     },
                     message: {
                         type: 'string',
@@ -917,7 +911,7 @@ export function registerTools(): Tool[] {
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory (defaults to current working directory if omitted on the server).`,
+                        description: `Indexed project path (defaults to server's cwd if omitted)`,
                     },
                     open: {
                         type: 'boolean',
@@ -929,51 +923,51 @@ export function registerTools(): Tool[] {
         },
         {
             name: `${TOOL_PREFIX}search`,
-            description: `Semantic/hybrid search across embedded code, docs, workspace -- for natural-language intent when you don't know the identifier. No embeddings yet? Returns empty, no error: safe to try first. Modes: semantic, exact, hybrid (default).`,
+            description: `Semantic/hybrid search across embedded code, docs, workspace: natural-language intent when you don't know the identifier (aidex_query is for known names, aidex_signature for file structure). No embeddings -> empty result, no error.`,
             inputSchema: {
                 type: 'object',
                 properties: {
                     query: {
                         type: 'string',
-                        description: 'The search query — natural language for semantic, or a term for exact mode',
+                        description: 'Natural language for semantic, or a term for exact mode',
                     },
                     path: {
                         type: 'string',
-                        description: 'Project path. Required for scope:"current" (default when path is set).',
+                        description: 'Project path; required for scope:"current" (default when set)',
                     },
                     scope: {
                         type: 'string',
                         enum: ['current', 'all', 'linked'],
-                        description: 'current: only this project (default if path set). all: every project that has embeddings enabled. linked: this project + its linked dependencies.',
+                        description: 'current: this project (default if path set). all: every embeddings-enabled project. linked: project + its linked deps.',
                     },
                     project_filter: {
                         type: 'array',
                         items: { type: 'string' },
-                        description: 'Glob patterns over project paths (e.g. ["Q:/develop/**"]). Combined with scope.',
+                        description: 'Glob patterns over project paths (e.g. ["Q:/develop/**"]); combined with scope',
                     },
                     source_kinds: {
                         type: 'array',
                         items: { type: 'string', enum: ['code', 'docs', 'workspace'] },
-                        description: 'Filter by content kind. Default: all kinds.',
+                        description: 'Filter by content kind (default: all)',
                     },
                     source_types: {
                         type: 'array',
                         items: { type: 'string' },
-                        description: 'Filter by source_type: method, type, doc-section, task, task-log, note, note-history.',
+                        description: 'source_type filter: method, type, doc-section, task, task-log, note, note-history',
                     },
                     mode: {
                         type: 'string',
                         enum: ['semantic', 'hybrid', 'exact'],
-                        description: 'semantic: pure vector KNN. exact: identifier match (like aidex_query). hybrid: both fused via RRF (default).',
+                        description: 'semantic: vector KNN. exact: identifier match (like aidex_query). hybrid (default): both, fused via RRF.',
                     },
                     k: {
                         type: 'number',
-                        description: 'Number of results to return (default: 20)',
+                        description: 'Number of results (default: 20)',
                     },
                     llm: {
                         type: 'string',
                         enum: ['auto', 'off', 'translate', 'rerank', 'expand+rerank'],
-                        description: 'LLM-layer strategy. "auto" (default): translate non-English queries + rerank if a key is configured. "off": pure embeddings. "translate": just rewrite the query. "rerank": embeddings then LLM-reranking. "expand+rerank": split into 2-4 subqueries + LLM rerank. Per-project privacy switch llm_send_code controls whether code/snippets are sent.',
+                        description: 'LLM strategy (default auto: translate + rerank if a key is set). off/translate/rerank/expand+rerank vary reranking depth; llm_send_code gates whether code is sent.',
                     },
                 },
                 required: ['query'],
