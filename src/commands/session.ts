@@ -14,7 +14,7 @@ import Database from 'better-sqlite3';
 import { minimatch } from 'minimatch';
 import { createQueries } from '../db/index.js';
 import { openDatabase } from '../db/index.js';
-import { update } from './update.js';
+import { remove, update } from './update.js';
 import { DEFAULT_EXCLUDE, readGitignore, shortHash } from './init.js';
 import { validateIndex, noIndexError, withProjectDb } from './shared.js';
 import { PRODUCT_VERSION } from '../constants.js';
@@ -145,13 +145,16 @@ export function session(params: SessionParams): SessionResult {
                     // Detect external changes
                     externalChanges = detectExternalChanges(projectPath, queries);
 
-                    // Auto-reindex modified files
+                    // Auto-reindex modified files and remove externally deleted
+                    // files from every index dimension, including candidate edges.
                     for (const change of externalChanges) {
                         if (change.reason === 'modified') {
                             const result = update({ path: projectPath, file: change.path });
                             if (result.success) {
                                 reindexed.push(change.path);
                             }
+                        } else if (change.reason === 'deleted') {
+                            remove({ path: projectPath, file: change.path });
                         }
                     }
 

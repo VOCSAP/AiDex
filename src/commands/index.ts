@@ -5,6 +5,7 @@
 export { validateIndex, noIndexError, withProjectDb, withDatabase, normalizePath, escapeLikeTerm } from './shared.js';
 export { init, type InitParams, type InitResult } from './init.js';
 export { query, parseTimeOffset, DEFAULT_QUERY_KINDS, type QueryParams, type QueryResult, type QueryMatch, type QueryMode, type QueryKind } from './query.js';
+export { edges, type EdgesParams, type EdgesResult, type EdgeDirection } from './edges.js';
 export { signature, signatures, type SignatureParams, type SignatureResult, type SignaturesParams, type SignaturesResult } from './signature.js';
 export { update, remove, type UpdateParams, type UpdateResult, type RemoveParams, type RemoveResult } from './update.js';
 export { summary, tree, describe, type SummaryParams, type SummaryResult, type TreeParams, type TreeResult, type TreeEntry, type DescribeParams, type DescribeResult } from './summary.js';

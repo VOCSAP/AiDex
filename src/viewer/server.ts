@@ -37,6 +37,27 @@ let wss: WebSocketServer | null = null;
 let fileWatcher: FSWatcher | null = null;
 let viewerDbPath: string | null = null;
 let viewerDb: ReturnType<typeof openDatabase> | null = null;
+// Resolved absolute path of the project the running viewer instance actually
+// serves. The viewer binds to a single port (3333) for the whole machine, so
+// a second agent calling startViewer() for a DIFFERENT project must be told
+// which project currently owns it instead of being misled into believing it
+// reached its own instance.
+let servedProjectPath: string | null = null;
+
+/**
+ * Normalize a project path for comparison against `servedProjectPath`.
+ * `path.resolve()` alone folds separators, `..` and trailing slashes but NOT
+ * casing — on Windows (case-insensitive filesystem) `D:/x` and `d:/x` resolve
+ * to two different strings, which would falsely treat the same project as a
+ * mismatch. Fold to lowercase on win32 only.
+ * Known residual (accepted): does not resolve UNC-vs-drive-letter aliasing,
+ * junctions or symlinks — `fs.realpathSync.native` would cover those but
+ * touches disk and throws on a path that doesn't exist yet, not worth it here.
+ */
+function normalizeProjectPath(p: string): string {
+    const resolved = path.resolve(p);
+    return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
 
 interface ViewerMessage {
     type:
@@ -98,14 +119,21 @@ interface SessionChangeInfo {
 
 export async function startViewer(projectPath: string, initialTab?: string, options?: { exitOnLastClientClose?: boolean }): Promise<string> {
     const hash = initialTab ? `#tab=${encodeURIComponent(initialTab)}` : '';
+    const resolvedProjectPath = normalizeProjectPath(projectPath);
 
-    // Check if already running — broadcast a focus message + reopen browser at the hash URL.
+    // Check if already running — broadcast a focus message + reopen browser at the hash URL,
+    // but only when the request targets the SAME project the viewer is currently serving.
+    // A viewer already bound to a different project must not be mistaken for "our" instance.
     if (server) {
-        if (initialTab) {
-            broadcastFocusTab(initialTab);
-            try { openBrowser(`http://localhost:${PORT}${hash}`); } catch { /* ignore */ }
+        if (servedProjectPath === resolvedProjectPath) {
+            if (initialTab) {
+                broadcastFocusTab(initialTab);
+                try { openBrowser(`http://localhost:${PORT}${hash}`); } catch { /* ignore */ }
+            }
+            return `Viewer already running at http://localhost:${PORT}${hash}`;
         }
-        return `Viewer already running at http://localhost:${PORT}${hash}`;
+        return `Viewer is already serving a different project (${servedProjectPath ?? 'unknown'}) at http://localhost:${PORT}. ` +
+            `Close it first (aidex_viewer action="close") before opening ${resolvedProjectPath}.`;
     }
 
     const dbPath = path.join(projectPath, INDEX_DIR, 'index.db');
@@ -142,6 +170,7 @@ export async function startViewer(projectPath: string, initialTab?: string, opti
 
     const app = express();
     server = createServer(app);
+    servedProjectPath = resolvedProjectPath;
     wss = new WebSocketServer({ server });
 
     // Swallow ws errors that bubble up from the attached HTTP server (e.g. EADDRINUSE).
@@ -516,8 +545,18 @@ export async function startViewer(projectPath: string, initialTab?: string, opti
             if (err.code === 'EADDRINUSE') {
                 const url = `http://localhost:${PORT}${hash}`;
                 try { openBrowser(url); } catch { /* ignore */ }
+                // This process's `server` object never actually bound to the port — another
+                // process (or an earlier stale instance) owns it. Reset all module state via
+                // stopViewer() so the NEXT startViewer() call in this process re-evaluates
+                // from scratch instead of forever hitting the "already running" branch for
+                // a server object that was never live.
+                try { stopViewer(); } catch { /* ignore */ }
                 resolve(`Port ${PORT} already in use - opened browser at existing viewer (${url})`);
             } else {
+                // Non-EADDRINUSE listen failure (EACCES, a reserved port range, ...): this
+                // process's `server` never bound either. Reset state the same way, so a
+                // later startViewer() call doesn't report a stale "already serving" project.
+                try { stopViewer(); } catch { /* ignore */ }
                 reject(err);
             }
         });
@@ -682,18 +721,50 @@ export function broadcastPanelClear(id?: string): void {
 
 export function stopViewer(): string {
     if (server) {
-        fileWatcher?.close();
+        // Null out module state FIRST, close() calls second. If any close() below throws,
+        // a caller wrapping stopViewer() in try/catch (startViewer's EADDRINUSE/reject
+        // branches) must not be left with stale server/servedProjectPath pointing at a
+        // dead instance.
+        const closingWatcher = fileWatcher;
+        const closingWss = wss;
+        const closingDb = viewerDb;
+        const closingServer = server;
         fileWatcher = null;
-        wss?.close();
-        viewerDb?.close();
+        wss = null;
         viewerDb = null;
         viewerDbPath = null;
-        server.close();
         server = null;
-        wss = null;
+        servedProjectPath = null;
+
+        closingWatcher?.close();
+        closingWss?.close();
+        closingDb?.close();
+        closingServer.close();
         return 'Viewer stopped';
     }
     return 'Viewer was not running';
+}
+
+/**
+ * True when a viewer instance is running AND currently serving the given
+ * project path. Callers that broadcast UI side effects (focus a tab, mark a
+ * version banner seen) must check this first — the viewer is a single
+ * machine-wide instance, so it may well be serving a DIFFERENT project than
+ * the one the caller has in hand.
+ */
+export function isViewerServingProject(projectPath: string): boolean {
+    return server !== null && servedProjectPath === normalizeProjectPath(projectPath);
+}
+
+/**
+ * True when a viewer instance is running in THIS process, regardless of
+ * which project it serves. Distinguishes "I know it's a different project"
+ * from "I don't know, no viewer here" — the latter is the normal case in a
+ * multi-process deployment (each MCP server is its own process) and must
+ * NOT be treated as "serving a different project".
+ */
+export function isViewerRunning(): boolean {
+    return server !== null;
 }
 
 function openBrowser(url: string) {
