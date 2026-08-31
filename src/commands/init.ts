@@ -14,7 +14,6 @@ import { INDEX_DIR } from '../constants.js';
 import { invalidateGlobalCache } from './global/global-query.js';
 import {
     COVERAGE_METADATA_KEY,
-    LITERAL_COVERAGE_SCHEMA,
     LITERAL_RULE_ID,
     LITERAL_RULE_VERSION,
     readCoverage,
@@ -84,6 +83,7 @@ export function shortHash(content: Buffer | string): string {
 import { createDatabase, createQueries, type AiDexDatabase, type Queries } from '../db/index.js';
 import { withDatabase } from './shared.js';
 import { extract, getSupportedExtensions, astroHasNoFrontmatterFence } from '../parser/index.js';
+import { rebuildCandidateEdgeTargets } from '../relations/candidate-edges.js';
 import { globalDbExists, readProjectStats, openGlobalDatabase } from '../db/global-database.js';
 
 // ============================================================
@@ -618,6 +618,9 @@ export async function init(params: InitParams): Promise<InitResult> {
         queries.deleteUnusedItems();
     }
 
+
+    // Targets depend on the complete current declaration set.
+    db.transaction(() => rebuildCandidateEdgeTargets(queries));
     // --------------------------------------------------------
     // Scan project structure (all files, not just code)
     // --------------------------------------------------------
@@ -666,11 +669,11 @@ export async function init(params: InitParams): Promise<InitResult> {
     // changed, not the repository; publishing those as the index's coverage
     // would be a measurement of nothing presented as a measurement.
     //
-    // `schema_version` moves to 1.3 here and nowhere else. It is the promise the
+    // `schema_version` moves to the current 1.4 here. It is part of the promise the
     // oracle reads back, so it must be made only once the literals are actually
     // in the tables: an interrupted reindex dies before this point, leaving the
-    // index declaring 1.2 -- incomplete and honest about it, rather than
-    // complete-looking and wrong.
+    // prior version -- incomplete and honest about it, rather than complete-looking
+    // and wrong.
     if (!incremental) {
         const perLanguage: CoverageRecord['perLanguage'] = {};
         for (const [language, stat] of literalStats) {
@@ -693,7 +696,7 @@ export async function init(params: InitParams): Promise<InitResult> {
             measuredAt: Date.now(),
         };
         db.setMetadata(COVERAGE_METADATA_KEY, JSON.stringify(record));
-        db.setMetadata('schema_version', LITERAL_COVERAGE_SCHEMA);
+        db.setMetadata('schema_version', '1.4');
     }
 
     // Reset session tracking after full re-index
@@ -938,6 +941,10 @@ function indexFile(
         queries.insertType(fileId, type.name, type.kind, type.lineNumber);
     }
 
+
+    for (const edge of extraction.edges) {
+        queries.insertCandidateEdge(fileId, edge);
+    }
     // Insert signature (header comments)
     if (extraction.headerComments.length > 0) {
         queries.insertSignature(fileId, extraction.headerComments.join('\n'));

@@ -5,7 +5,7 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { existsSync } from 'fs';
 import { join } from 'path';
-import { init, query, signature, signatures, update, remove, summary, tree, describe, link, unlink, listLinks, scan, files, note, getSessionNote, session, formatSessionTime, formatDuration, task, tasks, screenshot, listWindows, globalInit, globalStatus, globalQuery, globalSignatures, globalRefresh, globalGuideline, log, can, noticeFor, globalNotice, type QueryMode, type QueryKind, type TaskAction, type ScreenshotMode, type ScreenshotColors, type SignatureKind, type GuidelineAction, type LogAction, type LogLevel } from '../commands/index.js';
+import { init, query, edges, signature, signatures, update, remove, summary, tree, describe, link, unlink, listLinks, scan, files, note, getSessionNote, session, formatSessionTime, formatDuration, task, tasks, screenshot, listWindows, globalInit, globalStatus, globalQuery, globalSignatures, globalRefresh, globalGuideline, log, can, noticeFor, globalNotice, type QueryMode, type QueryKind, type EdgeDirection, type TaskAction, type ScreenshotMode, type ScreenshotColors, type SignatureKind, type GuidelineAction, type LogAction, type LogLevel } from '../commands/index.js';
 import type { TaskRow } from '../db/index.js';
 import { openDatabase } from '../db/index.js';
 import { LITERAL_COVERAGE_SCHEMA, LITERAL_RULE_ID, LITERAL_RULE_VERSION } from '../coverage/rule.js';
@@ -115,6 +115,44 @@ export function registerTools(): Tool[] {
                     },
                 },
                 required: ['path', 'term'],
+            },
+        },
+        {
+            name: `${TOOL_PREFIX}edges`,
+            description: 'Query syntax-derived project-local import and direct-call candidate edges. '
+                + 'Use for likely callers, importers, and impact reconnaissance. '
+                + 'Every result is candidate evidence, not compiler-grade proof; an empty result never proves semantic absence.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    path: {
+                        type: 'string',
+                        description: 'Path to the indexed project',
+                    },
+                    file: {
+                        type: 'string',
+                        description: 'Optional indexed file path used as the relationship endpoint',
+                    },
+                    symbol: {
+                        type: 'string',
+                        description: 'Optional source or target symbol name',
+                    },
+                    direction: {
+                        type: 'string',
+                        enum: ['incoming', 'outgoing', 'both'],
+                        description: 'Relationship direction relative to file (default: both)',
+                    },
+                    kind: {
+                        type: 'string',
+                        enum: ['import', 'call'],
+                        description: 'Optional relationship kind',
+                    },
+                    limit: {
+                        type: 'number',
+                        description: 'Maximum edges (default 100, maximum 1000)',
+                    },
+                },
+                required: ['path'],
             },
         },
         {
@@ -997,6 +1035,9 @@ export async function handleToolCall(
             case `${TOOL_PREFIX}status`:
                 return await handleStatus(args);
 
+            case `${TOOL_PREFIX}edges`:
+                return handleEdges(args);
+
             case `${TOOL_PREFIX}signature`:
                 return handleSignature(args);
 
@@ -1173,6 +1214,53 @@ async function handleInit(args: Record<string, unknown>): Promise<{ content: Arr
             content: [{ type: 'text', text: `Error: ${result.errors.join(', ')}` }],
         };
     }
+}
+
+/**
+ * Candidate relationships are useful reconnaissance, not an absence oracle.
+ */
+function handleEdges(args: Record<string, unknown>): { content: Array<{ type: string; text: string }> } {
+    const path = args.path as string;
+    const direction = (args.direction as EdgeDirection | undefined) ?? 'both';
+    const kind = args.kind as 'import' | 'call' | undefined;
+
+    if (!path) {
+        return { content: [{ type: 'text', text: 'Error: path parameter is required' }] };
+    }
+    if (!['incoming', 'outgoing', 'both'].includes(direction)) {
+        return { content: [{ type: 'text', text: 'Error: direction must be incoming, outgoing, or both' }] };
+    }
+    if (kind && !['import', 'call'].includes(kind)) {
+        return { content: [{ type: 'text', text: 'Error: kind must be import or call' }] };
+    }
+
+    const result = edges({
+        path,
+        file: args.file as string | undefined,
+        symbol: args.symbol as string | undefined,
+        direction,
+        kind,
+        limit: args.limit as number | undefined,
+    });
+    if (!result.success) {
+        return { content: [{ type: 'text', text: `Error: ${result.error}` }] };
+    }
+
+    let message = '# Candidate edges\n\n'
+        + 'Syntax-derived candidate relationships; an empty result does not prove semantic absence.\n';
+    if (result.edges.length === 0) {
+        message += '\nNo candidate edges found.';
+    } else {
+        for (const edge of result.edges) {
+            const target = edge.target_file ?? '<unresolved>';
+            const sourceSymbol = edge.source_symbol ? ` ${edge.source_symbol}` : '';
+            const targetLine = edge.target_line ? `:${edge.target_line}` : '';
+            message += `\n${edge.kind} ${edge.source_file}:${edge.source_line}${sourceSymbol}`
+                + ` -> ${target}${targetLine} ${edge.target_symbol}`
+                + ` [${edge.confidence}; ${edge.provenance}]`;
+        }
+    }
+    return { content: [{ type: 'text', text: message }] };
 }
 
 /**

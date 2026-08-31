@@ -1,6 +1,6 @@
 -- ============================================================
 -- AiDex SQLite Schema
--- Version: 1.1
+-- Version: 1.4
 -- ============================================================
 
 PRAGMA foreign_keys = ON;
@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS methods (
 
 CREATE INDEX IF NOT EXISTS idx_methods_file ON methods(file_id);
 CREATE INDEX IF NOT EXISTS idx_methods_name ON methods(name);
+CREATE INDEX IF NOT EXISTS idx_methods_name_nocase ON methods(name COLLATE NOCASE);
 
 -- ------------------------------------------------------------
 -- Klassen/Structs/Interfaces
@@ -115,6 +116,31 @@ CREATE TABLE IF NOT EXISTS types (
 CREATE INDEX IF NOT EXISTS idx_types_file ON types(file_id);
 CREATE INDEX IF NOT EXISTS idx_types_name ON types(name);
 
+
+-- ------------------------------------------------------------
+-- Syntax-derived candidate relationships
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS candidate_edges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_file_id INTEGER NOT NULL,
+    target_file_id INTEGER,
+    kind TEXT NOT NULL CHECK(kind IN ('import', 'call')),
+    confidence TEXT NOT NULL DEFAULT 'candidate' CHECK(confidence = 'candidate'),
+    source_symbol TEXT NOT NULL DEFAULT '',
+    target_symbol TEXT NOT NULL,
+    source_line INTEGER NOT NULL,
+    target_line INTEGER,
+    provenance TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (source_file_id) REFERENCES files(id) ON DELETE CASCADE,
+    FOREIGN KEY (target_file_id) REFERENCES files(id) ON DELETE SET NULL,
+    UNIQUE (source_file_id, kind, source_line, source_symbol, target_symbol, provenance)
+);
+
+CREATE INDEX IF NOT EXISTS idx_candidate_edges_source ON candidate_edges(source_file_id);
+CREATE INDEX IF NOT EXISTS idx_candidate_edges_target ON candidate_edges(target_file_id);
+CREATE INDEX IF NOT EXISTS idx_candidate_edges_symbol ON candidate_edges(target_symbol);
+CREATE INDEX IF NOT EXISTS idx_candidate_edges_kind ON candidate_edges(kind);
 -- ------------------------------------------------------------
 -- Abhängigkeiten zu anderen AiDex-Instanzen
 -- ------------------------------------------------------------
