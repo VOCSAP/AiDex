@@ -110,11 +110,13 @@ Trois reflexes qui en decoulent, par ordre d'efficacite :
 retenir comme refutee serait une seconde erreur, symetrique de la premiere. Retirer une
 conclusion sans la remplacer est une fin legitime.
 
-**Corpus de mesure en place**, indexes et gitignores sous `docs/reference/` :
-`kleos-rust` (Rust, 654 fichiers, clone local de `Kleos` branche `local/patches`) et
-`graphify-8` (Python, 296 fichiers). Aucun corpus TypeScript n'est en place : les
-mesures TypeScript se font sur AiDex lui-meme. Verifier l'existence d'un corpus avant
-de s'y fier, les anciens ont deja disparu sans que ce document soit mis a jour.
+**Corpus de mesure : PLUS AUCUN en place** depuis le 2026-08-31. `kleos-rust` (Rust)
+et `graphify-8` (Python) vivaient sous `docs/reference/`, `kivgraph-main` (Go/TS) sous
+`references/` : les trois repertoires ont ete supprimes sur decision operateur, et
+leurs entrees retirees du registre global par `aidex_global_refresh` cible. Les mesures
+TypeScript se font sur AiDex lui-meme ; toute mesure Rust, Python ou Go exige de
+recloner un corpus au prealable. Verifier l'existence d'un corpus avant de s'y fier,
+les anciens ont deja disparu sans que ce document soit mis a jour.
 
 **Trace de requetes reelles** : les transcripts Claude Code `~/.claude/projects/<repo>/
 *.jsonl` portent chaque appel `aidex_query` avec son `term` et son `mode` (absent quand
