@@ -12,6 +12,7 @@ Complete reference for all AiDex MCP tools.
   - [aidex_remove](#aidex_remove)
 - [Querying](#querying)
   - [aidex_query](#aidex_query)
+  - [aidex_edges](#aidex_edges)
   - [aidex_search](#aidex_search) 🆕
   - [aidex_signature](#aidex_signature)
   - [aidex_signatures](#aidex_signatures)
@@ -172,6 +173,46 @@ Search for terms/identifiers in the index. **Primary search tool** - use instead
 
 // Filter by code type
 { "path": ".", "term": "Calculate", "type_filter": ["method"] }
+```
+
+---
+
+### aidex_edges
+
+Query syntax-derived, project-local import and direct-call relationships. Use this
+for impact reconnaissance such as likely callers, callees, importers, and imported
+files.
+
+Every returned relationship has `confidence: candidate`. Resolution is intentionally
+conservative: ambiguous or unresolved targets remain `<unresolved>`, and an empty
+result never proves semantic absence.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `path` | string | yes | Path to project with `.aidex` directory |
+| `file` | string | * | Indexed file used as the relationship endpoint |
+| `symbol` | string | * | Exact source or target symbol name |
+| `direction` | string | - | Relative to `file`: `incoming`, `outgoing`, or `both` (default) |
+| `kind` | string | - | Restrict results to `import` or `call` |
+| `limit` | number | - | Maximum results (default: 100, maximum: 1000) |
+
+\* At least one of `file` or `symbol` is required.
+
+**Returns:**
+- Candidate edges with source file/line, optional source symbol, target symbol,
+  resolved target file when unambiguous, and extraction provenance
+- An explicit warning that results are syntax-derived candidates
+
+**Examples:**
+
+```json
+// What does this file likely import or call?
+{ "path": ".", "file": "src/server/tools.ts", "direction": "outgoing" }
+
+// Which indexed files likely call this symbol?
+{ "path": ".", "symbol": "handleQuery", "kind": "call" }
 ```
 
 ---

@@ -80,6 +80,43 @@ export interface DependencyRow {
     last_checked: number | null;
 }
 
+export type CandidateEdgeKind = 'import' | 'call';
+
+export interface CandidateEdgeRow {
+    id: number;
+    source_file_id: number;
+    target_file_id: number | null;
+    kind: CandidateEdgeKind;
+    confidence: 'candidate';
+    source_symbol: string;
+    target_symbol: string;
+    source_line: number;
+    target_line: number | null;
+    provenance: string;
+    created_at: number;
+}
+
+export interface CandidateEdgeViewRow extends CandidateEdgeRow {
+    source_file: string;
+    target_file: string | null;
+}
+
+export interface CandidateEdgeInput {
+    kind: CandidateEdgeKind;
+    sourceSymbol: string | null;
+    targetSymbol: string;
+    sourceLine: number;
+    provenance: string;
+}
+
+export interface CandidateEdgeQuery {
+    fileId?: number;
+    direction?: 'incoming' | 'outgoing' | 'both';
+    kind?: CandidateEdgeKind;
+    symbol?: string;
+    limit?: number;
+}
+
 export interface ProjectFileRow {
     id: number;
     path: string;
@@ -470,6 +507,102 @@ export class Queries {
     }
 
     // --------------------------------------------------------
+    // Candidate relationships
+    // --------------------------------------------------------
+
+    insertCandidateEdge(fileId: number, edge: CandidateEdgeInput): number {
+        const result = this.db.prepare(`
+            INSERT OR IGNORE INTO candidate_edges (
+                source_file_id, kind, confidence, source_symbol, target_symbol,
+                source_line, provenance, created_at
+            ) VALUES (?, ?, 'candidate', ?, ?, ?, ?, ?)
+        `).run(fileId, edge.kind, edge.sourceSymbol ?? '', edge.targetSymbol,
+            edge.sourceLine, edge.provenance, Date.now());
+        return Number(result.lastInsertRowid);
+    }
+
+    deleteCandidateEdgesBySource(fileId: number): void {
+        this.db.prepare('DELETE FROM candidate_edges WHERE source_file_id = ?').run(fileId);
+    }
+
+    getAllCandidateEdges(): CandidateEdgeViewRow[] {
+        return this.db.prepare(`
+            SELECT e.*, sf.path AS source_file, tf.path AS target_file
+            FROM candidate_edges e
+            JOIN files sf ON sf.id = e.source_file_id
+            LEFT JOIN files tf ON tf.id = e.target_file_id
+            ORDER BY e.id
+        `).all() as CandidateEdgeViewRow[];
+    }
+
+    resetCandidateEdgeTargets(): void {
+        this.db.prepare('UPDATE candidate_edges SET target_file_id = NULL, target_line = NULL').run();
+    }
+
+    resolveCandidateEdge(id: number, targetFileId: number, targetLine: number | null): void {
+        this.db.prepare(
+            'UPDATE candidate_edges SET target_file_id = ?, target_line = ? WHERE id = ?'
+        ).run(targetFileId, targetLine, id);
+    }
+
+    getAllMethods(): Array<MethodRow & { file_path: string }> {
+        return this.db.prepare(`
+            SELECT m.*, f.path AS file_path
+            FROM methods m JOIN files f ON f.id = m.file_id
+            ORDER BY m.name COLLATE NOCASE, f.path, m.line_number
+        `).all() as Array<MethodRow & { file_path: string }>;
+    }
+
+    getMethodsNamed(name: string): Array<MethodRow & { file_path: string }> {
+        return this.db.prepare(`
+            SELECT m.*, f.path AS file_path
+            FROM methods m JOIN files f ON f.id = m.file_id
+            WHERE m.name = ? COLLATE NOCASE
+            ORDER BY f.path, m.line_number
+        `).all(name) as Array<MethodRow & { file_path: string }>;
+    }
+
+    findCandidateEdges(params: CandidateEdgeQuery): CandidateEdgeViewRow[] {
+        const clauses: string[] = [];
+        const values: Array<string | number> = [];
+        const direction = params.direction ?? 'both';
+        if (params.fileId !== undefined) {
+            if (direction === 'incoming') {
+                clauses.push('e.target_file_id = ?');
+                values.push(params.fileId);
+            } else if (direction === 'outgoing') {
+                clauses.push('e.source_file_id = ?');
+                values.push(params.fileId);
+            } else {
+                clauses.push('(e.source_file_id = ? OR e.target_file_id = ?)');
+                values.push(params.fileId, params.fileId);
+            }
+        }
+        if (params.kind) {
+            clauses.push('e.kind = ?');
+            values.push(params.kind);
+        }
+        if (params.symbol) {
+            clauses.push('(e.source_symbol = ? COLLATE NOCASE OR e.target_symbol = ? COLLATE NOCASE)');
+            values.push(params.symbol, params.symbol);
+        }
+        const requestedLimit = params.limit ?? 100;
+        const normalizedLimit = Number.isFinite(requestedLimit) ? Math.trunc(requestedLimit) : 100;
+        const limit = Math.max(1, Math.min(normalizedLimit, 1000));
+        values.push(limit);
+        const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
+        return this.db.prepare(`
+            SELECT e.*, sf.path AS source_file, tf.path AS target_file
+            FROM candidate_edges e
+            JOIN files sf ON sf.id = e.source_file_id
+            LEFT JOIN files tf ON tf.id = e.target_file_id
+            ${where}
+            ORDER BY e.kind, sf.path, e.source_line, e.target_symbol
+            LIMIT ?
+        `).all(...values) as CandidateEdgeViewRow[];
+    }
+
+    // --------------------------------------------------------
     // Query: Search items
     // --------------------------------------------------------
 
@@ -574,6 +707,7 @@ export class Queries {
     clearFileData(fileId: number): void {
         this.db.transaction(() => {
             // Order matters due to foreign keys
+            this.deleteCandidateEdgesBySource(fileId);
             this.deleteOccurrencesByFile(fileId);
             this.deleteMethodsByFile(fileId);
             this.deleteTypesByFile(fileId);

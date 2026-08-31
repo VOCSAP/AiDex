@@ -12,6 +12,7 @@ export {
     type ExtractedLine,
     type ExtractedMethod,
     type ExtractedType,
+    type ExtractedEdge,
 } from './extractor.js';
 
 export { parse, parseFile, getParser, astroHasNoFrontmatterFence, type SupportedLanguage } from './tree-sitter.js';

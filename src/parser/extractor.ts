@@ -59,12 +59,21 @@ export interface ExtractedType {
     lineNumber: number;
 }
 
+export interface ExtractedEdge {
+    kind: 'import' | 'call';
+    targetSymbol: string;
+    sourceSymbol: string | null;
+    sourceLine: number;
+    provenance: string;
+}
+
 export interface ExtractionResult {
     language: SupportedLanguage;
     items: ExtractedItem[];
     lines: ExtractedLine[];
     methods: ExtractedMethod[];
     types: ExtractedType[];
+    edges: ExtractedEdge[];
     headerComments: string[];
     literalStats: LiteralStats;
 }
@@ -158,6 +167,47 @@ function literalPosition(node: Parser.SyntaxNode): LiteralPosition {
 
 // ============================================================
 // Main extraction function
+
+const IMPORT_NODES = new Set(['import_statement', 'import_spec', 'import_from_statement']);
+const CALL_NODES = new Set([
+    'call',
+    'call_expression',
+    'invocation_expression',
+    'function_call_expression',
+    'function_call',
+]);
+
+function firstStableString(
+    node: Parser.SyntaxNode,
+    stringNodes: Set<string>
+): string | null {
+    if (node.isNamed && stringNodes.has(node.type)) return literalText(node);
+    for (const child of node.children) {
+        const found = firstStableString(child, stringNodes);
+        if (found !== null) return found;
+    }
+    return null;
+}
+
+function importSpecifier(node: Parser.SyntaxNode, language: SupportedLanguage,
+    stringNodes: Set<string>): string | null {
+    if (language === 'python' && node.type === 'import_from_statement') {
+        const moduleNode = node.childForFieldName('module_name')
+            ?? node.namedChildren.find(child => child.type === 'relative_import');
+        const moduleName = moduleNode?.text ?? null;
+        return moduleName?.startsWith('.') ? moduleName : null;
+    }
+    return firstStableString(node, stringNodes);
+}
+
+function directCallee(node: Parser.SyntaxNode): string | null {
+    const candidate = node.childForFieldName('function')
+        ?? node.childForFieldName('name')
+        ?? node.namedChildren[0];
+    if (!candidate) return null;
+    const value = candidate.text;
+    return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(value) ? value : null;
+}
 // ============================================================
 
 /**
@@ -187,11 +237,13 @@ export function extract(sourceCode: string, filePath: string): ExtractionResult 
 
     // Track if we've seen non-comment code (for header comments)
     let seenCode = false;
+    const edges: ExtractedEdge[] = [];
 
     /**
      * Recursively visit all nodes in the tree
      */
-    function visit(node: Parser.SyntaxNode): void {
+    function visit(node: Parser.SyntaxNode, sourceSymbol: string | null = null): void {
+        let childSourceSymbol = sourceSymbol;
         const lineNumber = node.startPosition.row + 1; // 1-based
 
         // Check for comments
@@ -245,6 +297,7 @@ export function extract(sourceCode: string, filePath: string): ExtractionResult 
                 // Don't overwrite the enclosing attribute's 'property' line type.
                 if (!(language === 'hcl' && node.type === 'function_call')) {
                     setLineType(lineNumber, 'method');
+                    childSourceSymbol = methodInfo.name;
                 }
             }
         }
@@ -259,6 +312,27 @@ export function extract(sourceCode: string, filePath: string): ExtractionResult 
         // recursion. `node.isNamed` is not optional: an ANONYMOUS token carries
         // its own text as its type, so the TypeScript type keyword `string` is
         // a node of type 'string' too, and would be read here as a literal.
+
+        if (IMPORT_NODES.has(node.type)) {
+            const specifier = importSpecifier(node, language, config.stringNodes);
+            if (specifier?.startsWith('.')) {
+                edges.push({
+                    kind: 'import',
+                    targetSymbol: specifier,
+                    sourceSymbol,
+                    sourceLine: lineNumber,
+                    provenance: 'tree-sitter:relative-import',
+                });
+            }
+        }
+
+        if (CALL_NODES.has(node.type)) {
+            const callee = directCallee(node);
+            if (callee) {
+                edges.push({ kind: 'call', targetSymbol: callee, sourceSymbol,
+                    sourceLine: lineNumber, provenance: 'tree-sitter:direct-call' });
+            }
+        }
         if (node.isNamed && config.stringNodes.has(node.type)) {
             seenCode = true;
             literalStats.seen++;
@@ -298,7 +372,7 @@ export function extract(sourceCode: string, filePath: string): ExtractionResult 
                 if (!child.isNamed) continue;
                 if (STRING_CONTENT_NODES.has(child.type)) continue;
                 if (STRING_DELIMITER_NODES.has(child.type)) continue;
-                visit(child);
+                visit(child, childSourceSymbol);
             }
             return;
         }
@@ -322,7 +396,7 @@ export function extract(sourceCode: string, filePath: string): ExtractionResult 
 
         // Recurse into children
         for (const child of node.children) {
-            visit(child);
+            visit(child, childSourceSymbol);
         }
     }
 
@@ -374,6 +448,7 @@ export function extract(sourceCode: string, filePath: string): ExtractionResult 
         lines,
         methods,
         types,
+        edges,
         headerComments,
         literalStats,
     };
