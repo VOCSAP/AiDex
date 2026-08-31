@@ -15,6 +15,7 @@ import { DEFAULT_EXCLUDE, readGitignore, shortHash } from './init.js';
 import { validateIndex, noIndexError, withDatabase, withProjectDb } from './shared.js';
 import { readCoverage } from '../coverage/rule.js';
 import { invalidateGlobalCache } from './global/global-query.js';
+import { rebuildCandidateEdgeTargets } from '../relations/candidate-edges.js';
 
 async function notifyEmbeddingsFileUpdated(projectPath: string, filePath: string): Promise<void> {
     try {
@@ -295,12 +296,19 @@ export function update(params: UpdateParams): UpdateResult {
                     queries.insertType(fileId, type.name, type.kind, type.lineNumber);
                 }
 
+
+                for (const edge of extraction.edges) {
+                    queries.insertCandidateEdge(fileId, edge);
+                }
                 // Insert signature (header comments)
                 if (extraction.headerComments.length > 0) {
                     queries.insertSignature(fileId, extraction.headerComments.join('\n'));
                 }
             });
 
+
+            // Re-resolve every observation because declarations can change anywhere.
+            db.transaction(() => rebuildCandidateEdgeTargets(queries));
             // Cleanup unused items
             queries.deleteUnusedItems();
 
@@ -376,6 +384,7 @@ export function remove(params: RemoveParams): RemoveResult {
                     queries.deleteFile(existingFile.id);
                     queries.deleteUnusedItems();
                 });
+                db.transaction(() => rebuildCandidateEdgeTargets(queries));
 
                 // Fire-and-forget: drop embeddings for this file (no-op if not enabled).
                 void notifyEmbeddingsFileRemoved(projectPath, relativePath);

@@ -57,12 +57,12 @@ export class AiDexDatabase {
         const stmt = this.db.prepare(
             'INSERT OR IGNORE INTO metadata (key, value) VALUES (?, ?)'
         );
-        stmt.run('schema_version', '1.2');
+        stmt.run('schema_version', '1.4');
         stmt.run('created_at', Date.now().toString());
 
         // Update schema_version on existing DBs
         this.db.prepare(
-            "UPDATE metadata SET value = '1.2' WHERE key = 'schema_version' AND value IN ('1.0', '1.1')"
+            "UPDATE metadata SET value = '1.4' WHERE key = 'schema_version' AND value IN ('1.0', '1.1', '1.2', '1.3')"
         ).run();
     }
 
@@ -86,6 +86,9 @@ export class AiDexDatabase {
             if (!methodCols.has('body_truncated')) {
                 this.db.exec("ALTER TABLE methods ADD COLUMN body_truncated INTEGER DEFAULT 0");
             }
+            // Candidate resolution and symbol queries compare names case-insensitively.
+            this.db.exec(
+                'CREATE INDEX IF NOT EXISTS idx_methods_name_nocase ON methods(name COLLATE NOCASE)');
         }
 
         // occurrences.kind (Lot 2): symbol / literal / both.
@@ -126,6 +129,32 @@ export class AiDexDatabase {
         if (noteHistoryCols.size > 0 && !noteHistoryCols.has('summary')) {
             this.db.exec('ALTER TABLE note_history ADD COLUMN summary TEXT');
         }
+
+        // Candidate relationships (v1.4). CREATE TABLE is the migration:
+        // existing indexes gain an empty, honest graph and populate it as files
+        // are reindexed.
+        this.db.exec(`
+            CREATE TABLE IF NOT EXISTS candidate_edges (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_file_id INTEGER NOT NULL,
+                target_file_id INTEGER,
+                kind TEXT NOT NULL CHECK(kind IN ('import', 'call')),
+                confidence TEXT NOT NULL DEFAULT 'candidate' CHECK(confidence = 'candidate'),
+                source_symbol TEXT NOT NULL DEFAULT '',
+                target_symbol TEXT NOT NULL,
+                source_line INTEGER NOT NULL,
+                target_line INTEGER,
+                provenance TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                FOREIGN KEY (source_file_id) REFERENCES files(id) ON DELETE CASCADE,
+                FOREIGN KEY (target_file_id) REFERENCES files(id) ON DELETE SET NULL,
+                UNIQUE (source_file_id, kind, source_line, source_symbol, target_symbol, provenance)
+            );
+            CREATE INDEX IF NOT EXISTS idx_candidate_edges_source ON candidate_edges(source_file_id);
+            CREATE INDEX IF NOT EXISTS idx_candidate_edges_target ON candidate_edges(target_file_id);
+            CREATE INDEX IF NOT EXISTS idx_candidate_edges_symbol ON candidate_edges(target_symbol);
+            CREATE INDEX IF NOT EXISTS idx_candidate_edges_kind ON candidate_edges(kind);
+        `);
     }
 
     private tableColumns(table: string): Set<string> {

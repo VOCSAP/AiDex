@@ -586,3 +586,74 @@ Deliberement PAS un changement de regle de fence -- la carte l'interdisait expli
 Pin par `tests/astro-no-frontmatter.test.js` (fixture `ASTRO_BOM_WITH_VALID_FRONTMATTER`) : `errors.length === 1`, contient `'Bom.astro'` et le message generique, `filesEmpty` reste `0`. Prouve par mutation cible (retirer `.replace(/^﻿/, '')` seul, distinct de la mutation sur-elargie ci-dessus -- pour toute entree SANS BOM, `.replace(/^﻿/, '')` est l'identite octet pour octet, donc cette mutation ne peut changer le verdict que sur l'entree qui porte un BOM) : sur `tests/astro-no-frontmatter.test.js` seul, build refait et sa fraicheur verifiee AVANT lecture (`ls -l --time-style=full-iso`, build posterieur au source), **1 rouge/8, uniquement le cas BOM** -- une premiere version de cette section affirmait a tort "3 rouges/8, meme empreinte que la sur-elargie" en reappliquant le resultat de l'AUTRE mutation sans reexecuter celle-ci ; corrige apres qu'une revue a montre que l'empreinte attendue ne pouvait mathematiquement porter que sur l'entree BOM, et confirme par re-execution. Egalement pin, cote API (pas seulement texte CLI) : `result.filesEmpty === 1` sur le cas fenceless (renommage silencieux du champ rougirait desormais). Et cote CLI, le bloc `rebuild-index` (`src/index.ts:204`, precedemment non pinne) recoit son propre cas dans `tests/init-success-modes.test.js`.
 
 **MESURE** : `node --experimental-vm-modules node_modules/jest/bin/jest.js tests/astro-no-frontmatter.test.js tests/init-success-modes.test.js` -> `Tests: 45 passed, 45 total`.
+
+---
+
+## 21. Graphe de relations CANDIDATES -- imports et appels directs (`aidex_edges`, schema 1.4)
+
+### Le probleme, en une phrase
+
+AiDex savait dire OU un nom apparait, jamais QUI depend de quoi : "quels fichiers importent celui-ci" et "qui appelle probablement ce symbole" restaient deux `grep` que l'agent devait lancer lui-meme, puis lire en entier pour trier les faux positifs.
+
+### La contrainte qui prime sur tout le reste
+
+**Une relation presentee comme certaine alors qu'elle est deduite de la syntaxe serait pire que pas de relation du tout.** C'est la meme contrainte que la section 1 sur les litteraux, transposee au graphe : une frontiere floue rend chaque reponse inexploitable.
+
+Elle se traduit en trois regles non negociables, portees par le stockage lui-meme et pas seulement par la documentation :
+
+- Toute arete de cette phase est `candidate`. La colonne porte un `CHECK(confidence = 'candidate')` : ecrire `exact` est un echec SQL, pas un oubli de revue.
+- Une cible non resolue reste `NULL` et l'arete reste visible. Le resolveur ne choisit JAMAIS arbitrairement parmi plusieurs declarations homonymes.
+- Un resultat vide ne prouve pas une absence semantique. La reponse MCP le dit en tete, a chaque appel.
+
+### La chaine d'implementation
+
+**Extraction -- `src/parser/extractor.ts`.** `ExtractionResult` gagne un champ `edges`, donc l'init complet et l'update incremental partagent la MEME passe de parsing, sans second parcours. Deux familles de noeuds Tree-sitter :
+
+- `IMPORT_NODES` (`import_statement`, `import_spec`, `import_from_statement`) : seuls les specificateurs RELATIFS (`startsWith('.')`) sont retenus, provenance `tree-sitter:relative-import`. Python passe par `childForFieldName('module_name')` pour capturer `from .module import x` ; les autres langages par le premier litteral chaine stable du noeud.
+- `CALL_NODES` (`call`, `call_expression`, `invocation_expression`, `function_call_expression`, `function_call`) : `directCallee` n'accepte QUE l'identifiant nu, filtre par `/^[A-Za-z_$][A-Za-z0-9_$]*$/`. Un appel membre `a.b()` ou dynamique ne produit aucune arete, il n'en produit pas une fausse. Provenance `tree-sitter:direct-call`.
+
+Le `sourceSymbol` est propage en descendant l'arbre : une arete sait dans quelle methode elle a ete vue.
+
+**Stockage -- `src/db/schema.sql`, table `candidate_edges`.** `ON DELETE CASCADE` sur la source, `ON DELETE SET NULL` sur la cible : supprimer un fichier efface ses aretes sortantes et transforme les aretes entrantes en candidates non resolues, au lieu de les faire disparaitre en silence. Contrainte `UNIQUE` sur le sextuplet source pour rendre la reindexation idempotente. Quatre index (source, cible, symbole, kind).
+
+**Migration -- `src/db/database.ts`.** Le `CREATE TABLE IF NOT EXISTS` EST la migration : un index existant gagne un graphe vide et honnete, qui se remplit au fil des reindexations, sans suppression manuelle. `schema_version` passe a `1.4` et la mise a jour couvre desormais `('1.0','1.1','1.2','1.3')` -- la version precedente s'arretait a `1.1`, donc un index 1.2 ou 1.3 serait reste bloque sur son ancienne etiquette. Ajout de `idx_methods_name_nocase` : la resolution compare les noms sans casse et la table `methods` n'avait aucun index adapte.
+
+**Resolution -- `src/relations/candidate-edges.ts`.** Deliberement moins large qu'un compilateur. Deux passes, dans cet ordre parce que la seconde consomme le resultat de la premiere :
+
+1. Imports. `importCandidates` reconstruit les chemins plausibles : specificateur runtime `.js` remappe vers `.ts/.tsx/.js/.jsx` (le cas dominant en TypeScript compile ESM), extension absente essayee contre les 25 extensions sources plus `index.<ext>`, Python resolu en `<module>.py` puis `<module>/__init__.py`. Toute sortie du projet (`..`) est refusee.
+2. Appels. Ordre de preference strict : declaration unique dans le MEME fichier, puis declaration unique dans un fichier IMPORTE (d'ou la dependance a la passe 1), puis declaration unique dans tout le projet. **Si le compte final n'est pas exactement 1, l'arete reste non resolue.**
+
+`rebuildCandidateEdgeTargets` remet a zero les cibles et rejoue les deux passes sur l'ensemble des observations persistees. C'est ce qui rend l'incrementiel CORRECT : une declaration cible peut changer dans un fichier AUTRE que la source de l'observation, donc resoudre seulement les aretes du fichier qu'on vient de reindexer produirait des cibles perimees. Choix assume : correction deterministe d'abord, resolution incrementale du graphe = optimisation ulterieure.
+
+**Cycle de vie.** Appele depuis `init` (`src/commands/init.ts:623`), `update` (`src/commands/update.ts:311`), `remove` (`:387`), et le nettoyage de session. Reindexer un fichier remplace integralement ses aretes sortantes.
+
+**Surface agent -- `src/commands/edges.ts` + `src/server/tools.ts`.** Outil MCP `aidex_edges` en LECTURE SEULE : `path` obligatoire, plus `file` et/ou `symbol` (au moins un des deux, sinon erreur explicite), `direction` (`incoming`/`outgoing`/`both`), `kind` (`import`/`call`), `limit` (100 par defaut, 1000 max). Chaque ligne rendue porte fichier, ligne, kind, cible ou `<unresolved>`, et `[candidate; <provenance>]`. Le caveat d'absence est imprime avant les resultats, pas en note de bas de page.
+
+### Ce qui n'est deliberement PAS fait
+
+Resolution de binding grade compilateur ou LSP, alias et re-exports, appels de methode et appels qualifies, dispatch dynamique, flux runtime (HTTP, files d'attente, injection de dependances, reflexion), relations cross-projet. Chacun est un point d'entree vers une fausse certitude, et aucun n'est necessaire pour repondre aux quatre questions visees.
+
+### Rapport avec la piste CLOSE "couche LSP / graphe de relations"
+
+La doctrine (`.claude/CLAUDE.md`, pistes closes numero 8) ferme une couche LSP grade compilateur, sur la mesure du 2026-08-23 : l'homonymie existe en Rust mais ne tombe pas sur ce que l'agent cherche, et `rust-analyzer` couvre deja le go-to-definition. Ce patch-ci est une chose DIFFERENTE et non exclusive : un graphe derive de la syntaxe qui affiche son incertitude, la ou la piste fermee promettait une resolution exacte.
+
+**A signaler pour un futur arbitrage, sans le maquiller** : le besoin n'a pas ete MESURE avant l'implementation au sens de la discipline du depot (aucun comptage prealable de `grep` d'imports ou d'appelants dans la trace reelle). La justification est structurelle, pas mesuree. Si un merge upstream force a arbitrer le cout de ce patch, c'est ce chiffre-la qu'il faut aller chercher dans `~/.claude/projects/<repo>/*.jsonl` avant de le defendre.
+
+### Tests et MESURES
+
+`tests/candidate-edges.test.js`, 8 tests : init complet, imports relatifs Python et leurs appels, remplacement des observations perimees en update incremental, **rebuild de la resolution quand la cible change dans un autre fichier**, **ambiguite projet-wide qui reste non resolue**, sortie MCP qui refuse de revendiquer la completude, nettoyage de session sur fichier supprime hors outil, migration idempotente d'un index legacy.
+
+`tests/coverage-oracle.test.js` : deux assertions de `schema_version` passees de `1.3` a `1.4`, dont celle du chemin de migration d'un index perime.
+
+**MESURE 2026-08-31**, `/c/Users/USERNAME/AppData/Local/nvm/v22.11.0/node.exe --experimental-vm-modules node_modules/jest/bin/jest.js` :
+- suite ciblee `tests/candidate-edges.test.js` -> `Tests: 8 passed, 8 total`
+- suite complete -> `Test Suites: 15 passed`, `Tests: 234 passed, 234 total`, 5,5 s
+
+**MESURE, appel MCP reel sur AiDex lui-meme** (`aidex_edges path:D:/path/to/AiDex file:src/relations/candidate-edges.ts`) : 12 aretes, dont 3 imports resolus, 7 appels resolus vers un `file:line` precis, et **2 appels rendus `<unresolved> extname`** -- `extname` vient de `path`, module hors projet, donc le contrat d'honnetete se verifie sur le chemin nominal et pas seulement en test.
+
+### Ce qu'il ne faut pas reintroduire en rebasant
+
+- Elargir `directCallee` aux appels membres ou qualifies sans changer le modele de confiance : ce serait multiplier les aretes fausses sous l'etiquette `candidate`.
+- Faire choisir le resolveur parmi plusieurs homonymes (par ordre alphabetique, par premier trouve, par proximite de chemin). Le `return` sur `candidates.length !== 1` est la propriete, pas une limitation a lever.
+- Retirer le caveat d'absence de la sortie MCP pour economiser des tokens. Il coute deux lignes et c'est le seul endroit ou l'agent apprend que le graphe est incomplet.
+- Remplacer le rebuild global par une resolution locale au fichier reindexe sans traiter le cas "la declaration cible a bouge ailleurs" : le test `incremental target changes rebuild existing call resolution` existe exactement pour ca.

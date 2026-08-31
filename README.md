@@ -377,11 +377,12 @@ Do I want to search code?
 - **`contains`**: Finds identifiers containing the term — `render` matches `preRenderSetup`
 - **`starts_with`**: Finds identifiers starting with the term — `Update` matches `UpdatePlayer`, `UpdateUI`
 
-### All Tools (30)
+### All Tools (31)
 
 | Category | Tools | Purpose |
 |----------|-------|---------|
 | Search & Index | `aidex_init`, `aidex_query`, `aidex_update`, `aidex_remove`, `aidex_status` | Index project, search identifiers (exact/contains/starts_with), time filter |
+| Relationships | `aidex_edges` | Candidate project-local imports and direct calls for impact reconnaissance |
 | Signatures | `aidex_signature`, `aidex_signatures` | Get classes + methods without reading files |
 | Overview | `aidex_summary`, `aidex_tree`, `aidex_describe`, `aidex_files` | Entry points, file tree, file listing by type |
 | Cross-Project | `aidex_link`, `aidex_unlink`, `aidex_links`, `aidex_scan` | Link dependencies, discover projects |
@@ -466,6 +467,7 @@ aidex_init({ path: "/path/to/your/project" })
 |------|-------------|
 | `aidex_init` | Index a project (creates `.aidex/`) |
 | `aidex_query` | Search by term (exact/contains/starts_with) |
+| `aidex_edges` | Query syntax-derived candidate imports and direct calls |
 | `aidex_signature` | Get one file's classes + methods |
 | `aidex_signatures` | Get signatures for multiple files (glob) |
 | `aidex_update` | Re-index a single changed file |
