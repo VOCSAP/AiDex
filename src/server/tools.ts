@@ -5,9 +5,10 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { existsSync } from 'fs';
 import { join } from 'path';
-import { init, query, signature, signatures, update, remove, summary, tree, describe, link, unlink, listLinks, scan, files, note, getSessionNote, session, formatSessionTime, formatDuration, task, tasks, screenshot, listWindows, globalInit, globalStatus, globalQuery, globalSignatures, globalRefresh, globalGuideline, log, type QueryMode, type TaskAction, type ScreenshotMode, type ScreenshotColors, type SignatureKind, type GuidelineAction, type LogAction, type LogLevel } from '../commands/index.js';
+import { init, query, edges, signature, signatures, update, remove, summary, tree, describe, link, unlink, listLinks, scan, files, note, getSessionNote, session, formatSessionTime, formatDuration, task, tasks, screenshot, listWindows, globalInit, globalStatus, globalQuery, globalSignatures, globalRefresh, globalGuideline, log, can, noticeFor, globalNotice, type QueryMode, type QueryKind, type EdgeDirection, type TaskAction, type ScreenshotMode, type ScreenshotColors, type SignatureKind, type GuidelineAction, type LogAction, type LogLevel } from '../commands/index.js';
 import type { TaskRow } from '../db/index.js';
 import { openDatabase } from '../db/index.js';
+import { LITERAL_COVERAGE_SCHEMA, LITERAL_RULE_ID, LITERAL_RULE_VERSION } from '../coverage/rule.js';
 import { startViewer, stopViewer } from '../viewer/index.js';
 import { PRODUCT_NAME, PRODUCT_NAME_LOWER, PRODUCT_VERSION, INDEX_DIR, TOOL_PREFIX } from '../constants.js';
 
@@ -18,42 +19,42 @@ export function registerTools(): Tool[] {
     return [
         {
             name: `${TOOL_PREFIX}init`,
-            description: `Initialize ${PRODUCT_NAME} indexing for a project. Scans all source files and builds a searchable index of identifiers, methods, types, and signatures.`,
+            description: `Initialize ${PRODUCT_NAME} indexing: scans source files, builds an index of identifiers, methods, types, signatures.`,
             inputSchema: {
                 type: 'object',
                 properties: {
                     path: {
                         type: 'string',
-                        description: 'Absolute path to the project directory to index',
+                        description: 'Absolute path to the project to index',
                     },
                     name: {
                         type: 'string',
-                        description: 'Optional project name (defaults to directory name)',
+                        description: 'Project name (default: directory name)',
                     },
                     exclude: {
                         type: 'array',
                         items: { type: 'string' },
-                        description: 'Additional glob patterns to exclude (e.g., ["**/test/**"])',
+                        description: 'Glob patterns to exclude (e.g., ["**/test/**"])',
                     },
                     store_bodies: {
                         type: 'boolean',
-                        description: 'Store full method bodies in DB. Required for embeddings. ~10-20 MB extra per project. Persisted across runs.',
+                        description: 'Store full method bodies (required for embeddings, ~10-20 MB/project, persisted).',
                     },
                     embeddings: {
                         type: 'boolean',
-                        description: 'Enable embeddings for this project (implies store_bodies=true). Builds semantic search vectors using jina-code by default.',
+                        description: 'Enable embeddings (implies store_bodies=true); semantic vectors, jina-code by default.',
                     },
                     llm_endpoint: {
                         type: 'string',
-                        description: 'LLM provider endpoint URL (https://api.anthropic.com / https://api.openai.com/v1 / https://openrouter.ai/api/v1 / http://localhost:11434 for Ollama). Persisted per project.',
+                        description: 'LLM endpoint URL (https://api.anthropic.com / https://api.openai.com/v1 / https://openrouter.ai/api/v1 / http://localhost:11434 for Ollama) (persisted)',
                     },
                     llm_model: {
                         type: 'string',
-                        description: 'LLM model name for the chosen endpoint (e.g. "claude-haiku-4-5", "gpt-4o-mini", "llama3.1:8b"). Persisted per project.',
+                        description: 'LLM model for the endpoint (e.g. "claude-haiku-4-5", "gpt-4o-mini", "llama3.1:8b")',
                     },
                     llm_send_code: {
                         type: 'boolean',
-                        description: 'PRIVACY SWITCH. If true, code snippets and doc bodies may be sent to the LLM during reranking. If false (default), only paths, names, and the user query are sent. Set true only for non-sensitive projects.',
+                        description: 'PRIVACY SWITCH: true sends code/doc snippets to the LLM for reranking; false (default) sends only paths/names/query. Non-sensitive projects only.',
                     },
                 },
                 required: ['path'],
@@ -61,13 +62,13 @@ export function registerTools(): Tool[] {
         },
         {
             name: `${TOOL_PREFIX}query`,
-            description: `Search for terms/identifiers in the ${PRODUCT_NAME} index. Returns file locations where the term appears. PREFERRED over Grep/Glob for code searches when ${INDEX_DIR}/ exists - faster and more precise. Use this instead of grep for finding functions, classes, variables by name.`,
+            description: `Search terms/identifiers in the ${PRODUCT_NAME} index; returns file locations. Prefer over Grep/Glob for known-name search (functions, classes, variables) when ${INDEX_DIR}/ exists.`,
             inputSchema: {
                 type: 'object',
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory`,
+                        description: `Path to the indexed project`,
                     },
                     term: {
                         type: 'string',
@@ -76,31 +77,108 @@ export function registerTools(): Tool[] {
                     mode: {
                         type: 'string',
                         enum: ['exact', 'contains', 'starts_with'],
-                        description: 'Search mode: exact match, contains, or starts_with (default: exact)',
+                        description: 'Search mode (default: exact)',
                     },
                     file_filter: {
                         type: 'string',
-                        description: 'Glob pattern to filter files (e.g., "src/commands/**")',
+                        description: 'Glob to filter files (e.g., "src/commands/**")',
                     },
                     type_filter: {
                         type: 'array',
                         items: { type: 'string' },
-                        description: 'Filter by line type: code, comment, method, struct, property',
+                        description: 'LINE type filter: code, comment, method, struct, property, string. Not `kinds` (index dimension).',
+                    },
+                    kinds: {
+                        type: 'array',
+                        items: { type: 'string', enum: ['symbol', 'literal'] },
+                        description: 'Index dimension (default ["symbol"]); "literal" only populated after a literal-coverage rebuild. Zero result != absence unless aidex_coverage confirms.',
+                    },
+                    item_offset: {
+                        type: 'number',
+                        description: 'Matching TERMS to skip; a broad `contains` can exceed one call, this reads the next slice.',
+                    },
+                    item_limit: {
+                        type: 'number',
+                        description: 'Matching TERMS to examine (default 1000); distinct from `limit` (result LINES).',
                     },
                     modified_since: {
                         type: 'string',
-                        description: 'Only include lines modified after this time. Supports: "2h" (hours), "30m" (minutes), "1d" (days), "1w" (weeks), or ISO date string',
+                        description: 'Lines modified after this time: "2h", "30m", "1d", "1w", or ISO date',
                     },
                     modified_before: {
                         type: 'string',
-                        description: 'Only include lines modified before this time. Same format as modified_since',
+                        description: 'Lines modified before this time; same format as modified_since',
                     },
                     limit: {
                         type: 'number',
-                        description: 'Maximum number of results (default: 100)',
+                        description: 'Max results (default: 100)',
                     },
                 },
                 required: ['path', 'term'],
+            },
+        },
+        {
+            name: `${TOOL_PREFIX}edges`,
+            description: 'Query syntax-derived project-local import and direct-call candidate edges. '
+                + 'Use for likely callers, importers, and impact reconnaissance. '
+                + 'Every result is candidate evidence, not compiler-grade proof; an empty result never proves semantic absence.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    path: {
+                        type: 'string',
+                        description: 'Path to the indexed project',
+                    },
+                    file: {
+                        type: 'string',
+                        description: 'Optional indexed file path used as the relationship endpoint',
+                    },
+                    symbol: {
+                        type: 'string',
+                        description: 'Optional source or target symbol name',
+                    },
+                    direction: {
+                        type: 'string',
+                        enum: ['incoming', 'outgoing', 'both'],
+                        description: 'Relationship direction relative to file (default: both)',
+                    },
+                    kind: {
+                        type: 'string',
+                        enum: ['import', 'call'],
+                        description: 'Optional relationship kind',
+                    },
+                    limit: {
+                        type: 'number',
+                        description: 'Maximum edges (default 100, maximum 1000)',
+                    },
+                },
+                required: ['path'],
+            },
+        },
+        {
+            name: `${TOOL_PREFIX}coverage`,
+            description: `Check whether ${PRODUCT_NAME} can actually answer a search BEFORE trusting a zero result from aidex_query. `
+                + `Returns {covered, reason, advice}. \`covered: true\` means both the symbol and literal dimensions are indexed `
+                + `for that pattern and path -- only then is an empty aidex_query result proof of absence. `
+                + `Any other reason means "ask something else" (grep), never "the term is absent". `
+                + `Reindexing is manual, run by the operator via \`${PRODUCT_NAME_LOWER} rebuild-index <path>\`.`,
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    path: {
+                        type: 'string',
+                        description: `Path to the indexed project`,
+                    },
+                    pattern: {
+                        type: 'string',
+                        description: 'The exact string you are about to search for',
+                    },
+                    target: {
+                        type: 'string',
+                        description: 'Optional file the search is scoped to. Checks it is indexed AND not stale.',
+                    },
+                },
+                required: ['path', 'pattern'],
             },
         },
         {
@@ -111,7 +189,7 @@ export function registerTools(): Tool[] {
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory (optional, shows server status if not provided)`,
+                        description: `Indexed project path (optional; omit for server-wide status)`,
                     },
                 },
                 required: [],
@@ -119,17 +197,17 @@ export function registerTools(): Tool[] {
         },
         {
             name: `${TOOL_PREFIX}signature`,
-            description: 'Get the signature of a single file: header comments, types (classes/structs/interfaces), and method prototypes. Use this INSTEAD of reading entire files when you only need to know what methods/classes exist. Much faster than Read tool for understanding file structure.',
+            description: 'Get a file\'s signature (header comments, types, method prototypes) without reading it whole. Use instead of Read when you only need to know what exists in the file.',
             inputSchema: {
                 type: 'object',
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory`,
+                        description: `Path to the indexed project`,
                     },
                     file: {
                         type: 'string',
-                        description: 'Relative path to the file within the project (e.g., "src/Core/Engine.cs")',
+                        description: 'Relative file path (e.g., "src/Core/Engine.cs")',
                     },
                 },
                 required: ['path', 'file'],
@@ -137,13 +215,13 @@ export function registerTools(): Tool[] {
         },
         {
             name: `${TOOL_PREFIX}signatures`,
-            description: 'Get signatures for multiple files at once using glob pattern or file list. Returns types and method prototypes. Use INSTEAD of reading multiple files when exploring codebase structure. Much more efficient than multiple Read calls.',
+            description: 'Get signatures for multiple files at once (glob pattern or file list). Returns types and method prototypes. Use instead of multiple Read calls when exploring codebase structure.',
             inputSchema: {
                 type: 'object',
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory`,
+                        description: `Path to the indexed project`,
                     },
                     pattern: {
                         type: 'string',
@@ -160,17 +238,17 @@ export function registerTools(): Tool[] {
         },
         {
             name: `${TOOL_PREFIX}update`,
-            description: `Re-index a single file. Use after editing a file to update the ${PRODUCT_NAME} index. If the file is new, it will be added to the index. If unchanged (same hash), no update is performed.`,
+            description: `Re-index a single file after editing it. New files are added; unchanged files (same hash) are skipped.`,
             inputSchema: {
                 type: 'object',
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory`,
+                        description: `Path to the indexed project`,
                     },
                     file: {
                         type: 'string',
-                        description: 'Relative path to the file to update (e.g., "src/Core/Engine.cs")',
+                        description: 'Relative file path (e.g., "src/Core/Engine.cs")',
                     },
                 },
                 required: ['path', 'file'],
@@ -184,7 +262,7 @@ export function registerTools(): Tool[] {
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory`,
+                        description: `Path to the indexed project`,
                     },
                     file: {
                         type: 'string',
@@ -202,7 +280,7 @@ export function registerTools(): Tool[] {
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory`,
+                        description: `Path to the indexed project`,
                     },
                 },
                 required: ['path'],
@@ -216,7 +294,7 @@ export function registerTools(): Tool[] {
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory`,
+                        description: `Path to the indexed project`,
                     },
                     subpath: {
                         type: 'string',
@@ -242,7 +320,7 @@ export function registerTools(): Tool[] {
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory`,
+                        description: `Path to the indexed project`,
                     },
                     section: {
                         type: 'string',
@@ -269,7 +347,7 @@ export function registerTools(): Tool[] {
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to current project with ${INDEX_DIR} directory`,
+                        description: `Path to the current indexed project`,
                     },
                     dependency: {
                         type: 'string',
@@ -291,7 +369,7 @@ export function registerTools(): Tool[] {
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to current project with ${INDEX_DIR} directory`,
+                        description: `Path to the current indexed project`,
                     },
                     dependency: {
                         type: 'string',
@@ -309,7 +387,7 @@ export function registerTools(): Tool[] {
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory`,
+                        description: `Path to the indexed project`,
                     },
                 },
                 required: ['path'],
@@ -335,13 +413,13 @@ export function registerTools(): Tool[] {
         },
         {
             name: `${TOOL_PREFIX}files`,
-            description: 'List all files and directories in the indexed project. Returns the complete project structure with file types (code, config, doc, asset, test, other) and whether each file is indexed for code search. Use modified_since to find files changed in this session.',
+            description: 'List all files/directories in the indexed project, with file type (code, config, doc, asset, test, other) and whether each is indexed for code search. Use modified_since to find files changed this session.',
             inputSchema: {
                 type: 'object',
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory`,
+                        description: `Path to the indexed project`,
                     },
                     type: {
                         type: 'string',
@@ -368,7 +446,7 @@ export function registerTools(): Tool[] {
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory`,
+                        description: `Path to the indexed project`,
                     },
                     note: {
                         type: 'string',
@@ -404,13 +482,13 @@ export function registerTools(): Tool[] {
         },
         {
             name: `${TOOL_PREFIX}session`,
-            description: `Start or check an ${PRODUCT_NAME} session. Call this at the beginning of a new chat session to: (1) detect files changed externally since last session, (2) auto-reindex modified files, (3) get session note and last session times. Returns info for "What did we do last session?" queries.`,
+            description: `Start/check an ${PRODUCT_NAME} session: detects externally changed files, auto-reindexes them, and returns the session note + last-session times. Call at the start of a new chat session, or to answer "what did we do last session?".`,
             inputSchema: {
                 type: 'object',
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory`,
+                        description: `Path to the indexed project`,
                     },
                 },
                 required: ['path'],
@@ -418,13 +496,13 @@ export function registerTools(): Tool[] {
         },
         {
             name: `${TOOL_PREFIX}viewer`,
-            description: 'Open an interactive project tree viewer in the browser. Shows the indexed file structure with clickable nodes - click on a file to see its signature (header comments, types, methods). Uses a local HTTP server with WebSocket for live updates.',
+            description: 'Open an interactive project tree viewer in the browser: click a file to see its signature (header comments, types, methods).',
             inputSchema: {
                 type: 'object',
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory`,
+                        description: `Path to the indexed project`,
                     },
                     action: {
                         type: 'string',
@@ -443,7 +521,7 @@ export function registerTools(): Tool[] {
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory`,
+                        description: `Path to the indexed project`,
                     },
                     action: {
                         type: 'string',
@@ -464,7 +542,7 @@ export function registerTools(): Tool[] {
                     },
                     summary: {
                         type: 'string',
-                        description: 'One-sentence summary (~150 chars). Shown in task list as table-of-contents. Write it on create, update on changes.',
+                        description: 'One-sentence summary (~150 chars) shown in task list. Write on create, update on changes.',
                     },
                     priority: {
                         type: 'number',
@@ -482,7 +560,7 @@ export function registerTools(): Tool[] {
                     },
                     source: {
                         type: 'string',
-                        description: 'Where the task came from (freetext, e.g., "code review of parser.ts:142")',
+                        description: 'Freetext origin (e.g., "code review of parser.ts:142")',
                     },
                     sort_order: {
                         type: 'number',
@@ -502,7 +580,7 @@ export function registerTools(): Tool[] {
                     },
                     task_action: {
                         type: 'string',
-                        description: 'What to do when triggered (description of the action to perform)',
+                        description: 'Action to perform when triggered',
                     },
                     auto_go: {
                         type: 'boolean',
@@ -514,13 +592,13 @@ export function registerTools(): Tool[] {
         },
         {
             name: `${TOOL_PREFIX}tasks`,
-            description: `List and filter tasks in the project backlog. Returns tasks grouped by status (active, backlog, done, cancelled) and sorted by priority. Use to get an overview of all open and completed work.`,
+            description: `List and filter tasks in the project backlog, grouped by status and sorted by priority.`,
             inputSchema: {
                 type: 'object',
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory`,
+                        description: `Path to the indexed project`,
                     },
                     status: {
                         type: 'string',
@@ -542,14 +620,14 @@ export function registerTools(): Tool[] {
         },
         {
             name: `${TOOL_PREFIX}screenshot`,
-            description: 'Take a screenshot. Returns file path for Read. No index required. OPTIMIZATION STRATEGY: Always start with scale=0.5 + colors=2 (smallest). If text is unreadable, retry with colors=16. If still unclear, try scale=0.75 or omit colors for full quality. Remember what works for each window/app during the session to avoid retries.',
+            description: 'Take a screenshot. Returns a file path for Read. No index required. Start with scale=0.5 + colors=2 (smallest); raise colors/scale only if the result is unreadable.',
             inputSchema: {
                 type: 'object',
                 properties: {
                     mode: {
                         type: 'string',
                         enum: ['fullscreen', 'active_window', 'window', 'region', 'rect'],
-                        description: 'Capture mode: fullscreen (default), active_window, window (by title), region (interactive selection), or rect (specific coordinates)',
+                        description: 'Capture mode (default: fullscreen). window needs window_title; region is interactive; rect needs x/y/width/height.',
                     },
                     window_title: {
                         type: 'string',
@@ -589,12 +667,12 @@ export function registerTools(): Tool[] {
                     },
                     scale: {
                         type: 'number',
-                        description: 'Scale factor 0.1-1.0 (e.g., 0.5 = half size). Reduces resolution to save tokens. Default: no scaling.',
+                        description: 'Scale factor 0.1-1.0 (e.g., 0.5 = half size), lowers token cost. Default: no scaling.',
                     },
                     colors: {
                         type: 'number',
                         enum: [2, 4, 16, 256],
-                        description: 'Reduce color palette: 2 (B&W, ideal for text), 4 (text + light shading), 16 (UI readable), 256 (good quality). Default: full color. Tip: Use 2 for text-only screenshots to dramatically reduce file size.',
+                        description: 'Palette size: 2=B&W text, 4=text+shading, 16=UI-readable, 256=photo-quality. Default: full color.',
                     },
                 },
                 required: [],
@@ -619,7 +697,7 @@ export function registerTools(): Tool[] {
         // ============================================================
         {
             name: `${TOOL_PREFIX}global_init`,
-            description: `Scan a directory tree for ${PRODUCT_NAME}-indexed projects and register them in the global database (~/.aidex/global.db). Also finds unindexed projects (by markers like .csproj, package.json, Cargo.toml, etc.). Use this to enable cross-project searches with aidex_global_query.`,
+            description: `Scan a directory tree, register ${PRODUCT_NAME}-indexed projects in the global DB (~/.aidex/global.db), and find unindexed ones (by .csproj/package.json/Cargo.toml markers). Enables cross-project search via aidex_global_query.`,
             inputSchema: {
                 type: 'object',
                 properties: {
@@ -766,7 +844,7 @@ export function registerTools(): Tool[] {
         },
         {
             name: `${TOOL_PREFIX}global_guideline`,
-            description: `Manage persistent guidelines in the global ${PRODUCT_NAME} database (~/.aidex/global.db). Guidelines are named key-value instructions that apply across all projects — e.g. "review" → detailed review checklist, "release-prep" → release steps, "new-feature" → conventions to follow. Use \`list\` at session start to load active guidelines. Works without prior global_init.`,
+            description: `Manage persistent guidelines in the global ${PRODUCT_NAME} database (~/.aidex/global.db): named key-value instructions applied across all projects (e.g. "review" -> checklist). Use \`list\` at session start to load active guidelines. Works without prior global_init.`,
             inputSchema: {
                 type: 'object',
                 properties: {
@@ -793,7 +871,7 @@ export function registerTools(): Tool[] {
         },
         {
             name: `${TOOL_PREFIX}log`,
-            description: `Universal Log Hub — receive and query logs from any external program (C#, Python, Node, etc.) via HTTP. Zero-cost when not used. Actions: init (start HTTP server), free (stop server), status (show stats), query (search logs), clear (reset buffer), write (inject entry as "claude"), control_get (read all interactive dashboard control values), control_set (change one control — same set-point the user's dashboard slider drives, so the AI can tune live).`,
+            description: `Universal Log Hub: receive and query logs from any external program (C#, Python, Node, etc.) via HTTP. Zero-cost when not used. See \`action\` for operations.`,
             inputSchema: {
                 type: 'object',
                 properties: {
@@ -841,7 +919,7 @@ export function registerTools(): Tool[] {
                     },
                     consume: {
                         type: 'boolean',
-                        description: 'If true, returned entries are removed from the buffer — ideal for polling without duplicates (default: false, used with query)',
+                        description: 'If true, removes returned entries from the buffer (poll without duplicates). Default: false. Used with query.',
                     },
                     message: {
                         type: 'string',
@@ -871,7 +949,7 @@ export function registerTools(): Tool[] {
                 properties: {
                     path: {
                         type: 'string',
-                        description: `Path to project with ${INDEX_DIR} directory (defaults to current working directory if omitted on the server).`,
+                        description: `Indexed project path (defaults to server's cwd if omitted)`,
                     },
                     open: {
                         type: 'boolean',
@@ -883,51 +961,51 @@ export function registerTools(): Tool[] {
         },
         {
             name: `${TOOL_PREFIX}search`,
-            description: `Semantic search across embedded code, docs, and workspace items (tasks/notes/history). Best for natural-language questions like "how do we handle retry with backoff" or "what does the error logging do" — finds the right file even when you don't know the identifier name. Requires \`embeddings: true\` on aidex_init for the project. Three modes: semantic (pure vector KNN), exact (identifier match like aidex_query), hybrid (RRF fusion of both — default and recommended).`,
+            description: `Semantic/hybrid search across embedded code, docs, workspace: natural-language intent when you don't know the identifier (aidex_query is for known names, aidex_signature for file structure). No embeddings -> empty result, no error.`,
             inputSchema: {
                 type: 'object',
                 properties: {
                     query: {
                         type: 'string',
-                        description: 'The search query — natural language for semantic, or a term for exact mode',
+                        description: 'Natural language for semantic, or a term for exact mode',
                     },
                     path: {
                         type: 'string',
-                        description: 'Project path. Required for scope:"current" (default when path is set).',
+                        description: 'Project path; required for scope:"current" (default when set)',
                     },
                     scope: {
                         type: 'string',
                         enum: ['current', 'all', 'linked'],
-                        description: 'current: only this project (default if path set). all: every project that has embeddings enabled. linked: this project + its linked dependencies.',
+                        description: 'current: this project (default if path set). all: every embeddings-enabled project. linked: project + its linked deps.',
                     },
                     project_filter: {
                         type: 'array',
                         items: { type: 'string' },
-                        description: 'Glob patterns over project paths (e.g. ["Q:/develop/**"]). Combined with scope.',
+                        description: 'Glob patterns over project paths (e.g. ["Q:/develop/**"]); combined with scope',
                     },
                     source_kinds: {
                         type: 'array',
                         items: { type: 'string', enum: ['code', 'docs', 'workspace'] },
-                        description: 'Filter by content kind. Default: all kinds.',
+                        description: 'Filter by content kind (default: all)',
                     },
                     source_types: {
                         type: 'array',
                         items: { type: 'string' },
-                        description: 'Filter by source_type: method, type, doc-section, task, task-log, note, note-history.',
+                        description: 'source_type filter: method, type, doc-section, task, task-log, note, note-history',
                     },
                     mode: {
                         type: 'string',
                         enum: ['semantic', 'hybrid', 'exact'],
-                        description: 'semantic: pure vector KNN. exact: identifier match (like aidex_query). hybrid: both fused via RRF (default).',
+                        description: 'semantic: vector KNN. exact: identifier match (like aidex_query). hybrid (default): both, fused via RRF.',
                     },
                     k: {
                         type: 'number',
-                        description: 'Number of results to return (default: 20)',
+                        description: 'Number of results (default: 20)',
                     },
                     llm: {
                         type: 'string',
                         enum: ['auto', 'off', 'translate', 'rerank', 'expand+rerank'],
-                        description: 'LLM-layer strategy. "auto" (default): translate non-English queries + rerank if a key is configured. "off": pure embeddings. "translate": just rewrite the query. "rerank": embeddings then LLM-reranking. "expand+rerank": split into 2-4 subqueries + LLM rerank. Per-project privacy switch llm_send_code controls whether code/snippets are sent.',
+                        description: 'LLM strategy (default auto: translate + rerank if a key is set). off/translate/rerank/expand+rerank vary reranking depth; llm_send_code gates whether code is sent.',
                     },
                 },
                 required: ['query'],
@@ -951,8 +1029,14 @@ export async function handleToolCall(
             case `${TOOL_PREFIX}query`:
                 return handleQuery(args);
 
+            case `${TOOL_PREFIX}coverage`:
+                return handleCoverage(args);
+
             case `${TOOL_PREFIX}status`:
                 return await handleStatus(args);
+
+            case `${TOOL_PREFIX}edges`:
+                return handleEdges(args);
 
             case `${TOOL_PREFIX}signature`:
                 return handleSignature(args);
@@ -1084,6 +1168,14 @@ async function handleInit(args: Record<string, unknown>): Promise<{ content: Arr
 
     if (result.success) {
         let message = `✓ ${PRODUCT_NAME} initialized for project\n\n`;
+        // Said before the counters, because it explains them: a run that
+        // migrates reindexes every file and reports zero skipped, where the
+        // caller expected an incremental pass.
+        if (result.literalCoverageUpgraded) {
+            message += `Literal coverage MIGRATED: the index did not declare it, so every file was `
+                + `re-indexed and the index now answers for literals (schema ${LITERAL_COVERAGE_SCHEMA}, `
+                + `rule ${LITERAL_RULE_ID}@${LITERAL_RULE_VERSION}). Query them with kinds: ["literal"].\n\n`;
+        }
         message += `Database: ${result.indexPath}/index.db\n`;
         message += `Files indexed: ${result.filesIndexed}`;
         if (result.filesSkipped > 0) {
@@ -1093,7 +1185,7 @@ async function handleInit(args: Record<string, unknown>): Promise<{ content: Arr
         if (result.filesRemoved > 0) {
             message += `Files removed: ${result.filesRemoved} (now excluded)\n`;
         }
-        message += `Items found: ${result.itemsFound}\n`;
+        message += `Term-file pairs found (raw case): ${result.itemsFound}\n`;
         message += `Methods found: ${result.methodsFound}\n`;
         message += `Types found: ${result.typesFound}\n`;
         message += `Duration: ${result.durationMs}ms`;
@@ -1125,6 +1217,83 @@ async function handleInit(args: Record<string, unknown>): Promise<{ content: Arr
 }
 
 /**
+ * Candidate relationships are useful reconnaissance, not an absence oracle.
+ */
+function handleEdges(args: Record<string, unknown>): { content: Array<{ type: string; text: string }> } {
+    const path = args.path as string;
+    const direction = (args.direction as EdgeDirection | undefined) ?? 'both';
+    const kind = args.kind as 'import' | 'call' | undefined;
+
+    if (!path) {
+        return { content: [{ type: 'text', text: 'Error: path parameter is required' }] };
+    }
+    if (!['incoming', 'outgoing', 'both'].includes(direction)) {
+        return { content: [{ type: 'text', text: 'Error: direction must be incoming, outgoing, or both' }] };
+    }
+    if (kind && !['import', 'call'].includes(kind)) {
+        return { content: [{ type: 'text', text: 'Error: kind must be import or call' }] };
+    }
+
+    const result = edges({
+        path,
+        file: args.file as string | undefined,
+        symbol: args.symbol as string | undefined,
+        direction,
+        kind,
+        limit: args.limit as number | undefined,
+    });
+    if (!result.success) {
+        return { content: [{ type: 'text', text: `Error: ${result.error}` }] };
+    }
+
+    let message = '# Candidate edges\n\n'
+        + 'Syntax-derived candidate relationships; an empty result does not prove semantic absence.\n';
+    if (result.edges.length === 0) {
+        message += '\nNo candidate edges found.';
+    } else {
+        for (const edge of result.edges) {
+            const target = edge.target_file ?? '<unresolved>';
+            const sourceSymbol = edge.source_symbol ? ` ${edge.source_symbol}` : '';
+            const targetLine = edge.target_line ? `:${edge.target_line}` : '';
+            message += `\n${edge.kind} ${edge.source_file}:${edge.source_line}${sourceSymbol}`
+                + ` -> ${target}${targetLine} ${edge.target_symbol}`
+                + ` [${edge.confidence}; ${edge.provenance}]`;
+        }
+    }
+    return { content: [{ type: 'text', text: message }] };
+}
+
+/**
+ * Handle coverage -- the oracle.
+ *
+ * Emits the raw verdict as JSON on purpose. A caller (a hook, a script, another
+ * agent) branches on `reason`, and prose would force it to guess. `covered: true`
+ * is the ONLY value that licenses treating an empty result as proof of absence.
+ */
+function handleCoverage(args: Record<string, unknown>): { content: Array<{ type: string; text: string }> } {
+    const path = args.path as string;
+    const pattern = args.pattern as string;
+
+    if (!path || !pattern) {
+        return {
+            content: [{ type: 'text', text: JSON.stringify({ covered: false, reason: 'oracle_error', error: 'path and pattern parameters are required' }) }],
+        };
+    }
+
+    try {
+        return {
+            content: [{ type: 'text', text: JSON.stringify(can({ path, pattern, target: args.target as string | undefined })) }],
+        };
+    } catch (err) {
+        // Never a verdict: a caller must treat this as "could not answer" and
+        // fall back to its own search, not as "not covered".
+        return {
+            content: [{ type: 'text', text: JSON.stringify({ covered: false, reason: 'oracle_error', error: err instanceof Error ? err.message : String(err) }) }],
+        };
+    }
+}
+
+/**
  * Handle query
  */
 function handleQuery(args: Record<string, unknown>): { content: Array<{ type: string; text: string }> } {
@@ -1143,6 +1312,9 @@ function handleQuery(args: Record<string, unknown>): { content: Array<{ type: st
         mode: (args.mode as QueryMode) ?? 'exact',
         fileFilter: args.file_filter as string | undefined,
         typeFilter: args.type_filter as string[] | undefined,
+        kinds: args.kinds as QueryKind[] | undefined,
+        itemOffset: args.item_offset as number | undefined,
+        itemLimit: args.item_limit as number | undefined,
         modifiedSince: args.modified_since as string | undefined,
         modifiedBefore: args.modified_before as string | undefined,
         limit: args.limit as number | undefined,
@@ -1155,15 +1327,43 @@ function handleQuery(args: Record<string, unknown>): { content: Array<{ type: st
     }
 
     if (result.matches.length === 0) {
-        return {
-            content: [{ type: 'text', text: `No matches found for "${term}" (mode: ${result.mode})` }],
-        };
+        // Exactly ONE extra line: what is missing, and what to do. The
+        // per-language coverage figures live in the tool description, read once,
+        // not in every empty response of every session.
+        // `kinds` rides on the existing header line: it costs no extra line, and
+        // a response that states the query it answered stays correct if the
+        // default ever moves.
+        //
+        // The teaser wins over the caveat when there IS something to point at:
+        // "N of them exist, ask for them" beats a warning, and it is the whole
+        // reason the default can stay narrow without hiding the other dimension.
+        // ...but only when that re-run would be ANSWERED. On an index that does
+        // not declare literal coverage the literal dimension is refused, so
+        // pointing at it would hand the caller an instruction that fails; the
+        // coverage notice, which names the schema and the rebuild command, is
+        // the honest half of the same fact.
+        const second = result.otherKindMatches > 0 && result.literalDimensionAvailable
+            ? `${result.otherKindMatches} match(es) exist in other kinds -- re-run with kinds: ["literal"].`
+            : noticeFor(path, term);
+        const text = `No matches found for "${term}" (mode: ${result.mode}, kinds: ${result.kinds.join(',')})`
+            + (second ? `\n${second}` : '');
+        return { content: [{ type: 'text', text }] };
     }
 
     // Format results
-    let message = `Found ${result.totalMatches} match(es) for "${term}" (mode: ${result.mode})`;
+    let message = `Found ${result.totalMatches} match(es) for "${term}" (mode: ${result.mode}, kinds: ${result.kinds.join(',')})`;
     if (result.truncated) {
         message += ` [showing first ${result.matches.length}]`;
+    }
+    // The TERM window, announced separately from the line limit above. They cut
+    // at different stages: a term left out here contributes no line at all, so
+    // staying silent about it would let a caller read a partial answer as the
+    // whole of it.
+    if (result.itemsTruncated) {
+        const from = result.itemOffset + 1;
+        const to = result.itemOffset + result.itemsReturned;
+        message += `\nTerms ${from}-${to} of ${result.itemsTotal} examined`
+            + ` -- re-run with item_offset: ${to} for the next slice.`;
     }
     message += '\n\n';
 
@@ -1265,6 +1465,13 @@ async function handleStatus(args: Record<string, unknown>): Promise<{ content: A
         // module unavailable or DB error → leave embeddings as { enabled: false }
     }
 
+    // Rename items -> distinctTerms on the way out (card 740c6f5d): the items
+    // table is COLLATE NOCASE, a globally-distinct count, unlike the raw-case
+    // term-file pairs reported by aidex_init/aidex_scan under the same word.
+    // Local relabel only -- getStats()'s field name stays "items" everywhere
+    // else in the codebase.
+    const { items: distinctTerms, ...restStats } = stats;
+
     return {
         content: [
             {
@@ -1272,7 +1479,7 @@ async function handleStatus(args: Record<string, unknown>): Promise<{ content: A
                 text: JSON.stringify({
                     project: projectName,
                     schemaVersion,
-                    statistics: stats,
+                    statistics: { ...restStats, distinctTerms },
                     embeddings,
                     databasePath: dbPath,
                 }, null, 2),
@@ -1771,7 +1978,7 @@ function handleScan(args: Record<string, unknown>): { content: Array<{ type: str
     for (const proj of result.projects) {
         message += `## ${proj.name}\n`;
         message += `- **Path:** ${proj.path}\n`;
-        message += `- **Files:** ${proj.files} | **Items:** ${proj.items} | **Methods:** ${proj.methods} | **Types:** ${proj.types}\n`;
+        message += `- **Files:** ${proj.files} | **Distinct terms (case-folded):** ${proj.items} | **Methods:** ${proj.methods} | **Types:** ${proj.types}\n`;
         message += `- **Last indexed:** ${proj.lastIndexed}\n`;
         message += '\n';
     }
@@ -2451,7 +2658,7 @@ async function handleGlobalInit(args: Record<string, unknown>): Promise<{ conten
     message += `| | Count |\n|---|---|\n`;
     message += `| Projects | ${result.totals.projects} |\n`;
     message += `| Files | ${result.totals.files} |\n`;
-    message += `| Items | ${result.totals.items} |\n`;
+    message += `| Distinct terms (case-folded, summed) | ${result.totals.items} |\n`;
     message += `| Methods | ${result.totals.methods} |\n`;
     message += `| Types | ${result.totals.types} |\n`;
 
@@ -2532,6 +2739,10 @@ function handleGlobalQuery(args: Record<string, unknown>): { content: Array<{ ty
     if (result.totalMatches === 0) {
         let msg = `No matches for "${result.term}" (mode: ${result.mode}) across ${result.projectsSearched} projects.`;
         if (result.cached) msg += ' (cached)';
+        // Coverage is per index and reindexing is manual, so a cross-project
+        // zero spans a mix of states by design. One line saying so.
+        const notice = globalNotice(result.term);
+        if (notice) msg += `\n${notice}`;
         return {
             content: [{ type: 'text', text: msg }],
         };
@@ -2892,17 +3103,25 @@ async function handleSettings(args: Record<string, unknown>): Promise<{ content:
 
         if (open) {
             // Start viewer if not running, with the Settings tab pre-selected via URL hash.
-            await startViewer(path, 'settings');
-            // Mark the current version as seen so the update banner stops showing.
-            markVersionSeen();
+            const viewerMessage = await startViewer(path, 'settings');
+            const { broadcastFocusTab, isViewerServingProject, isViewerRunning } = await import('../viewer/server.js');
 
-            // Always queue a focus-tab message — works for fresh start, replay
-            // on first WS connect, or live broadcast if the browser is already there.
-            const { broadcastFocusTab } = await import('../viewer/server.js');
-            broadcastFocusTab('settings');
+            // The viewer is a single machine-wide instance, but each MCP server (Claude
+            // Code, Claude Desktop, ...) is normally its OWN process — so "no viewer
+            // running in THIS process" is the common case, not evidence of a mismatch.
+            // Only skip the cross-process focus broadcast when this process POSITIVELY
+            // knows the live viewer serves a different project.
+            if (!isViewerRunning() || isViewerServingProject(path)) {
+                // Mark the current version as seen so the update banner stops showing.
+                markVersionSeen();
+
+                // Always queue a focus-tab message — works for fresh start, replay
+                // on first WS connect, or live broadcast if the browser is already there.
+                broadcastFocusTab('settings');
+            }
 
             const lines: string[] = [];
-            lines.push('✓ Opening AiDex Settings in the viewer (http://localhost:3333).');
+            lines.push(`✓ ${viewerMessage}`);
             lines.push('');
             lines.push('Current configuration:');
             lines.push(`  Embeddings: ${s.embeddings.enabled ? 'enabled' : 'disabled'}` +

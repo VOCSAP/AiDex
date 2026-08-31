@@ -4,6 +4,7 @@
 
 import type Database from 'better-sqlite3';
 import type { AiDexDatabase } from './database.js';
+import { normalizeLiteralWhitespace } from '../coverage/rule.js';
 
 /** Escape a term for SQLite LIKE queries (with ESCAPE '\'). */
 function escapeLike(term: string): string {
@@ -35,10 +36,14 @@ export interface ItemRow {
     term: string;
 }
 
+/** Why an occurrence exists. 'both' = the same term on one line, as each. */
+export type OccurrenceKind = 'symbol' | 'literal' | 'both';
+
 export interface OccurrenceRow {
     item_id: number;
     file_id: number;
     line_id: number;
+    kind: OccurrenceKind;
 }
 
 export interface SignatureRow {
@@ -73,6 +78,43 @@ export interface DependencyRow {
     path: string;
     name: string | null;
     last_checked: number | null;
+}
+
+export type CandidateEdgeKind = 'import' | 'call';
+
+export interface CandidateEdgeRow {
+    id: number;
+    source_file_id: number;
+    target_file_id: number | null;
+    kind: CandidateEdgeKind;
+    confidence: 'candidate';
+    source_symbol: string;
+    target_symbol: string;
+    source_line: number;
+    target_line: number | null;
+    provenance: string;
+    created_at: number;
+}
+
+export interface CandidateEdgeViewRow extends CandidateEdgeRow {
+    source_file: string;
+    target_file: string | null;
+}
+
+export interface CandidateEdgeInput {
+    kind: CandidateEdgeKind;
+    sourceSymbol: string | null;
+    targetSymbol: string;
+    sourceLine: number;
+    provenance: string;
+}
+
+export interface CandidateEdgeQuery {
+    fileId?: number;
+    direction?: 'incoming' | 'outgoing' | 'both';
+    kind?: CandidateEdgeKind;
+    symbol?: string;
+    limit?: number;
 }
 
 export interface ProjectFileRow {
@@ -135,6 +177,7 @@ export class Queries {
     private _deleteUnusedItems?: Database.Statement;
 
     private _insertOccurrence?: Database.Statement;
+    private _hasOccurrenceKind?: boolean;
     private _getOccurrencesByItem?: Database.Statement;
     private _getOccurrencesByFile?: Database.Statement;
     private _deleteOccurrencesByFile?: Database.Statement;
@@ -276,11 +319,21 @@ export class Queries {
     // Occurrences
     // --------------------------------------------------------
 
-    insertOccurrence(itemId: number, fileId: number, lineId: number): void {
-        this._insertOccurrence ??= this.db.prepare(
-            'INSERT OR IGNORE INTO occurrences (item_id, file_id, line_id) VALUES (?, ?, ?)'
-        );
-        this._insertOccurrence.run(itemId, fileId, lineId);
+    /**
+     * Insert an occurrence.
+     *
+     * `INSERT OR IGNORE` on a row that already exists with a DIFFERENT kind
+     * would silently keep the first one, so the conflict is resolved explicitly:
+     * a term seen both as a symbol and as a literal on one line becomes 'both'.
+     * Losing that would make `kinds` lie on 1.5% of literal occurrences.
+     */
+    insertOccurrence(itemId: number, fileId: number, lineId: number, kind: OccurrenceKind = 'symbol'): void {
+        this._insertOccurrence ??= this.db.prepare(`
+            INSERT INTO occurrences (item_id, file_id, line_id, kind) VALUES (?, ?, ?, ?)
+            ON CONFLICT(item_id, file_id, line_id) DO UPDATE SET
+                kind = CASE WHEN occurrences.kind = excluded.kind THEN occurrences.kind ELSE 'both' END
+        `);
+        this._insertOccurrence.run(itemId, fileId, lineId, kind);
     }
 
     getOccurrencesByItem(itemId: number): Array<{ file_id: number; line_id: number; line_number: number; path: string; line_type: string; modified: number | null }> {
@@ -299,23 +352,44 @@ export class Queries {
      * Get occurrences for multiple items at once (eliminates N+1 queries).
      * Returns results grouped by item_id.
      */
-    getOccurrencesByItems(itemIds: number[]): Array<{ item_id: number; file_id: number; line_id: number; line_number: number; path: string; line_type: string; modified: number | null }> {
+    /**
+     * Does this database have `occurrences.kind` yet?
+     *
+     * It is added by migrateLegacySchema, which openDatabase only runs on a
+     * WRITEABLE handle -- and a readonly connection cannot ALTER anything. So
+     * every read path has to cope with an index built before Lot 2 instead of
+     * assuming the column exists: `hyp_bde59155`, caught by probing the real
+     * koryphaios index, not by the test fixture, which is always freshly created
+     * from the current schema.
+     */
+    private hasOccurrenceKind(): boolean {
+        if (this._hasOccurrenceKind === undefined) {
+            const cols = this.db.prepare('PRAGMA table_info(occurrences)').all() as Array<{ name: string }>;
+            this._hasOccurrenceKind = cols.some(c => c.name === 'kind');
+        }
+        return this._hasOccurrenceKind;
+    }
+
+    getOccurrencesByItems(itemIds: number[]): Array<{ item_id: number; file_id: number; line_id: number; line_number: number; path: string; line_type: string; kind: OccurrenceKind; modified: number | null }> {
         if (itemIds.length === 0) return [];
+        // A pre-Lot-2 index holds symbols only, so the constant is the truth
+        // there, not a placeholder.
+        const kindExpr = this.hasOccurrenceKind() ? 'o.kind' : `'symbol' AS kind`;
         // SQLite has a max variable limit (~999), batch if needed
-        const results: Array<{ item_id: number; file_id: number; line_id: number; line_number: number; path: string; line_type: string; modified: number | null }> = [];
+        const results: Array<{ item_id: number; file_id: number; line_id: number; line_number: number; path: string; line_type: string; kind: OccurrenceKind; modified: number | null }> = [];
         const batchSize = 500;
         for (let i = 0; i < itemIds.length; i += batchSize) {
             const batch = itemIds.slice(i, i + batchSize);
             const placeholders = batch.map(() => '?').join(',');
             const sql = `
-                SELECT o.item_id, o.file_id, o.line_id, l.line_number, f.path, l.line_type, l.modified
+                SELECT o.item_id, o.file_id, o.line_id, l.line_number, f.path, l.line_type, ${kindExpr}, l.modified
                 FROM occurrences o
                 JOIN lines l ON o.file_id = l.file_id AND o.line_id = l.id
                 JOIN files f ON o.file_id = f.id
                 WHERE o.item_id IN (${placeholders})
                 ORDER BY f.path, l.line_number
             `;
-            const rows = this.db.prepare(sql).all(...batch) as Array<{ item_id: number; file_id: number; line_id: number; line_number: number; path: string; line_type: string; modified: number | null }>;
+            const rows = this.db.prepare(sql).all(...batch) as Array<{ item_id: number; file_id: number; line_id: number; line_number: number; path: string; line_type: string; kind: OccurrenceKind; modified: number | null }>;
             results.push(...rows);
         }
         return results;
@@ -433,35 +507,194 @@ export class Queries {
     }
 
     // --------------------------------------------------------
+    // Candidate relationships
+    // --------------------------------------------------------
+
+    insertCandidateEdge(fileId: number, edge: CandidateEdgeInput): number {
+        const result = this.db.prepare(`
+            INSERT OR IGNORE INTO candidate_edges (
+                source_file_id, kind, confidence, source_symbol, target_symbol,
+                source_line, provenance, created_at
+            ) VALUES (?, ?, 'candidate', ?, ?, ?, ?, ?)
+        `).run(fileId, edge.kind, edge.sourceSymbol ?? '', edge.targetSymbol,
+            edge.sourceLine, edge.provenance, Date.now());
+        return Number(result.lastInsertRowid);
+    }
+
+    deleteCandidateEdgesBySource(fileId: number): void {
+        this.db.prepare('DELETE FROM candidate_edges WHERE source_file_id = ?').run(fileId);
+    }
+
+    getAllCandidateEdges(): CandidateEdgeViewRow[] {
+        return this.db.prepare(`
+            SELECT e.*, sf.path AS source_file, tf.path AS target_file
+            FROM candidate_edges e
+            JOIN files sf ON sf.id = e.source_file_id
+            LEFT JOIN files tf ON tf.id = e.target_file_id
+            ORDER BY e.id
+        `).all() as CandidateEdgeViewRow[];
+    }
+
+    resetCandidateEdgeTargets(): void {
+        this.db.prepare('UPDATE candidate_edges SET target_file_id = NULL, target_line = NULL').run();
+    }
+
+    resolveCandidateEdge(id: number, targetFileId: number, targetLine: number | null): void {
+        this.db.prepare(
+            'UPDATE candidate_edges SET target_file_id = ?, target_line = ? WHERE id = ?'
+        ).run(targetFileId, targetLine, id);
+    }
+
+    getAllMethods(): Array<MethodRow & { file_path: string }> {
+        return this.db.prepare(`
+            SELECT m.*, f.path AS file_path
+            FROM methods m JOIN files f ON f.id = m.file_id
+            ORDER BY m.name COLLATE NOCASE, f.path, m.line_number
+        `).all() as Array<MethodRow & { file_path: string }>;
+    }
+
+    getMethodsNamed(name: string): Array<MethodRow & { file_path: string }> {
+        return this.db.prepare(`
+            SELECT m.*, f.path AS file_path
+            FROM methods m JOIN files f ON f.id = m.file_id
+            WHERE m.name = ? COLLATE NOCASE
+            ORDER BY f.path, m.line_number
+        `).all(name) as Array<MethodRow & { file_path: string }>;
+    }
+
+    findCandidateEdges(params: CandidateEdgeQuery): CandidateEdgeViewRow[] {
+        const clauses: string[] = [];
+        const values: Array<string | number> = [];
+        const direction = params.direction ?? 'both';
+        if (params.fileId !== undefined) {
+            if (direction === 'incoming') {
+                clauses.push('e.target_file_id = ?');
+                values.push(params.fileId);
+            } else if (direction === 'outgoing') {
+                clauses.push('e.source_file_id = ?');
+                values.push(params.fileId);
+            } else {
+                clauses.push('(e.source_file_id = ? OR e.target_file_id = ?)');
+                values.push(params.fileId, params.fileId);
+            }
+        }
+        if (params.kind) {
+            clauses.push('e.kind = ?');
+            values.push(params.kind);
+        }
+        if (params.symbol) {
+            clauses.push('(e.source_symbol = ? COLLATE NOCASE OR e.target_symbol = ? COLLATE NOCASE)');
+            values.push(params.symbol, params.symbol);
+        }
+        const requestedLimit = params.limit ?? 100;
+        const normalizedLimit = Number.isFinite(requestedLimit) ? Math.trunc(requestedLimit) : 100;
+        const limit = Math.max(1, Math.min(normalizedLimit, 1000));
+        values.push(limit);
+        const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
+        return this.db.prepare(`
+            SELECT e.*, sf.path AS source_file, tf.path AS target_file
+            FROM candidate_edges e
+            JOIN files sf ON sf.id = e.source_file_id
+            LEFT JOIN files tf ON tf.id = e.target_file_id
+            ${where}
+            ORDER BY e.kind, sf.path, e.source_line, e.target_symbol
+            LIMIT ?
+        `).all(...values) as CandidateEdgeViewRow[];
+    }
+
+    // --------------------------------------------------------
     // Query: Search items
     // --------------------------------------------------------
+
+    /**
+     * The WHERE clause shared by item search and item counting, so a filter can
+     * never apply to one and not the other -- which would make the announced
+     * total disagree with the rows returned under it.
+     *
+     * `includeLiteralOnly: false` drops items whose every occurrence is a
+     * literal. Without it those items take seats in the window even when the
+     * caller only asked for symbols, and the eviction is silent.
+     */
+    private itemMatchClause(mode: 'exact' | 'contains' | 'starts_with', includeLiteralOnly: boolean): string {
+        const match = mode === 'exact'
+            ? 'i.term = ? COLLATE NOCASE'
+            : "i.term LIKE ? ESCAPE '\\' COLLATE NOCASE";
+        // Omitted on a pre-Lot-2 index: there is no `kind` column to filter on,
+        // and everything such an index holds is a symbol anyway.
+        const literalFilter = (!includeLiteralOnly && this.hasOccurrenceKind())
+            ? ` AND EXISTS (SELECT 1 FROM occurrences o WHERE o.item_id = i.id AND o.kind IN ('symbol', 'both'))`
+            : '';
+        return `${match}${literalFilter}`;
+    }
+
+    private itemMatchParam(term: string, mode: 'exact' | 'contains' | 'starts_with'): string {
+        if (mode === 'exact') return term;
+        return mode === 'contains' ? `%${escapeLike(term)}%` : `${escapeLike(term)}%`;
+    }
+
+    /** How many items match, BEFORE the window is applied. */
+    countItems(
+        term: string,
+        mode: 'exact' | 'contains' | 'starts_with' = 'exact',
+        includeLiteralOnly = true
+    ): number {
+        // Normalized the same way a literal is normalized before it is stored
+        // (extractor.ts, f08aeeb1): an un-normalized query term against a
+        // normalized index term is a silent miss on any whitespace difference
+        // (double space, tab, indentation) even for an exact substring.
+        const normTerm = normalizeLiteralWhitespace(term);
+        // Whitespace-only term (e.g. a single space) normalizes to '': in
+        // contains/starts_with mode that would build a LIKE '%%' matching the
+        // whole index, contradicting classifyPattern's own not_indexable
+        // verdict for the same input (f08aeeb1 gate fix [2]). A term that was
+        // ALREADY empty falls through unchanged -- this only catches the
+        // whitespace-collapses-to-nothing case.
+        if (normTerm === '' && term !== '') return 0;
+        const sql = `SELECT COUNT(*) n FROM items i WHERE ${this.itemMatchClause(mode, includeLiteralOnly)}`;
+        return (this.db.prepare(sql).get(this.itemMatchParam(normTerm, mode)) as { n: number }).n;
+    }
 
     searchItems(
         term: string,
         mode: 'exact' | 'contains' | 'starts_with' = 'exact',
-        limit = 100
+        limit = 100,
+        offset = 0,
+        includeLiteralOnly = true
     ): ItemRow[] {
-        let sql: string;
-        let param: string;
-
-        switch (mode) {
-            case 'exact':
-                sql = 'SELECT * FROM items WHERE term = ? COLLATE NOCASE LIMIT ?';
-                param = term;
-                break;
-            case 'contains': {
-                sql = "SELECT * FROM items WHERE term LIKE ? ESCAPE '\\' COLLATE NOCASE LIMIT ?";
-                param = `%${escapeLike(term)}%`;
-                break;
-            }
-            case 'starts_with': {
-                sql = "SELECT * FROM items WHERE term LIKE ? ESCAPE '\\' COLLATE NOCASE LIMIT ?";
-                param = `${escapeLike(term)}%`;
-                break;
-            }
-        }
-
-        return this.db.prepare(sql).all(param, limit) as ItemRow[];
+        // Same normalization as countItems above -- must agree, or a caller
+        // could see a nonzero count and an empty page.
+        const normTerm = normalizeLiteralWhitespace(term);
+        // Same empty-after-normalization guard as countItems above -- must
+        // agree, or a caller could see itemsTotal=0 and a nonempty page.
+        if (normTerm === '' && term !== '') return [];
+        // ORDER BY is not cosmetic here, it is what makes `offset` mean
+        // anything: SQL guarantees no row order without it, so paging through
+        // an unordered LIMIT can repeat rows and skip others.
+        //
+        // The ranking itself uses the only signal a substring search carries --
+        // how close a term is to what was typed. On `contains`, `getUser` is a
+        // likelier target than `internalGetUserPreferencesCache`. The last two
+        // keys exist to make the order TOTAL: without a tiebreak, equal-ranking
+        // rows are free to swap between two calls, and the paging breaks again
+        // for a subtler reason.
+        const sql = `
+            SELECT i.* FROM items i
+            WHERE ${this.itemMatchClause(mode, includeLiteralOnly)}
+            ORDER BY
+                CASE WHEN i.term = ? COLLATE NOCASE THEN 0 ELSE 1 END,
+                CASE WHEN i.term LIKE ? ESCAPE '\\' COLLATE NOCASE THEN 0 ELSE 1 END,
+                LENGTH(i.term),
+                i.term COLLATE NOCASE,
+                i.id
+            LIMIT ? OFFSET ?
+        `;
+        return this.db.prepare(sql).all(
+            this.itemMatchParam(normTerm, mode),
+            normTerm,
+            `${escapeLike(normTerm)}%`,
+            limit,
+            offset
+        ) as ItemRow[];
     }
 
     // --------------------------------------------------------
@@ -474,6 +707,7 @@ export class Queries {
     clearFileData(fileId: number): void {
         this.db.transaction(() => {
             // Order matters due to foreign keys
+            this.deleteCandidateEdgesBySource(fileId);
             this.deleteOccurrencesByFile(fileId);
             this.deleteMethodsByFile(fileId);
             this.deleteTypesByFile(fileId);

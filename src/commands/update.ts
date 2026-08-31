@@ -13,7 +13,9 @@ import { minimatch } from 'minimatch';
 import { extract } from '../parser/index.js';
 import { DEFAULT_EXCLUDE, readGitignore, shortHash } from './init.js';
 import { validateIndex, noIndexError, withDatabase, withProjectDb } from './shared.js';
+import { readCoverage } from '../coverage/rule.js';
 import { invalidateGlobalCache } from './global/global-query.js';
+import { rebuildCandidateEdgeTargets } from '../relations/candidate-edges.js';
 
 async function notifyEmbeddingsFileUpdated(projectPath: string, filePath: string): Promise<void> {
     try {
@@ -239,9 +241,19 @@ export function update(params: UpdateParams): UpdateResult {
                     lineNumberToId.set(line.lineNumber, lineId++);
                 }
 
-                // Insert items and occurrences
+                // Insert items and occurrences.
+                //
+                // Literals are dropped on an index that does not DECLARE literal
+                // coverage. Writing them would leave the index holding literals
+                // for the handful of files touched since the last update and
+                // none for the rest, while still declaring it has none -- a
+                // content that contradicts its own declaration. Dropping them
+                // keeps the two in agreement; `aidex_init` migrates the whole
+                // index and then these lines start landing.
+                const takeLiterals = readCoverage(db).literalsIndexed;
                 const itemsInserted = new Set<string>();
                 for (const item of extraction.items) {
+                    if (item.kind === 'literal' && !takeLiterals) continue;
                     let itemLineId = lineNumberToId.get(item.lineNumber);
                     if (itemLineId === undefined) {
                         // Line wasn't recorded, add it now
@@ -258,7 +270,7 @@ export function update(params: UpdateParams): UpdateResult {
                     }
 
                     const itemId = queries.getOrCreateItem(item.term);
-                    queries.insertOccurrence(itemId, fileId, itemLineId);
+                    queries.insertOccurrence(itemId, fileId, itemLineId, item.kind);
                     itemsInserted.add(item.term);
                 }
                 newItemCount = itemsInserted.size;
@@ -284,12 +296,19 @@ export function update(params: UpdateParams): UpdateResult {
                     queries.insertType(fileId, type.name, type.kind, type.lineNumber);
                 }
 
+
+                for (const edge of extraction.edges) {
+                    queries.insertCandidateEdge(fileId, edge);
+                }
                 // Insert signature (header comments)
                 if (extraction.headerComments.length > 0) {
                     queries.insertSignature(fileId, extraction.headerComments.join('\n'));
                 }
             });
 
+
+            // Re-resolve every observation because declarations can change anywhere.
+            db.transaction(() => rebuildCandidateEdgeTargets(queries));
             // Cleanup unused items
             queries.deleteUnusedItems();
 
@@ -365,6 +384,7 @@ export function remove(params: RemoveParams): RemoveResult {
                     queries.deleteFile(existingFile.id);
                     queries.deleteUnusedItems();
                 });
+                db.transaction(() => rebuildCandidateEdgeTargets(queries));
 
                 // Fire-and-forget: drop embeddings for this file (no-op if not enabled).
                 void notifyEmbeddingsFileRemoved(projectPath, relativePath);

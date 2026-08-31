@@ -21,6 +21,10 @@ npm-debug.log*
 
 # Test coverage
 coverage/
+# ...but src/coverage/ is source, not a report directory. The bare `coverage/`
+# pattern above matches at ANY depth, so without this negation the coverage
+# predicate module is silently never committed.
+!src/coverage/
 
 # Local AiDex databases (for testing)
 .codegraph/
@@ -44,6 +48,9 @@ nul
 # Code review (local only)
 CODE-REVIEW.md
 
+# Fork-private notes (VOCSAP fork)
+docs/dev-notes/
+
 # Internal documents (not for public)
 docs/posts/
 FUTURE.md
@@ -61,6 +68,14 @@ aidex-init-all.bat
 aidex-scan.bat
 npm-publish.bat
 server.json
+.claude/settings.json
+.kleos-space
 
 # Handle-Messreihen (Task #89) — Rohdaten, lokal
 scripts/measurements/
+
+# graphify reference dump (temporaire, supprime post-implementation)
+docs/reference/
+
+# Agent memory (per-role, private to the fork -- never publish)
+.claude/agent-memory/

@@ -1,0 +1,37 @@
+{
+  "PreToolUse": [
+    {
+      "matcher": "Grep|Bash",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python \"$USERPROFILE/.claude/hooks/aidex-grep-nudge.py\""
+        }
+      ]
+    }
+  ],
+  "PostToolUse": [
+    {
+      "matcher": "Edit|Write",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python \"$USERPROFILE/.claude/hooks/aidex-queue-edit.py\"",
+          "timeout": 5
+        }
+      ]
+    }
+  ],
+  "Stop": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python \"$USERPROFILE/.claude/hooks/aidex-queue-drain.py\"",
+          "timeout": 15
+        }
+      ]
+    }
+  ]
+}
