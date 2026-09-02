@@ -13,10 +13,75 @@ import { startViewer, stopViewer } from '../viewer/index.js';
 import { PRODUCT_NAME, PRODUCT_NAME_LOWER, PRODUCT_VERSION, INDEX_DIR, TOOL_PREFIX } from '../constants.js';
 
 /**
+ * Tools dropped from tools/list by default.
+ *
+ * The tools/list payload is injected into the context of every session that
+ * mounts this server, so a tool nobody calls is a permanent tax. Measured on
+ * 1923 Claude Code transcripts (70 projects, 3941 real calls): the 33 declared
+ * tools cost about 10797 context tokens, and these 11 account for 4123 of them
+ * -- 38 percent of the budget -- for 5 calls in total.
+ *
+ * Override with AIDEX_TOOLS_DISABLE. An explicit comma-separated list replaces
+ * this set entirely; an empty value or "none" advertises every tool.
+ */
+export const DEFAULT_DISABLED_TOOLS: readonly string[] = [
+    // Zero calls measured across the whole trace.
+    'global_query',
+    'global_signatures',
+    'global_guideline',
+    'describe',
+    'tasks',
+    'link',
+    'unlink',
+    'links',
+    // Redundant with tooling the operator already uses elsewhere.
+    'task',
+    'log',
+    'note',
+];
+
+/** Drop the tool prefix, lowercase and trim, so both spellings compare equal. */
+function normalizeToolName(name: string): string {
+    const trimmed = name.trim().toLowerCase();
+    return trimmed.startsWith(TOOL_PREFIX) ? trimmed.slice(TOOL_PREFIX.length) : trimmed;
+}
+
+/**
+ * Filter the advertised tool list.
+ *
+ * Purely subtractive on tools/list: every case arm of handleToolCall stays
+ * reachable, so a client that invokes a filtered tool by name still works.
+ */
+export function applyToolFilter(tools: Tool[]): Tool[] {
+    const raw = process.env.AIDEX_TOOLS_DISABLE;
+    let disabled: string[];
+
+    if (raw === undefined) {
+        disabled = [...DEFAULT_DISABLED_TOOLS];
+    } else if (raw.trim() === '' || raw.trim().toLowerCase() === 'none') {
+        return tools;
+    } else {
+        disabled = raw.split(',').map(normalizeToolName).filter((n) => n.length > 0);
+    }
+
+    const declared = new Set(tools.map((t) => normalizeToolName(t.name)));
+    const unknown = disabled.filter((n) => !declared.has(n));
+    if (unknown.length > 0) {
+        // stdout carries the MCP protocol; diagnostics belong on stderr only.
+        console.error(
+            `[${PRODUCT_NAME_LOWER}] AIDEX_TOOLS_DISABLE: unknown tool(s) ignored: ${unknown.join(', ')}`
+        );
+    }
+
+    const disabledSet = new Set(disabled);
+    return tools.filter((t) => !disabledSet.has(normalizeToolName(t.name)));
+}
+
+/**
  * Register all available tools
  */
 export function registerTools(): Tool[] {
-    return [
+    return applyToolFilter([
         {
             name: `${TOOL_PREFIX}init`,
             description: `Initialize ${PRODUCT_NAME} indexing: scans source files, builds an index of identifiers, methods, types, signatures.`,
@@ -1011,7 +1076,7 @@ export function registerTools(): Tool[] {
                 required: ['query'],
             },
         },
-    ];
+    ]);
 }
 
 /**

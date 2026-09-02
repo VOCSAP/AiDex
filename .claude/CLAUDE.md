@@ -208,7 +208,13 @@ L'enregistrement du serveur MCP (JSON `mcpServers`, chemins node par client) est
 
 ## Outils
 
-Tous les outils MCP (`aidex_query`, `aidex_signature`, `aidex_task`, `aidex_log`, `aidex_global_*`, etc.) sont declares nativement par le serveur MCP a chaque session : leurs descriptions n'ont pas besoin d'etre dupliquees ici. Reference complete des parametres et exemples : `MCP-API-REFERENCE.md`. Guide detaille du dashboard Live/panels/controles du Log Hub : `docs/loghub-panel-dashboard.md`.
+Les outils MCP (`aidex_query`, `aidex_signature`, `aidex_search`, `aidex_global_*`, etc.) sont declares nativement par le serveur a chaque session : leurs descriptions n'ont pas besoin d'etre dupliquees ici. Reference complete des parametres et exemples : `MCP-API-REFERENCE.md`. Guide detaille du dashboard Live/panels/controles du Log Hub : `docs/loghub-panel-dashboard.md`.
+
+**Le payload `tools/list` est du contexte, donc il obeit a la doctrine.** Il tombe dans chaque session qui monte le serveur, ce qui fait d'un outil jamais appele une taxe permanente. Mesure sur 1923 transcripts Claude Code (70 projets, 3941 appels reels) : les 33 outils coutent environ 10800 tokens, et 11 d'entre eux en portaient 4123, soit 38 pourcent, pour 5 appels au total. Ces 11 sont retires de la liste annoncee par defaut (`DEFAULT_DISABLED_TOOLS`, `src/server/tools.ts`) : `task`, `tasks`, `log`, `note`, `describe`, `link`, `unlink`, `links`, `global_query`, `global_signatures`, `global_guideline`.
+
+Le filtre est purement soustractif sur `tools/list` : chaque bras de `handleToolCall` reste atteignable, un client qui appelle un outil filtre par son nom obtient toujours sa reponse. `AIDEX_TOOLS_DISABLE` arbitre : non definie, le defaut s'applique ; `none` ou vide, les 33 sont annonces ; une liste explicite separee par des virgules remplace entierement le defaut.
+
+**Avant d'ajouter un outil, mesurer son cout.** Un nouvel outil ne se juge pas sur ce qu'il permet mais sur les tokens qu'il preleve sur chaque session, meme celles qui ne l'appellent jamais. Le tarif observe est de 4,2 a 4,5 octets de schema par token.
 
 ## Langues supportees
 
