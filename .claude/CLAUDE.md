@@ -214,6 +214,10 @@ Les outils MCP (`aidex_query`, `aidex_signature`, `aidex_search`, `aidex_global_
 
 Le filtre est purement soustractif sur `tools/list` : chaque bras de `handleToolCall` reste atteignable, un client qui appelle un outil filtre par son nom obtient toujours sa reponse. `AIDEX_TOOLS_DISABLE` arbitre : non definie, le defaut s'applique ; `none` ou vide, les 33 sont annonces ; une liste explicite separee par des virgules remplace entierement le defaut.
 
+**Deny-list assumee, ne pas la convertir en allow-list.** Arbitrage de l'operateur le 2026-09-02, apres que l'objection lui a ete posee. Une deny-list echoue OUVERT : un outil arrive par un merge upstream n'est pas dans `DEFAULT_DISABLED_TOOLS`, donc il est annonce sans que rien ne le signale. C'est accepte ici, et c'est le contraire de l'arbitrage rendu la veille sur un autre depot, ou une allow-list a ete imposee au nom de la regle de couverture. La difference tient a l'enjeu : la-bas, une liste qui retrecit en silence retire une capacite ; ici, le pire cas est qu'un nouvel outil upstream soit visible, ce qui est le comportement normal du serveur. L'objectif n'est pas la couverture, c'est de retirer des fonctions dont l'operateur sait qu'il ne se sert pas.
+
+**Le gain exact n'est pas mesure, et c'est sans effet sur la decision.** Deux lectures coexistent, non departagees : soit les outils differes par Tool Search (`ENABLE_TOOL_SEARCH`) coutent quand meme leur schema, et le gain vaut 4123 tokens par session ; soit ils ne coutent que leur nom, et le gain est quasi nul sous Claude Code mais entier sous Claude Desktop, qui n'a pas Tool Search. Le filtre est positif dans les deux cas, sur des outils inutilises : l'operateur a tranche de ne pas attendre la mesure. Ne pas republier 4123 comme un acquis.
+
 **Avant d'ajouter un outil, mesurer son cout.** Un nouvel outil ne se juge pas sur ce qu'il permet mais sur les tokens qu'il preleve sur chaque session, meme celles qui ne l'appellent jamais. Le tarif observe est de 4,2 a 4,5 octets de schema par token.
 
 ## Langues supportees
