@@ -79,3 +79,10 @@ docs/reference/
 
 # Agent memory (per-role, private to the fork -- never publish)
 .claude/agent-memory/
+
+# Machine-specific project memory (never publish)
+.claude/CLAUDE.local.md
+.Codex/session-checkpoint.md
+findings.md
+task_plan.md
+progress.md

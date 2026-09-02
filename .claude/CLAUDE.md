@@ -2,9 +2,11 @@
 
 Serveur MCP de code-indexing persistant. Donne aux assistants IA (Claude Code, Claude Desktop, etc.) un acces structure a la codebase, plus rapide et precis que `Grep` / `Glob`.
 
+> Les elements propres a un poste (chemins absolus, versions installees, corpus locaux, notes privees au fork) ne vivent PAS ici : ils sont dans `.claude/CLAUDE.local.md`, gitignore. Ne rien y reintroduire.
+
 ## Fork VOCSAP
 
-Ce repo est un fork local `VOCSAP/AiDex`, base sur `CSCSoftware/AiDex`. Voir `git remote -v` pour les remotes :
+Ce repo est un fork local `VOCSAP/AiDex`, base sur `CSCSoftware/AiDex`. Voir `git remote -v` :
 - `origin` : `VOCSAP/AiDex` (publique du fork)
 - `upstream` : `CSCSoftware/AiDex` (auteur d'origine, suivi pour pull les nouvelles features)
 
@@ -25,11 +27,10 @@ l'agent. Plus rapide est un effet secondaire ; moins cher est le but.
 
 **Pour qui.** Upstream est un projet public ; ce depot est un fork que l'operateur
 customise POUR SA PROPRE STATION. D'autres peuvent l'utiliser, ils ne sont pas la cible.
-Consequence : une calibration ou une mesure faite sur le corpus local de cette machine
-est legitime et suffisante. Ne pas exiger qu'un resultat generalise cross-utilisateurs,
-ne pas ajouter de complexite pour couvrir des profils d'usage hypothetiques. Le
-caractere mono-machine d'un corpus se mentionne une fois comme limite, jamais comme
-obstacle.
+Consequence : une calibration ou une mesure faite sur le corpus local d'une machine est
+legitime et suffisante. Ne pas exiger qu'un resultat generalise cross-utilisateurs, ne
+pas ajouter de complexite pour couvrir des profils d'usage hypothetiques. Le caractere
+mono-machine d'un corpus se mentionne une fois comme limite, jamais comme obstacle.
 
 **Unite de jugement : le NOMBRE DE LIGNES DE SORTIE rendues a l'agent.** Pas le nombre
 d'items indexes, pas le nombre de matchs, pas la couverture de l'index. `aidex_query`
@@ -68,6 +69,10 @@ un echec.
 **Etiqueter chaque affirmation MESURE / DEDUIT / SUPPOSE.** Une affirmation MESURE
 s'accompagne de sa commande et de la ligne de sortie decisive. Une affirmation nue se
 renvoie a qui tient le contexte plutot que de se verifier soi-meme.
+
+**Verifier qu'un corpus de mesure EXISTE avant de s'y fier.** Les corpus de reference
+ont deja ete supprimes sans que la doctrine soit mise a jour. Etat courant du poste :
+`.claude/CLAUDE.local.md`.
 
 **Piege d'echantillonnage mesure le 2026-08-13, a ne pas reproduire.** Echantillonner un
 ensemble de termes au niveau OCCURRENCE au lieu du TERME DISTINCT sur-represente les
@@ -110,19 +115,9 @@ Trois reflexes qui en decoulent, par ordre d'efficacite :
 retenir comme refutee serait une seconde erreur, symetrique de la premiere. Retirer une
 conclusion sans la remplacer est une fin legitime.
 
-**Corpus de mesure : PLUS AUCUN en place** depuis le 2026-08-31. `kleos-rust` (Rust)
-et `graphify-8` (Python) vivaient sous `docs/reference/`, `kivgraph-main` (Go/TS) sous
-`references/` : les trois repertoires ont ete supprimes sur decision operateur, et
-leurs entrees retirees du registre global par `aidex_global_refresh` cible. Les mesures
-TypeScript se font sur AiDex lui-meme ; toute mesure Rust, Python ou Go exige de
-recloner un corpus au prealable. Verifier l'existence d'un corpus avant de s'y fier,
-les anciens ont deja disparu sans que ce document soit mis a jour.
-
-**Trace de requetes reelles** : les transcripts Claude Code `~/.claude/projects/<repo>/
-*.jsonl` portent chaque appel `aidex_query` avec son `term` et son `mode` (absent quand
-le defaut serveur s'applique), extractibles par `jq` sans toucher au code. C'est le seul
-corpus d'usage reel disponible ; il est par-operateur et par-machine, pas
-cross-utilisateurs.
+**Calibrer un defaut sur des requetes REELLEMENT emises**, jamais sur des exemples
+ecrits a la main. La source de trace disponible est decrite dans
+`.claude/CLAUDE.local.md`.
 
 ### Pistes CLOSES, ne pas rouvrir sans fait nouveau
 
@@ -154,63 +149,49 @@ Chacune a ete fermee par une mesure, pas par une opinion.
    la bonne cible dans le top 3 ; le boost n'aurait aide que 13 cas sur 429, soit 3,0
    pourcent, et c'est une BORNE HAUTE qui suppose zero degradation des 211 cas deja
    corrects. Fait qui tue l'argument de densite : le plafond de 100 lignes ne mord que
-   dans 5,4 pourcent des appels (50 sur 933). Les trois autres pistes du meme document
-   (`docs/dev-notes/code-context-engine-for-aidex.md`) sont fermees ou redondantes :
-   porter `extract.rs` serait une REGRESSION (AiDex couvre 14 langages contre 8), et
-   l'incrementalite par hash de contenu existe deja (`src/commands/init.ts`).
+   dans 5,4 pourcent des appels (50 sur 933). Les trois autres pistes de la meme etude
+   sont fermees ou redondantes : porter `extract.rs` serait une REGRESSION (AiDex couvre
+   14 langages contre 8), et l'incrementalite par hash de contenu existe deja
+   (`src/commands/init.ts`).
 8. **Couche LSP / graphe de relations, volet Rust.** Le volet TypeScript etait ferme
    depuis le 2026-08-21 sur trois raisons ; le volet Rust restait ouvert. Mesure le
-   2026-08-23 sur le corpus `docs/reference/kleos-rust` : une seule des trois raisons
-   tombe. L'homonymie EXISTE bien en Rust, contrairement a TypeScript (6,9 pourcent des
-   noms de methodes et 8,5 pourcent des noms de types sont ambigus, pesant environ 20
-   pourcent des sites, et pas seulement sur des impls de traits : `SearchResult` 7 sites,
-   `StoreResult` 6, `LinkedMemory` 5, `get_stats` 14). Mais elle ne tombe PAS sur ce que
-   l'agent cherche : sur 18 termes reellement recherches, 1 seul est ambigu et 12 ne sont
-   pas des symboles definis du tout (constantes, variables d'environnement). Les deux
-   autres raisons tiennent : `rust-analyzer` joue le role de `tsc` pour le go-to-
-   definition, et l'agent ne reclame pas d'outil semantique (`aidex_search` pese 4,3
-   pourcent des recherches, 42 appels contre 933). **Condition de reouverture** : une
-   trace d'une VRAIE session de navigation dans le code Rust. Les 18 termes viennent de
-   sessions CLI et debug, corpus faible et probablement non representatif ; c'est la
-   seule reserve qui empeche de fermer definitivement.
+   2026-08-23 sur un corpus Rust de reference (depuis retire) : une seule des trois
+   raisons tombe. L'homonymie EXISTE bien en Rust, contrairement a TypeScript (6,9
+   pourcent des noms de methodes et 8,5 pourcent des noms de types sont ambigus, pesant
+   environ 20 pourcent des sites, et pas seulement sur des impls de traits :
+   `SearchResult` 7 sites, `StoreResult` 6, `LinkedMemory` 5, `get_stats` 14). Mais elle
+   ne tombe PAS sur ce que l'agent cherche : sur 18 termes reellement recherches, 1 seul
+   est ambigu et 12 ne sont pas des symboles definis du tout (constantes, variables
+   d'environnement). Les deux autres raisons tiennent : `rust-analyzer` joue le role de
+   `tsc` pour le go-to-definition, et l'agent ne reclame pas d'outil semantique
+   (`aidex_search` pese 4,3 pourcent des recherches, 42 appels contre 933).
+   **Condition de reouverture** : une trace d'une VRAIE session de navigation dans le
+   code Rust. Les 18 termes viennent de sessions CLI et debug, corpus faible et
+   probablement non representatif ; c'est la seule reserve qui empeche de fermer
+   definitivement.
 
 ### Pieges d'environnement, a recopier dans tout brief d'execution
 
-- Le `node` du PATH est en v24.18.0 et casse l'ABI de `better-sqlite3` : toute la suite
-  de tests echoue en bloc avec une cause qui n'a rien a voir. Utiliser
-  `C:/Users/USERNAME/AppData/Local/nvm/v22.11.0/node.exe`.
-- `--runInBand` et `--maxWorkers=1` sont INTERDITS sur la suite de tests. L'addon natif
-  tree-sitter est charge une fois par processus alors que jest cree un contexte vm par
-  fichier : des le deuxieme fichier d'un meme processus le parseur rend un arbre mort.
-  Mesure : mono-processus 66 echecs sur 138, parallele par defaut 138 sur 138. Le compte
-  varie d'un run a l'autre parce que jest tire l'ordre des fichiers de son cache de
-  timings, ce qui donne l'illusion d'un defaut non deterministe dans le code. Ce piege a
-  coute trois rapports de diagnostic dont deux avec une cause racine fausse.
-- `agent-forge` collisionne sur son repertoire de travail partage quand plusieurs agents
-  tournent : verifier que le stdout lu est bien le sien.
-
-### Sequencement du lot en cours
-
-L'ordre d'implementation des cartes vit dans `docs/dev-notes/roadmap-implementation-
-order.md` (prive au fork, gitignore). Il donne pour chaque carte son rang, la raison du
-rang, le premier pas obligatoire et les pieges mesures. Les cartes elles-memes portent
-un briefing autoportant : faire `roadmap_get <id>` plutot que se le faire recopier.
-
-**Regle qui prime sur ce document : chaque rang demarre par une MESURE, pas par du
-code.**
+- **`--runInBand` et `--maxWorkers=1` sont INTERDITS sur la suite de tests.** L'addon
+  natif tree-sitter est charge une fois par processus alors que jest cree un contexte vm
+  par fichier : des le deuxieme fichier d'un meme processus le parseur rend un arbre
+  mort. Mesure : mono-processus 66 echecs sur 138, parallele par defaut 138 sur 138. Le
+  compte varie d'un run a l'autre parce que jest tire l'ordre des fichiers de son cache
+  de timings, ce qui donne l'illusion d'un defaut non deterministe dans le code. Ce piege
+  a coute trois rapports de diagnostic dont deux avec une cause racine fausse.
+- **Un mauvais binaire `node` casse l'ABI de `better-sqlite3`** et fait echouer toute la
+  suite en bloc, avec une cause qui n'a rien a voir. Binaire a utiliser sur le poste
+  courant : `.claude/CLAUDE.local.md`.
 
 ## Contrainte runtime
 
 **Node 22.x obligatoire** sur Windows 11 (builds recents type 26200). Un bug libuv dans Node 20.20.0 fait planter `npm install` au build natif (`tree-sitter`, `better-sqlite3`) avec `AssignProcessToJobObject: ERROR_INVALID_PARAMETER (87)` qui abort le process.
 
-Configuration verifiee de la station courante :
-- Node 22.11.0 via nvm4w (`C:\Users\USERNAME\AppData\Local\nvm\v22.11.0\node.exe`)
-- npm 11.15.0 + node-gyp 12.3.0 bundled
-- Build natifs (tree-sitter, better-sqlite3, @xenova/transformers, sqlite-vec) compiles sous Node 22 ABI
-
 Si tu changes de version de Node, prevois `npm rebuild` pour recompiler les addons natifs sous le nouveau ABI.
 
 Depuis upstream 2.2.1, le plancher declare est **Node >= 20** (`engines`, `.nvmrc`, check runtime dans `src/index.ts`) et `better-sqlite3` est passe en `^12` pour disposer des prebuilds Node 24. La contrainte Node 22 du fork reste plus stricte que le plancher upstream, pour la raison libuv ci-dessus.
+
+Version exacte et chemin du binaire installes sur le poste courant : `.claude/CLAUDE.local.md`.
 
 ## Build & Run
 
@@ -321,7 +302,7 @@ Aucun n'est une dependance directe du fork -- ce sont les transitifs d'upstream.
 
 Le seul `overrides` du fork est `protobufjs: ^7.5.8`. Il force protobufjs 7.6.5 sur `onnx-proto@4.0.4`, qui declare pourtant `^6.8.8` : violation semver majeure assumee, chemin embeddings uniquement. **Verifie fonctionnel le 2026-08-10** (embedding jina-code, vecteur 768 dims non degenere). A re-tester apres chaque refresh de dependances.
 
-Hardening candidat (npm audit fix sur `ws`/`simple-git`, overrides `glob`/`rimraf`/`minimatch`, veille CVE tree-sitter/better-sqlite3) pas urgent, aucun warning ne casse le build : a traiter en session dediee, jamais pendant un fix fonctionnel ni un merge upstream. Plan detaille en trois etapes : `docs/dev-notes/security-hardening-plan.md` (prive au fork).
+Hardening candidat (npm audit fix sur `ws`/`simple-git`, overrides `glob`/`rimraf`/`minimatch`, veille CVE tree-sitter/better-sqlite3) pas urgent, aucun warning ne casse le build : a traiter en session dediee, jamais pendant un fix fonctionnel ni un merge upstream.
 
 ## Documentation complementaire
 
@@ -331,4 +312,8 @@ Hardening candidat (npm audit fix sur `ws`/`simple-git`, overrides `glob`/`rimra
 | `MCP-API-REFERENCE.md` | API MCP complete : tous les outils, leurs parametres et exemples d'appel, y compris le Log Hub (endpoints HTTP, exemples client par langage) |
 | `docs/loghub-panel-dashboard.md` | Guide detaille du dashboard Live du Log Hub (widgets, endpoints `/panel` et `/control`, piege du compteur `button`) |
 | `CHANGELOG.md` | Historique des versions |
-| `docs/dev-notes/` | Notes privees au fork VOCSAP (exclues de git), dont `security-hardening-plan.md` (plan detaille en trois etapes) et `roadmap-implementation-order.md` |
+| `docs/dev-notes/` | Notes privees au fork VOCSAP (exclues de git) -- index dans `.claude/CLAUDE.local.md` |
+
+## Configuration locale (optionnelle, hors git)
+
+@./CLAUDE.local.md
