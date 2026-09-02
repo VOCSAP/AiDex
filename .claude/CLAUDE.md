@@ -84,11 +84,15 @@ le poids en occurrences. Jamais un seul des deux chiffres.
 
 **Ne jamais publier un RATIO sans avoir verifie que ses deux nombres viennent du meme
 chemin.** Deux nombres qui portent le meme nom ne mesurent pas forcement la meme
-grandeur. Ce depot a paye DEUX FOIS pour cette exacte erreur : la section 14 de
+grandeur. Ce depot a paye TROIS FOIS pour cette exacte erreur : la section 14 de
 `LOCAL-PATCHES.md` raconte un facteur 10 inexplique, ne comparant en fait qu'un agregat
 sur 20 repetitions a un appel unique, qui a motive un revert complet ; et le 2026-08-13,
 des facteurs de croissance de 1,4 a 8,7 ont ete publies puis stockes en memoire longue
 pour une reindexation qui n'avait fait bouger les index que de quelques pourcents.
+Puis le 2026-09-02 : la preuve que differer un outil MCP ne le rend pas gratuit
+invoquait "deux chemins independants" qui etaient en fait deux vues du MEME compteur
+`/context`, son agregat et son detail par outil. Refaite contre `usage` de l'API, la
+conclusion tient, mais la preuve initiale ne prouvait rien (section outils, plus bas).
 Le piege exact : `init()` rend dans `itemsFound` une somme de PAIRES TERME-FICHIER,
 tandis qu'`aidex_status` et `aidex_scan` rendent un compte de TERMES GLOBALEMENT
 DISTINCTS (`src/db/database.ts:242`). Le rapport entre les deux vaut le nombre moyen de
@@ -216,9 +220,11 @@ Le filtre est purement soustractif sur `tools/list` : chaque bras de `handleTool
 
 **Deny-list assumee, ne pas la convertir en allow-list.** Arbitrage de l'operateur le 2026-09-02, apres que l'objection lui a ete posee. Une deny-list echoue OUVERT : un outil arrive par un merge upstream n'est pas dans `DEFAULT_DISABLED_TOOLS`, donc il est annonce sans que rien ne le signale. C'est accepte ici, et c'est le contraire de l'arbitrage rendu la veille sur un autre depot, ou une allow-list a ete imposee au nom de la regle de couverture. La difference tient a l'enjeu : la-bas, une liste qui retrecit en silence retire une capacite ; ici, le pire cas est qu'un nouvel outil upstream soit visible, ce qui est le comportement normal du serveur. L'objectif n'est pas la couverture, c'est de retirer des fonctions dont l'operateur sait qu'il ne se sert pas.
 
-**Un outil DIFFERE coute son schema complet : `Available` ne veut pas dire gratuit.** Mesure du 2026-09-02, avant et apres redemarrage du serveur avec le filtre, sur la meme session Claude Code. La ligne `MCP tools (deferred)` de `/context` passe de 20,4k a 16,5k, soit -3,9k, et la somme par outil de la table AiDex passe de 10797 tokens sur 33 outils a 6737 sur 22, soit -4060. Les deux chemins concordent et reproduisent la prediction de 4123 a 1,5 pourcent pres.
+**Un outil DIFFERE coute son schema complet : `Available` ne veut pas dire gratuit.** Mesure du 2026-09-02, refaite contre l'API apres qu'une premiere preuve s'est revelee circulaire. Sur une session neuve (transcript `0018cce5`), `/context` annonce un total de 49,3k tokens, egal a la somme exacte de ses sept categories visibles, et aucune ligne `deferred` n'y entre. Le premier tour d'inference de la meme session rapporte pourtant `cache_creation_input_tokens` 60373 plus `cache_read_input_tokens` 21543, soit 81916 tokens d'entree reels. L'ecart de 32,6k, moins environ 2,7k de message utilisateur, laisse environ 29,9k que le total n'explique pas, a comparer aux 31,3k des deux lignes `deferred` (MCP 13,2k, system tools 18,1k) : concordance a 4,5 pourcent. La ligne `MCP tools` ne couvre que les outils CHARGES, verifie sur cette session par claude-peers 5375 plus kleos 1107 egale 6482, les 46 outils listes sous `Available` n'y figurant pas. Etiquetage : que le total `/context` exclut les `deferred` est MESURE ; que les ~30k soient les schemas differes est DEDUIT par concordance numerique, faute d'un A/B avec et sans `ENABLE_TOOL_SEARCH` sur la meme session.
 
-Ce que ce fait invalide : l'idee que le chargement differe (`ENABLE_TOOL_SEARCH`) dispense de payer les outils jamais appeles. Il change leur etiquette dans `/context`, pas leur cout. Un outil declare est donc paye a chaque session, appele ou non, et c'est ce qui rend le filtre rentable.
+**`/context` n'est pas un instrument de facturation.** Son total exclut les lignes `deferred`, donc il sous-compte le prompt reellement envoye. Toute mesure de cout de contexte se lit dans `usage.cache_creation_input_tokens` plus `usage.cache_read_input_tokens` du premier message assistant de `~/.claude/projects/<repo>/<session>.jsonl`. La premiere version de cette section invoquait "deux chemins independants", la ligne `MCP tools (deferred)` passant de 20,4k a 16,5k et la somme par outil passant de 10797 a 6737 : ces deux nombres sortent du MEME compteur `/context`, une vue agregee et une vue detaillee du meme instrument. Deux vues d'un meme compteur ne corroborent rien. C'est le piege deja decrit en section "Discipline de mesure", paye ici une troisieme fois.
+
+Ce que ce fait invalide : l'idee que le chargement differe (`ENABLE_TOOL_SEARCH`) dispense de payer les outils jamais appeles. Il change leur etiquette dans `/context`, et les retire meme de son total, sans rien changer a leur cout. Un outil declare est donc paye a chaque session, appele ou non, et c'est ce qui rend le filtre rentable.
 
 **Avant d'ajouter un outil, mesurer son cout.** Un nouvel outil ne se juge pas sur ce qu'il permet mais sur les tokens qu'il preleve sur chaque session, meme celles qui ne l'appellent jamais. Le tarif observe est de 4,2 a 4,5 octets de schema par token.
 
