@@ -16,7 +16,7 @@ below by hand.
    %USERPROFILE%\.claude\hooks\aidex_hook_common.py
    ```
    The source for all four is `hooks/claude/` in this repo (moved there from
-   the repo root in commit 5f1bc06 -- do not copy from the old root `hooks/`
+   the repo root in commit 6c66217 -- do not copy from the old root `hooks/`
    path). `aidex_hook_common.py` is required because `aidex-queue-edit.py`
    and `aidex-queue-drain.py` import it; `aidex-grep-nudge.py` is standalone.
 2. Open your real `%USERPROFILE%\.claude\settings.json` and merge the
@@ -76,7 +76,7 @@ gate any search.
   Windows command-line length limit) -- N edited files reindexed in a
   small number of process spawns instead of N.
 
-Measured costs (reviewer, card `b6760488`, commit `83ef31b`): 45-53ms per
+Measured costs (reviewer, card `b6760488`, commit `fca6184`): 45-53ms per
 edit for the PostToolUse queue append, 190-209ms for the Stop drain of a
 typical small batch -- about 0.7% of a 27s turn.
 

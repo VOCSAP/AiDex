@@ -71,7 +71,7 @@ Les pourcentages par langage ne sont **pas** dans cette reponse : elle est emise
 
 ### 1.4 Extraction des litteraux -- `src/parser/extractor.ts`, `src/parser/languages/index.ts`
 
-Regle retenue (`ruleId: strict+typepos`, **version 2 depuis le 2026-08-12**, commit `34532c8`) : **forme identifiant** ET (separateur `: - . _ /` OU espace unique OU casse mixte), OU mot minuscule seul en position `literal_type` / `jsx_attribute` / valeur de `pair`. `LITERAL_SHAPE` vaut desormais `/^[A-Za-z0-9_:.\-/ ]+$/`. Le nombre d'espaces interieurs n'est PAS borne : une phrase entiere qualifie. Ce qui est exclu, ce sont les suites de blancs et les tabulations, parce que `classifyPattern` normalise l'entree AVANT le test (voir 15) et qu'une suite ne survit donc jamais jusqu'a la regex.
+Regle retenue (`ruleId: strict+typepos`, **version 2 depuis le 2026-08-12**, commit `b29ee61`) : **forme identifiant** ET (separateur `: - . _ /` OU espace unique OU casse mixte), OU mot minuscule seul en position `literal_type` / `jsx_attribute` / valeur de `pair`. `LITERAL_SHAPE` vaut desormais `/^[A-Za-z0-9_:.\-/ ]+$/`. Le nombre d'espaces interieurs n'est PAS borne : une phrase entiere qualifie. Ce qui est exclu, ce sont les suites de blancs et les tabulations, parce que `classifyPattern` normalise l'entree AVANT le test (voir 15) et qu'une suite ne survit donc jamais jusqu'a la regex.
 
 **Effet du bump de version, a ne pas manquer en rebasant** : un index construit sous la regle 1 remonte `ruleOutdated: true` et **refuse** de repondre sur la dimension litterale plutot que de mentir sur ce qu'il contient (il ne detient aucun litteral multi-mots, par construction de l'ancienne garde). Ce refus est garde par `kinds.includes('literal')` (`src/commands/query.ts:145`) alors que le defaut de `kinds` reste `['symbol']` : aucune requete par defaut n'est cassee sur un index non reindexe. Voir section 15 pour le detail.
 
@@ -138,7 +138,7 @@ Raison qui tranche : l'oracle doit predire ce que la requete rendra REELLEMENT. 
 
 Si un levier devient necessaire, il va **par projet** dans les metadata de l'index, jamais par variable d'environnement -- c'est deja la forme maison (`embeddings`, `llm_send_code`).
 
-**Contradiction apparente a resoudre explicitement, pour qu'un futur mainteneur ne croie ni que ce principe est mort, ni qu'il a ete viole** : le commit `16d8512` (section 16) introduit bien une variable d'environnement, `AIDEX_INIT_SUCCESS_MODE`, renommee `AIDEX_SUCCESS_MODE` par la carte `bfb7bf8f` (l'ancien nom reste un alias de compatibilite, voir section 16). Le principe ci-dessus reste entier, parce que la frontiere qu'il protege n'est pas celle que cette variable traverse. `AIDEX_SUCCESS_MODE` ne touche ni la regle d'indexation (`literalQualifies` / `classifyPattern`), ni le defaut de `kinds`, ni rien de ce que l'oracle de couverture PREDIT -- ces trois-la restent sans aucun levier. Elle change uniquement la facon dont `init()` **rapporte** un echec par fichier deja collecte dans `errors[]`, une decision orthogonale a ce que l'index contient ou a ce qu'une requete y trouvera. Predire un resultat de requete et rapporter le succes d'une commande sont deux promesses differentes ; seule la premiere est couverte par l'interdiction ci-dessus.
+**Contradiction apparente a resoudre explicitement, pour qu'un futur mainteneur ne croie ni que ce principe est mort, ni qu'il a ete viole** : le commit `1e20302` (section 16) introduit bien une variable d'environnement, `AIDEX_INIT_SUCCESS_MODE`, renommee `AIDEX_SUCCESS_MODE` par la carte `bfb7bf8f` (l'ancien nom reste un alias de compatibilite, voir section 16). Le principe ci-dessus reste entier, parce que la frontiere qu'il protege n'est pas celle que cette variable traverse. `AIDEX_SUCCESS_MODE` ne touche ni la regle d'indexation (`literalQualifies` / `classifyPattern`), ni le defaut de `kinds`, ni rien de ce que l'oracle de couverture PREDIT -- ces trois-la restent sans aucun levier. Elle change uniquement la facon dont `init()` **rapporte** un echec par fichier deja collecte dans `errors[]`, une decision orthogonale a ce que l'index contient ou a ce qu'une requete y trouvera. Predire un resultat de requete et rapporter le succes d'une commande sont deux promesses differentes ; seule la premiere est couverte par l'interdiction ci-dessus.
 
 ---
 
@@ -225,7 +225,7 @@ Ordre de PR = ordre de livraison, du moins engageant au plus opinione.
 
 ---
 
-## 9. Reorganisation de `hooks/` -- commit `5f1bc06`
+## 9. Reorganisation de `hooks/` -- commit `6c66217`
 
 `hooks/aidex-grep-nudge.py` deplace en `hooks/claude/aidex-grep-nudge.py` par `git mv`, creation de `hooks/git/`. Motif : deux familles de hooks allaient cohabiter, hooks Claude Code et hooks git, avec des mecanismes d'installation et des contrats d'entree/sortie sans rapport.
 
@@ -235,7 +235,7 @@ Cinq references internes au depot portaient le chemin en dur et ont ete corrigee
 
 ---
 
-## 10. Sous-commande CLI `update` -- commits `a7293de`, puis durcissements `3a79c86` et `d30abf3`
+## 10. Sous-commande CLI `update` -- commits `c1686bf`, puis durcissements `292cc5b` et `76abd74`
 
 Expose `node build/index.js update <project> <file...>`. La logique existait deja cote MCP dans `src/commands/update.ts` ; le patch l'expose au CLI, il ne la reecrit pas. **Raison d'etre** : prerequis bloquant des deux mecanismes de reindexation automatique (sections 11 et 12), un hook git ne pouvant pas appeler un outil MCP.
 
@@ -244,8 +244,8 @@ Expose `node build/index.js update <project> <file...>`. La logique existait dej
 Mesures a citer : spawn a vide 58 ms, un fichier reel 148 ms, vingt fichiers en un seul spawn 356 ms contre 2925 ms en vingt spawns, soit un facteur 8,2. L'ecart entre spawn a vide et spawn utile, environ 90 ms, est le chargement des addons natifs tree-sitter et better-sqlite3, pas le demarrage de Node.
 
 Deux passes de durcissement apres revue, a documenter comme telles :
-- `3a79c86` a ajoute un try/catch de boucle (une base illisible faisait sortir en code 1 avec une trace de pile et abandonnait le reste du lot, parce que `withDatabase` ouvre la base AVANT son try), un garde-fou unique de normalisation des chemins qui ecarte tout chemin hors projet et referme du meme coup les cas cross-volume et UNC, et une resolution de la casse reelle sous Windows.
-- `d30abf3` a corrige un `break` devenu du code mort (il etait branche dans le `catch` alors que l'erreur de verrou remonte dans la valeur de retour, pas en exception) et un doublon de ligne en base sur un renommage de casse pure.
+- `292cc5b` a ajoute un try/catch de boucle (une base illisible faisait sortir en code 1 avec une trace de pile et abandonnait le reste du lot, parce que `withDatabase` ouvre la base AVANT son try), un garde-fou unique de normalisation des chemins qui ecarte tout chemin hors projet et referme du meme coup les cas cross-volume et UNC, et une resolution de la casse reelle sous Windows.
+- `76abd74` a corrige un `break` devenu du code mort (il etait branche dans le `catch` alors que l'erreur de verrou remonte dans la valeur de retour, pas en exception) et un doublon de ligne en base sur un renommage de casse pure.
 
 Mesure du correctif de verrou : 16638 ms avant contre 5652 ms apres sur un lot de trois fichiers sous verrou reel.
 
@@ -253,7 +253,7 @@ Mesure du correctif de verrou : 16638 ms avant contre 5652 ms apres sur un lot d
 
 ---
 
-## 11. Hooks git de reindexation -- commit `ee71aa2`
+## 11. Hooks git de reindexation -- commit `6b48687`
 
 Quatre hooks dans `hooks/git/` (`post-commit`, `post-merge`, `post-checkout`, `post-rewrite`), plus `aidex-reindex-common.sh` et un `README.md`. Installation MANUELLE assumee, l'operateur etant seul sur le fork : ce commit ne touche aucune configuration git globale.
 
@@ -267,7 +267,7 @@ Resolution d'interpreteur reprise du hook de nudge existant (section 2), sans au
 
 ---
 
-## 12. Hooks Claude Code de reindexation -- commits `83ef31b`, `1d4a74a`, `4a05ec1`
+## 12. Hooks Claude Code de reindexation -- commits `fca6184`, `dbdd9d5`, `4c84ef5`
 
 Deux hooks dans `hooks/claude/` (`aidex-queue-edit.py`, `aidex-queue-drain.py`) plus un module commun (`aidex_hook_common.py`). `PostToolUse`, matcher `Edit|Write`, se contente d'ajouter une ligne dans un fichier de file d'attente scope par session et ne lance aucun Node. `Stop` lit la file, dedoublonne, groupe par projet et lance un seul appel du CLI `update` par groupe, par tranches de 100 fichiers (`CHUNK_SIZE`, contre la limite argv de `CreateProcess` sous Windows).
 
@@ -281,19 +281,19 @@ Deux hooks dans `hooks/claude/` (`aidex-queue-edit.py`, `aidex-queue-drain.py`) 
 
 Mesures a citer, prises avec un vrai Claude Code : `PostToolUse` 45 a 53 ms par edition, `Stop` 190 a 209 ms, soit 0,7 pour cent d'un tour de 27 secondes. Sous verrou tenu le tour paie 3,07 s. Un lot de 403 fichiers donne 5 spawns et 1,18 s. Un tour a trois editions donne exactement un spawn.
 
-`1d4a74a` corrige en plus trois defauts trouves en revue (stdin malforme non-dict, `session_id` non-chaine, `subprocess.TimeoutExpired` avale par un `except` generique qui retentait sur chaque entree de `NODE_CANDIDATES`) et bascule la reecriture de la file sur `tempfile` + `os.replace` pour l'atomicite.
+`dbdd9d5` corrige en plus trois defauts trouves en revue (stdin malforme non-dict, `session_id` non-chaine, `subprocess.TimeoutExpired` avale par un `except` generique qui retentait sur chaque entree de `NODE_CANDIDATES`) et bascule la reecriture de la file sur `tempfile` + `os.replace` pour l'atomicite.
 
-`4a05ec1` ajoute `hooks/claude/settings.json.template` (et sa documentation `settings.json.template.md`), modele de ce que l'utilisateur doit ajouter a son `settings.json`.
+`4c84ef5` ajoute `hooks/claude/settings.json.template` (et sa documentation `settings.json.template.md`), modele de ce que l'utilisateur doit ajouter a son `settings.json`.
 
 ---
 
-## 13. Tests ajoutes -- commits `f90af5b`, `18e9201`, `cea76ca`
+## 13. Tests ajoutes -- commits `0774b08`, `b5ea99f`, `458ca83`
 
-- `f90af5b` : corpus de requetes de reference sous `tests/fixtures/query-corpus.json` et son harnais de rejeu `tests/query-corpus.test.js`, 30 requetes en trois familles (identifiant, multi-mot, `contains`), verite terrain etablie par grep. Il produit des chiffres comparables avant et apres un changement de classement, pas un simple vert ou rouge.
-- `18e9201` : suite de regression de la sous-commande CLI `update` (`tests/cli-update.test.js`), 17 cas, incluant les quatre voies d'echappement hors projet (relatif, absolu, cross-drive, UNC), la base corrompue, le renommage de casse pure et le lot mixte.
-- `cea76ca` : test de contrat (`tests/cli-update-summary-contract.test.js`) sur le format de la ligne de synthese, qui verrouille le couplage par le texte decrit en section 12.
-- `0d2c7e4` : `tests/whitespace-tolerance.test.js`, 20 cas, sur la tolerance a la difference d'espacement des litteraux multi-mots (section 15). Preuve par mutation, raison d'etre du fichier : neutraliser la normalisation cote REQUETE fait rougir 11 cas, neutraliser la normalisation cote INDEXATION en fait rougir exactement 3, les deux ensembles etant disjoints et couvrant ensemble les 14 cas sensibles a la normalisation. C'est ce qui prouve que les deux points d'appel (`extractor.ts` et `db/queries.ts`) sont tous les deux porteurs de la garantie, ce qu'une suite verte seule ne prouve pas -- une suite verte est aussi compatible avec un seul des deux points d'appel qui ferait tout le travail.
-- `16d8512` : `tests/init-success-modes.test.js`, 23 cas, sur le contrat de succes de `init()` (section 16) : `resolveInitSuccessMode` (6, renommee `resolveSuccessMode` par `bfb7bf8f`), `computeInitSuccess` en table de decision pure pour les trois modes (11), et trois suites de bout en bout a travers le vrai `init()` (6).
+- `0774b08` : corpus de requetes de reference sous `tests/fixtures/query-corpus.json` et son harnais de rejeu `tests/query-corpus.test.js`, 30 requetes en trois familles (identifiant, multi-mot, `contains`), verite terrain etablie par grep. Il produit des chiffres comparables avant et apres un changement de classement, pas un simple vert ou rouge.
+- `b5ea99f` : suite de regression de la sous-commande CLI `update` (`tests/cli-update.test.js`), 17 cas, incluant les quatre voies d'echappement hors projet (relatif, absolu, cross-drive, UNC), la base corrompue, le renommage de casse pure et le lot mixte.
+- `458ca83` : test de contrat (`tests/cli-update-summary-contract.test.js`) sur le format de la ligne de synthese, qui verrouille le couplage par le texte decrit en section 12.
+- `0bd504c` : `tests/whitespace-tolerance.test.js`, 20 cas, sur la tolerance a la difference d'espacement des litteraux multi-mots (section 15). Preuve par mutation, raison d'etre du fichier : neutraliser la normalisation cote REQUETE fait rougir 11 cas, neutraliser la normalisation cote INDEXATION en fait rougir exactement 3, les deux ensembles etant disjoints et couvrant ensemble les 14 cas sensibles a la normalisation. C'est ce qui prouve que les deux points d'appel (`extractor.ts` et `db/queries.ts`) sont tous les deux porteurs de la garantie, ce qu'une suite verte seule ne prouve pas -- une suite verte est aussi compatible avec un seul des deux points d'appel qui ferait tout le travail.
+- `1e20302` : `tests/init-success-modes.test.js`, 23 cas, sur le contrat de succes de `init()` (section 16) : `resolveInitSuccessMode` (6, renommee `resolveSuccessMode` par `bfb7bf8f`), `computeInitSuccess` en table de decision pure pour les trois modes (11), et trois suites de bout en bout a travers le vrai `init()` (6).
 - `bfb7bf8f` : extension du meme fichier -- `resolveSuccessMode(raw, legacyRaw)` sur les deux noms de variable et leur alias, `rebuild-index` de bout en bout via CLI (`tests/init-success-modes.test.js`), et `printIndexWarnings` sur un `errors[]` fabrique (`tests/cli-warnings.test.js`, 5 cas).
 
 Total de la suite apres ces ajouts : **177 tests** (9 fichiers de test), contre 118 avant (section 14).
@@ -302,9 +302,9 @@ Total de la suite apres ces ajouts : **177 tests** (9 fichiers de test), contre 
 
 ---
 
-## 14. Prefiltre trigramme -- tente puis REVERTE (commits `e7a0c8d` puis `7ca37e2`)
+## 14. Prefiltre trigramme -- tente puis REVERTE (commits `7d29e98` puis `bd76216`)
 
-Patch tente sur `src/db/queries.ts` (mode `contains` de `aidex_query`), puis reverte sur decision de l'operateur par le commit `7ca37e2` (382 lignes retirees, `tests/trigram-prefilter.test.js` supprime avec). Suite complete : 118 tests verts apres revert, contre 134 avant -- l'ecart correspond aux 16 tests du prefilter partis avec le patch.
+Patch tente sur `src/db/queries.ts` (mode `contains` de `aidex_query`), puis reverte sur decision de l'operateur par le commit `bd76216` (382 lignes retirees, `tests/trigram-prefilter.test.js` supprime avec). Suite complete : 118 tests verts apres revert, contre 134 avant -- l'ecart correspond aux 16 tests du prefilter partis avec le patch.
 
 **Ecart carte / implementation.** La carte de tracage prescrivait un index trigramme FTS5 persiste dans SQLite. L'implementation livree etait une Map JavaScript en memoire. L'ecart n'a ete detecte qu'a la revue, parce que la chaine de supervision a lu les mesures rapportees et non le code.
 
@@ -326,7 +326,7 @@ Le gain rapporte par l'auteur, 0.40 ms contre 2.20 ms, etait reel mais mesure da
 
 ---
 
-## 15. Litteraux multi-mots -- commits `34532c8`, `0d2c7e4`, `2c4eb99` (carte `f08aeeb1`)
+## 15. Litteraux multi-mots -- commits `b29ee61`, `0bd504c`, `9832f08` (carte `f08aeeb1`)
 
 Carte scindee de `10096483` sur decision de l'operateur du 2026-08-11, apres mesure refutant la premisse initiale (le blocage multi-mots etait cote indexation, dans la garde de `classifyPattern`, pas cote requete).
 
@@ -334,7 +334,7 @@ Carte scindee de `10096483` sur decision de l'operateur du 2026-08-11, apres mes
 
 Phrase exacte, sous-chaine CONTIGUE, prefixe, casse differente, et **tolerance aux differences d'espacement** (double espace, tabulation, indentation, padding en debut/fin) -- dans les trois modes `exact`, `contains` et `starts_with`. Le mecanisme est une forme canonique unique, `normalizeLiteralWhitespace` (`src/coverage/rule.ts`) : collapse toute suite de blancs en un seul espace, puis trim. Elle est appliquee aux **deux bouts du meme pipe** : `src/parser/extractor.ts` a l'indexation (le terme ECRIT dans l'index est deja la forme canonique, pas seulement teste contre elle), `src/db/queries.ts` (`countItems`, `searchItems`) et `src/commands/global/global-query.ts` a la requete.
 
-**Piege a ne jamais reintroduire** : un index canonicalise interroge par une requete brute produit des silences invisibles -- exactement le defaut corrige par `0d2c7e4`, voir plus bas. Toute nouvelle voie de lecture ou d'ecriture des litteraux doit passer par cette meme fonction, aucune autre normalisation locale.
+**Piege a ne jamais reintroduire** : un index canonicalise interroge par une requete brute produit des silences invisibles -- exactement le defaut corrige par `0bd504c`, voir plus bas. Toute nouvelle voie de lecture ou d'ecriture des litteraux doit passer par cette meme fonction, aucune autre normalisation locale.
 
 ### Ce qui ne marche toujours pas, PAR DESIGN
 
@@ -346,7 +346,7 @@ Apres reindexation complete de ce depot : **6397 items avant, 6749 apres**, dont
 
 Cause probable, **non mesuree, a traiter comme telle** : `LITERAL_SHAPE` (voir section 1.4) n'admet que `[A-Za-z0-9_:.\-/ ]`, donc tout litteral portant une virgule, une parenthese ou une apostrophe reste rejete -- ce que le script jetable de la prevision ne modelisait vraisemblablement pas. Meme lecon de methode que la section 7 : un chiffre de prevision batie sur un script hors-production, non confronte au code de production reel, se trompe d'un facteur significatif.
 
-### Deux defauts trouves en revue -- `0d2c7e4`, tous deux des reponses fausses se presentant comme vraies
+### Deux defauts trouves en revue -- `0bd504c`, tous deux des reponses fausses se presentant comme vraies
 
 1. **`global-query.ts` passait le terme BRUT** a `buildItemSearch` et a `getCacheKey`, donc la recherche multi-projets ratait ce que la mono-projet trouvait des que l'espacement de la requete differait de la source. Mesure sur quatre orthographes : **1/0/0/0** cote multi-projets contre **1/1/1/1** cote mono-projet, avant correctif. Corrige en appliquant `normalizeLiteralWhitespace` au terme avant `buildItemSearch` et avant le calcul de la cle de cache (deux orthographes en espacement d'une meme requete partagent desormais une seule entree, au lieu de payer chacune un scan complet).
    **Lecon generale, plus large que ce bug** : l'ECRITURE (l'indexation) n'avait qu'un seul chemin, la LECTURE (la requete) en avait quatre (`query.ts` mono-projet x3 modes en interne, plus `global-query.ts`). Une garantie dite "structurelle par point de passage unique" ne l'est que si elle a ete verifiee contre TOUS les chemins de lecture, pas seulement celui qu'on vient de modifier.
@@ -354,7 +354,7 @@ Cause probable, **non mesuree, a traiter comme telle** : `LITERAL_SHAPE` (voir s
 
 ### Fait mesure non evident : la portee reelle de la restriction `below`
 
-La restriction positionnelle `below` (litteral indexe seulement en position `literal_type`/`jsx_attribute`/valeur de `pair`, voir section 1.4) ne s'applique en pratique qu'aux phrases **tout en minuscules et sans ponctuation**. Toute phrase avec un separateur ou une majuscule resout deja `above` et est indexee sans condition de position -- ce qui couvre la quasi-totalite des phrases anglaises ordinaires : "Failed to load config" et "Error while loading" tombent en `above` via `isMixedCase`, dans toutes les positions. La regle elle-meme est inchangee par ce patch ; seule sa portee pratique est desormais documentee dans le code (`2c4eb99`).
+La restriction positionnelle `below` (litteral indexe seulement en position `literal_type`/`jsx_attribute`/valeur de `pair`, voir section 1.4) ne s'applique en pratique qu'aux phrases **tout en minuscules et sans ponctuation**. Toute phrase avec un separateur ou une majuscule resout deja `above` et est indexee sans condition de position -- ce qui couvre la quasi-totalite des phrases anglaises ordinaires : "Failed to load config" et "Error while loading" tombent en `above` via `isMixedCase`, dans toutes les positions. La regle elle-meme est inchangee par ce patch ; seule sa portee pratique est desormais documentee dans le code (`9832f08`).
 
 ### Le hook `aidex-grep-nudge` n'est pas affecte
 
@@ -366,7 +366,7 @@ Son pre-filtre `CANDIDATE_RE` (section 2) n'admet pas l'espace : un pattern mult
 
 ---
 
-## 16. Contrat de succes de `init()` -- commit `16d8512` (carte `a7039829`)
+## 16. Contrat de succes de `init()` -- commit `1e20302` (carte `a7039829`)
 
 ### Le defaut n'etait pas l'indexation, c'etait le RAPPORT
 
@@ -397,7 +397,7 @@ Voir aussi 1.9 pour la resolution explicite de la contradiction apparente avec l
 
 ---
 
-## 17. Infrastructure de test -- commit `f0f6ee1` (carte `39e02f07`)
+## 17. Infrastructure de test -- commit `8f68a3a` (carte `39e02f07`)
 
 Piege qui a coute trois rapports de diagnostic dont deux avec une cause racine fausse avant d'etre identifie.
 

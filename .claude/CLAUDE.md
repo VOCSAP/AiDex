@@ -10,7 +10,7 @@ Ce repo est un fork local `VOCSAP/AiDex`, base sur `CSCSoftware/AiDex`. Voir `gi
 - `origin` : `VOCSAP/AiDex` (publique du fork)
 - `upstream` : `CSCSoftware/AiDex` (auteur d'origine, suivi pour pull les nouvelles features)
 
-Patches locaux versionnes sur la branche `local-patches`. Notes de developpement privees au fork sous `docs/dev-notes/` (exclus de git via `.gitignore` -- commit `e3dff85`).
+Patches locaux versionnes sur la branche `local-patches`. Notes de developpement privees au fork sous `docs/dev-notes/` (exclus de git via `.gitignore` -- commit `f2ad5bf`).
 
 ## Doctrine de developpement
 
@@ -52,8 +52,8 @@ fermer la piste.
    densite utile sous le plafond de 100 lignes ? Si elle ne fait ni l'un ni l'autre,
    elle ne vaut rien, quel que soit le nombre d'items qu'elle ajoute.
 2. **Le besoin est-il MESURE, ou seulement plausible ?** Ce projet a paye un revert
-   complet pour une feature ajoutee sans besoin mesure (prefilter trigramme, `e7a0c8d`
-   puis `7ca37e2`).
+   complet pour une feature ajoutee sans besoin mesure (prefilter trigramme, `7d29e98`
+   puis `bd76216`).
 3. **Le residu vise est-il du signal ou du bruit ?** Mesurer avant de coder, sur un
    corpus reel, avec un echantillon aleatoire lu verbatim.
 4. **Le defaut choisi sera-t-il fige dans la surface MCP ?** Si oui, il doit etre
