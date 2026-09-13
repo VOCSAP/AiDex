@@ -284,7 +284,10 @@ lignes, payés à chaque session de chaque projet. Il cite les 11 outils de
 `links`, `task`, `log`, `note`), et contient un tableau « All Tools (30) ». Que ce
 bloc soit effectivement installé sur le poste n'est pas vérifiable depuis ce
 conteneur ; s'il l'est, c'est le plus gros texte AiDex du contexte, et il est
-périmé depuis le filtre du 2026-09-02.
+périmé depuis le filtre du 2026-09-02. Précision de l'opérateur le 2026-09-13 : le
+bloc n'est PAS porté dans son CLAUDE.md global. Le constat vaut donc pour le code de
+`setup`, pas pour l'état du poste ; l'inventaire de ce qui y est réellement configuré
+est la première étape de la reprise (§11).
 
 Décision proposée : réduire ce bloc à la notice de §6.3, et déplacer le catalogue
 dans un **skill** `aidex-cli`. Un skill coûte une ligne de description par session
@@ -373,3 +376,24 @@ sauf mesure contraire. C'est la décision D1.
   `docs/plans/candidate-import-call-edges.md`.
 - Méthode A/B de référence (externe) : `bench/agent-task-runner` dans
   `iliaal/codesage`.
+
+---
+
+## 11. Reprise sur le poste : inventaire avant mesure
+
+La session du 2026-09-13 s'est tenue dans un conteneur distant, sans accès à la
+configuration globale du poste ni à la trace. La reprise commence par un inventaire
+MESURÉ de ce qui est configuré aujourd'hui, avant la Phase 0 (§3) :
+
+1. `~/.claude/CLAUDE.md` : présence ou non d'un bloc AiDex, sa taille en octets.
+2. `~/.claude/settings.json` et le `settings.json` du projet : hooks installés
+   (événements, matchers, scripts), comparés à `hooks/claude/settings.json.template`.
+3. Skills présents sous `~/.claude/skills/` : existe-t-il un skill `aidex` ?
+4. Enregistrement MCP du serveur `aidex` : commande, `AIDEX_TOOLS_DISABLE`, nombre
+   d'outils annoncés au `tools/list` de la session courante (`/context`).
+5. Corpus de trace : emplacement et volume (`.claude/CLAUDE.local.md`), pour que la
+   Phase 0 sache sur quoi elle mesure.
+6. Binaire Node du poste et version, pour tout wrapper `aidex test`.
+
+Le rapport d'inventaire s'ajoute à ce plan en section 0, sur le modèle de
+`lsp-daemon-plan.md`, avant toute mesure et avant tout code.
