@@ -51,7 +51,7 @@ modèle à reproduire.
 | # | Question | Décision | Raison |
 |---|----------|----------|--------|
 | D1 | Outils MCP ou sous-commandes CLI ? | **CLI, sous le binaire `aidex` existant** (`aidex read`, `aidex git`, `aidex test`, `aidex build`). Pas de binaire séparé type `wrap-git`. | Un outil MCP déclaré coûte son schéma à chaque session, appelé ou non (mesure du 2026-09-02, 4,2 à 4,5 octets par token). Une sous-commande CLI ne coûte rien tant qu'elle n'est pas lancée. Un seul binaire réutilise `src/commands/` et la même DB, sans doublon. |
-| D2 | Comment l'agent apprend-il à s'en servir ? | **Par le refus d'un hook PreToolUse**, dont le message contient la commande exacte à relancer. Aucune notice permanente dans CLAUDE.md ni dans le bloc `instructions` du serveur MCP. | La notice n'est payée qu'au moment où elle sert, une fois par session en pratique. C'est le levier C du steering « AiDex over Grep », étendu à la lecture, à git et aux tests. |
+| D2 | Comment l'agent apprend-il à s'en servir ? | **Par le refus d'un hook PreToolUse**, dont le message contient la commande exacte à relancer. Rien dans le bloc `instructions` du serveur MCP. Une seule notice permanente, courte, dans le CLAUDE.md global du poste (§6.3), plafonnée à une centaine de tokens. | La notice complète n'est payée qu'au moment où elle sert. La phrase globale est un pari peu coûteux pour éviter des refus ; le hook reste la garantie : CodeSage a mesuré qu'une consigne CLAUDE.md seule ne déplace pas le choix d'outil (0 sur 10, `codesage-prompt-override.md`). |
 | D3 | Le hook `Read` remplace-t-il `Read` ? | **Non. Il force un `Read` BORNÉ.** Refus d'un `Read` sans `offset`/`limit` sur un fichier indexé au-dessus d'un seuil ; le message de refus donne le plan du fichier et l'appel `Read` borné à refaire. | `Edit` exige un `Read` préalable du fichier dans la conversation. Détourner `Read` vers un autre outil casserait `Edit`. |
 | D4 | Bloquer tout `git` ? | **Non.** Bloquer seulement les formes qui déversent des hunks : `git diff` nu, `git show`, `git log -p`. `--stat`, `--name-only`, `--oneline` passent. | Ces formes sont déjà denses ; les bloquer coûterait un aller-retour pour rien. |
 | D5 | Sortie de secours | **Toujours.** `aidex git diff --raw` passe tout ; `aidex test --show <n>` rend un échec complet ; la sortie brute est toujours écrite sur disque et le digest se termine par son chemin. | Sans échappatoire explicite, le modèle contourne (`cat`, `git` déguisé dans un script), ce que le hook grep a précisément appris à éviter. |
@@ -193,12 +193,75 @@ C'est un gain indépendant des tokens, à ne pas confondre avec lui dans le bila
 
 ## 6. Conséquence sur la surface MCP
 
-Tout outil MCP dont l'appelant réel est un hook, pas l'agent, peut rejoindre
-`DEFAULT_DISABLED_TOOLS` (`src/server/tools.ts`). Candidat évident :
-`aidex_coverage`, que le hook grep appelle déjà via `aidex can` et dont le verdict
-est déjà inliné par `aidex_query` sur un résultat vide (`noticeFor`). À confirmer par
-le compte d'appels agent dans la trace avant de le retirer : la deny-list échoue
-ouvert, retirer un outil que l'agent appelle serait une régression visible.
+### 6.1 Critère
+
+Un outil reste MCP si son résultat nourrit le raisonnement suivant de l'agent et
+s'il est appelé souvent au fil d'une session. Un outil passe en CLI s'il est
+déterministe et relève de l'administration de l'index, de la configuration, ou d'un
+appelant qui n'est pas l'agent (hook). Le passage en CLI se fait en deux temps :
+sous-commande `aidex` si elle n'existe pas, puis ajout à `DEFAULT_DISABLED_TOOLS`
+(`src/server/tools.ts`). Le bras de `handleToolCall` reste ; le filtre est purement
+soustractif sur `tools/list`, donc un client qui appelle l'outil par son nom obtient
+toujours sa réponse.
+
+Condition avant chaque retrait : le compte d'appels agent dans la trace. La
+deny-list échoue ouvert ; retirer un outil que l'agent appelle serait une régression
+visible.
+
+### 6.2 Candidats, état au 2026-09-13
+
+Unité : octets de source TypeScript de l'objet de définition dans `src/server/tools.ts`
+(commentaires et indentation inclus, donc supérieure au JSON réellement envoyé).
+MESURÉ par appariement d'accolades sur les 33 objets. La même unité est appliquée
+aux deux côtés, donc le pourcentage est légitime ; aucun de ces nombres ne se
+compare au 10,8k tokens de la mesure du 2026-09-02, qui est une autre unité.
+
+Surface annoncée aujourd'hui : 22 outils, 27 745 octets. Les 14 candidats CLI
+pèsent 15 769 octets, soit 57 pourcent de la surface annoncée.
+
+| Outil | Octets | CLI existant | Destination | Pourquoi |
+|-------|-------:|--------------|-------------|----------|
+| `screenshot` | 3 083 | non | `aidex screenshot` | Rend déjà un chemin de fichier pour `Read`, pas une image : un CLI qui écrit le PNG et imprime le chemin est strictement équivalent. |
+| `init` | 2 170 | `aidex init` | deny-list | Cycle de vie de l'index, geste opérateur. |
+| `global_init` | 1 828 | `aidex global-init` | deny-list | Idem, DB globale. |
+| `coverage` | 1 362 | `aidex can` | deny-list | Appelant réel : le hook grep. `aidex_query` inline déjà le verdict sur résultat vide (`noticeFor`). |
+| `settings` | 974 | non | `aidex settings` | Configuration par projet, geste opérateur. |
+| `global_status` | 844 | non | `aidex global-status` | Administration. |
+| `scan` | 836 | `aidex scan` | deny-list | Découverte de projets à lier, geste opérateur. |
+| `global_refresh` | 793 | non | `aidex global-refresh` | Administration. |
+| `viewer` | 760 | `aidex viewer` | deny-list | Ouvre une UI pour l'humain. |
+| `remove` | 696 | non | `aidex remove` | Cycle de vie. |
+| `update` | 689 | `aidex update` | deny-list | Appelant réel : les hooks git et Stop. |
+| `session` | 632 | non | **hook `SessionStart`** | La sortie de `aidex session start` est injectée dans le contexte par le hook, au seul moment où elle sert. Zéro outil, zéro appel agent. |
+| `windows` | 604 | non | `aidex windows` | Compagnon de `screenshot`. |
+| `status` | 498 | non | `aidex status` | Orientation ponctuelle ; ce que `summary` ne couvre pas peut y être fusionné. |
+
+Restent MCP (11 976 octets) : `query`, `edges`, `signature`, `signatures`, `search`,
+`summary`, `tree`, `files`. Les deux derniers sont à mesurer contre `Glob` et `ls`
+avant de trancher ; ils ne sont pas administratifs, donc hors de ce lot.
+
+Deux réserves. `screenshot` et `windows` : vérifier dans la trace qu'ils ne sont pas
+appelés en boucle serrée (capture, lecture, capture) ; si oui, l'aller-retour Bash
+puis `Read` coûte deux appels au lieu d'un et le gain de schéma ne compense pas.
+`session` : vérifier que le harness injecte bien le stdout d'un hook `SessionStart`
+dans le contexte de l'agent (DÉDUIT de la documentation des hooks, non mesuré ici).
+
+### 6.3 Notice dans le CLAUDE.md global du poste
+
+Une seule, courte, hors dépôt (`~/.claude/CLAUDE.md`), payée à chaque session, donc
+plafonnée à une centaine de tokens. Proposition :
+
+```markdown
+## AiDex en CLI
+Dans un projet indexé (`.aidex/`), préférer `aidex` aux commandes brutes :
+`aidex outline <fichier>` avant un Read entier, `aidex git diff [ref]` au lieu de
+`git diff` / `git show`, `aidex test` et `aidex build` au lieu de `npm test` / `tsc`.
+Même information, sortie condensée, brut conservé sous `.aidex/runs/`. Les hooks
+refusent les formes brutes ; `aidex --help` liste le reste.
+```
+
+Elle n'est écrite qu'une fois les sous-commandes livrées : une consigne qui pointe
+vers une commande absente apprend au modèle à ignorer la consigne.
 
 Aucun des wrappers de ce plan ne devient un outil MCP, ni maintenant ni plus tard,
 sauf mesure contraire. C'est la décision D1.
