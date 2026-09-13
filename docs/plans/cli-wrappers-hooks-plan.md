@@ -216,12 +216,13 @@ MESURÉ par appariement d'accolades sur les 33 objets. La même unité est appli
 aux deux côtés, donc le pourcentage est légitime ; aucun de ces nombres ne se
 compare au 10,8k tokens de la mesure du 2026-09-02, qui est une autre unité.
 
-Surface annoncée aujourd'hui : 22 outils, 27 745 octets. Les 14 candidats CLI
-pèsent 15 769 octets, soit 57 pourcent de la surface annoncée.
+Surface annoncée aujourd'hui : 22 outils, 27 745 octets. Les 12 candidats CLI
+pèsent 12 082 octets, soit 44 pourcent de la surface annoncée (`screenshot` et
+`windows`, 3 687 octets, restent MCP depuis la reclassification du §6.4).
 
 | Outil | Octets | CLI existant | Destination | Pourquoi |
 |-------|-------:|--------------|-------------|----------|
-| `screenshot` | 3 083 | non | `aidex screenshot` | Rend déjà un chemin de fichier pour `Read`, pas une image : un CLI qui écrit le PNG et imprime le chemin est strictement équivalent. |
+| `screenshot` | 3 083 | non | **reste MCP**, à dégraisser ou à fusionner avec `windows` | Reclassé le 2026-09-13 (§6.4) : geste à l'initiative de l'agent, sans situation déclenchante. Sa définition MCP est son seul point de découverte. Plus grosse définition annoncée : dégraisser les descriptions de paramètres. |
 | `init` | 2 170 | `aidex init` | deny-list | Cycle de vie de l'index, geste opérateur. |
 | `global_init` | 1 828 | `aidex global-init` | deny-list | Idem, DB globale. |
 | `coverage` | 1 362 | `aidex can` | deny-list | Appelant réel : le hook grep. `aidex_query` inline déjà le verdict sur résultat vide (`noticeFor`). |
@@ -233,18 +234,72 @@ pèsent 15 769 octets, soit 57 pourcent de la surface annoncée.
 | `remove` | 696 | non | `aidex remove` | Cycle de vie. |
 | `update` | 689 | `aidex update` | deny-list | Appelant réel : les hooks git et Stop. |
 | `session` | 632 | non | **hook `SessionStart`** | La sortie de `aidex session start` est injectée dans le contexte par le hook, au seul moment où elle sert. Zéro outil, zéro appel agent. |
-| `windows` | 604 | non | `aidex windows` | Compagnon de `screenshot`. |
+| `windows` | 604 | non | **reste MCP**, fusion dans `screenshot` (`action: list`) | Même raison que `screenshot`. Une seule définition au lieu de deux. |
 | `status` | 498 | non | `aidex status` | Orientation ponctuelle ; ce que `summary` ne couvre pas peut y être fusionné. |
 
-Restent MCP (11 976 octets) : `query`, `edges`, `signature`, `signatures`, `search`,
-`summary`, `tree`, `files`. Les deux derniers sont à mesurer contre `Glob` et `ls`
-avant de trancher ; ils ne sont pas administratifs, donc hors de ce lot.
+Restent MCP (15 663 octets) : `query`, `edges`, `signature`, `signatures`, `search`,
+`summary`, `tree`, `files`, `screenshot`, `windows`. `tree` et `files` sont à mesurer
+contre `Glob` et `ls` avant de trancher ; ils ne sont pas administratifs, donc hors
+de ce lot.
 
-Deux réserves. `screenshot` et `windows` : vérifier dans la trace qu'ils ne sont pas
-appelés en boucle serrée (capture, lecture, capture) ; si oui, l'aller-retour Bash
-puis `Read` coûte deux appels au lieu d'un et le gain de schéma ne compense pas.
-`session` : vérifier que le harness injecte bien le stdout d'un hook `SessionStart`
-dans le contexte de l'agent (DÉDUIT de la documentation des hooks, non mesuré ici).
+Réserve sur `session` : vérifier que le harness injecte bien le stdout d'un hook
+`SessionStart` dans le contexte de l'agent (DÉDUIT de la documentation des hooks,
+non mesuré ici).
+
+### 6.4 Découvrabilité : comment l'agent apprend qu'une commande CLI existe
+
+Objection de l'opérateur (2026-09-13) : un hook PreToolUse peut forcer `query`, mais
+rien ne force `screenshot` ou `init` ; une consigne en tête de CLAUDE.md se perd
+dans la masse de la session ; et on ne peut pas y lister toutes les commandes.
+
+Réponse en trois parties.
+
+**1. Le déclencheur n'est pas toujours un blocage.** Claude Code offre trois moments
+où un hook peut injecter du texte dans le contexte, et chacun couvre une famille de
+commandes. Le texte n'est payé qu'au moment où il sert.
+
+| Déclencheur | Mécanisme | Couvre |
+|-------------|-----------|--------|
+| `SessionStart` | stdout du hook injecté dans le contexte | `init` (projet sans `.aidex/` : une ligne « non indexé, `aidex init .` »), `status`, `session` (note de la session précédente, changements externes), fraîcheur de la DB globale |
+| `UserPromptSubmit` | stdout injecté, déclenché par mots-clés du prompt utilisateur | `viewer`, `settings`, et un rappel de `screenshot` quand le prompt parle d'écran, de capture ou de fenêtre. Un faux déclenchement coûte une ligne. |
+| `PreToolUse` | refus avec la commande à relancer | `query`, `read`, `git`, `test`, `update` |
+
+Le hook `SessionStart` remplace la « Session-Start Rule » du bloc CLAUDE.md installé
+par `aidex setup` (§6.4, point 3), qui demande au modèle de se souvenir d'appeler
+`aidex_session` : c'est précisément le genre de consigne qui se perd.
+
+**2. Ce qui n'a aucun déclencheur reste MCP.** `screenshot` et `windows` sont des
+gestes à l'initiative de l'agent, au milieu d'une tâche, sans situation observable
+par un hook. Leur définition MCP est leur seul point de découverte, donc ils y
+restent, dégraissés. C'est la reclassification appliquée en §6.2. Le critère du
+§6.1 se précise ainsi : passe en CLI ce qui a un déclencheur observable ; reste MCP
+ce que seul l'agent décide.
+
+**3. Le catalogue complet existe déjà, et c'est lui le problème.** `aidex setup`
+installe dans `~/.claude/CLAUDE.md` un bloc `AIDEX-START` / `AIDEX-END`
+(`src/commands/setup.ts`, constante `CLAUDE_MD_BLOCK`). MESURÉ : 9 012 octets, 153
+lignes, payés à chaque session de chaque projet. Il cite les 11 outils de
+`DEFAULT_DISABLED_TOOLS` comme s'ils étaient annoncés (`global_query`,
+`global_signatures`, `global_guideline`, `describe`, `tasks`, `link`, `unlink`,
+`links`, `task`, `log`, `note`), et contient un tableau « All Tools (30) ». Que ce
+bloc soit effectivement installé sur le poste n'est pas vérifiable depuis ce
+conteneur ; s'il l'est, c'est le plus gros texte AiDex du contexte, et il est
+périmé depuis le filtre du 2026-09-02.
+
+Décision proposée : réduire ce bloc à la notice de §6.3, et déplacer le catalogue
+dans un **skill** `aidex-cli`. Un skill coûte une ligne de description par session
+et ne charge son corps (la liste complète des sous-commandes, avec leurs usages)
+qu'à l'invocation. C'est le mécanisme prévu pour « une liste trop longue pour
+CLAUDE.md, disponible à la demande ». Le hook grep mentionne déjà un skill `aidex`
+(levier B) ; il n'est pas dans ce dépôt, son état sur le poste est à vérifier.
+`aidex --help` reste la seconde moitié du catalogue, pour l'agent comme pour
+l'opérateur.
+
+Réserve honnête sur la salience : tout ce qui est dans le system prompt est présent
+à chaque tour, ce qui varie est l'attention que le modèle y porte. Ni la notice ni
+le skill ne garantissent quoi que ce soit ; les hooks si. Le harness A/B de §3.4
+peut mesurer le taux de conformité (part des `git diff` bruts contre `aidex git
+diff`) avec et sans notice, si la question vaut une mesure.
 
 ### 6.3 Notice dans le CLAUDE.md global du poste
 
