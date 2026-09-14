@@ -8,6 +8,7 @@ import { join } from 'path';
 import { init, query, edges, signature, signatures, update, remove, summary, tree, describe, link, unlink, listLinks, scan, files, note, getSessionNote, session, formatSessionTime, formatDuration, task, tasks, screenshot, listWindows, globalInit, globalStatus, globalQuery, globalSignatures, globalRefresh, globalGuideline, log, can, noticeFor, globalNotice, type QueryMode, type QueryKind, type EdgeDirection, type TaskAction, type ScreenshotMode, type ScreenshotColors, type SignatureKind, type GuidelineAction, type LogAction, type LogLevel } from '../commands/index.js';
 import type { TaskRow } from '../db/index.js';
 import { openDatabase } from '../db/index.js';
+import { cliCommand } from '../commands/shared.js';
 import { LITERAL_COVERAGE_SCHEMA, LITERAL_RULE_ID, LITERAL_RULE_VERSION } from '../coverage/rule.js';
 import { startViewer, stopViewer } from '../viewer/index.js';
 import { PRODUCT_NAME, PRODUCT_NAME_LOWER, PRODUCT_VERSION, INDEX_DIR, TOOL_PREFIX } from '../constants.js';
@@ -16,10 +17,8 @@ import { PRODUCT_NAME, PRODUCT_NAME_LOWER, PRODUCT_VERSION, INDEX_DIR, TOOL_PREF
  * Tools dropped from tools/list by default.
  *
  * The tools/list payload is injected into the context of every session that
- * mounts this server, so a tool nobody calls is a permanent tax. Measured on
- * 1923 Claude Code transcripts (70 projects, 3941 real calls): the 33 declared
- * tools cost about 10797 context tokens, and these 11 account for 4123 of them
- * -- 38 percent of the budget -- for 5 calls in total.
+ * mounts this server, so a tool nobody calls is a permanent tax, paid in full
+ * even when the client defers loading it.
  *
  * Override with AIDEX_TOOLS_DISABLE. An explicit comma-separated list replaces
  * this set entirely; an empty value or "none" advertises every tool.
@@ -38,6 +37,19 @@ export const DEFAULT_DISABLED_TOOLS: readonly string[] = [
     'task',
     'log',
     'note',
+    // Index administration and session tracking: 1 to 70 agent calls each over
+    // four months. A CLI subcommand replaces them where one exists; settings,
+    // global_status, global_refresh and session have none yet.
+    'init',
+    'global_init',
+    'coverage',
+    'settings',
+    'global_status',
+    'scan',
+    'global_refresh',
+    'viewer',
+    'remove',
+    'session',
 ];
 
 /** Drop the tool prefix, lowercase and trim, so both spellings compare equal. */
@@ -156,7 +168,7 @@ export function registerTools(): Tool[] {
                     kinds: {
                         type: 'array',
                         items: { type: 'string', enum: ['symbol', 'literal'] },
-                        description: 'Index dimension (default ["symbol"]); "literal" only populated after a literal-coverage rebuild. Zero result != absence unless aidex_coverage confirms.',
+                        description: 'Index dimension (default ["symbol"]); "literal" only populated after a literal-coverage rebuild. Zero result != absence unless AiDex CLI `aidex can <pattern>` confirms.',
                     },
                     item_offset: {
                         type: 'number',
@@ -1467,7 +1479,7 @@ async function handleStatus(args: Record<string, unknown>): Promise<{ content: A
                     text: JSON.stringify({
                         status: 'running',
                         version: PRODUCT_VERSION,
-                        message: `${PRODUCT_NAME} MCP server is running. Use ${TOOL_PREFIX}init to index a project.`,
+                        message: `${PRODUCT_NAME} MCP server is running. Index a project: ${cliCommand('init', ['<path>'])}`,
                     }, null, 2),
                 },
             ],
@@ -1483,7 +1495,7 @@ async function handleStatus(args: Record<string, unknown>): Promise<{ content: A
             content: [
                 {
                     type: 'text',
-                    text: `No ${PRODUCT_NAME} index found at ${path}. Run ${TOOL_PREFIX}init first.`,
+                    text: `No ${PRODUCT_NAME} index found at ${path}. Index it first: ${cliCommand('init', [path])}`,
                 },
             ],
         };
@@ -2089,7 +2101,7 @@ function handleFiles(args: Record<string, unknown>): { content: Array<{ type: st
     if (result.files.length === 0) {
         const since = args.modified_since as string | undefined;
         const msg = since
-            ? `No files modified since ${since}.\n\nNote: \`modified_since\` checks when each file was last (re-)indexed, not when it was last edited. Files whose content is unchanged keep their old \`last_indexed\` timestamp. Run \`aidex_update\` after editing, or \`aidex_init\` to refresh the whole project.`
+            ? `No files modified since ${since}.\n\nNote: \`modified_since\` checks when each file was last (re-)indexed, not when it was last edited. Files whose content is unchanged keep their old \`last_indexed\` timestamp. Run \`aidex_update\` after editing, or ${cliCommand('init', ['<path>'])} to refresh the whole project.`
             : 'No files found in project.';
         return {
             content: [{ type: 'text', text: msg }],
@@ -2366,7 +2378,7 @@ async function handleViewer(args: Record<string, unknown>): Promise<{ content: A
     const indexPath = join(path, INDEX_DIR);
     if (!existsSync(indexPath)) {
         return {
-            content: [{ type: 'text', text: `Error: No ${INDEX_DIR} directory found at ${path}. Run ${TOOL_PREFIX}init first.` }],
+            content: [{ type: 'text', text: `Error: No ${INDEX_DIR} directory found at ${path}. Index it first: ${cliCommand('init', [path])}` }],
         };
     }
 
@@ -2757,7 +2769,7 @@ function handleGlobalStatus(args: Record<string, unknown>): { content: Array<{ t
 
     if (result.projects.length === 0) {
         return {
-            content: [{ type: 'text', text: 'No projects registered in global index. Run aidex_global_init first.' }],
+            content: [{ type: 'text', text: `No projects registered in global index. Register them first: ${cliCommand('global-init', ['<path>'])}` }],
         };
     }
 
@@ -3223,7 +3235,7 @@ async function handleSettings(args: Record<string, unknown>): Promise<{ content:
         lines.push('');
         lines.push(`**AiDex version:** ${s.currentVersion}` + (s.lastSeenVersion ? ` (last seen: ${s.lastSeenVersion})` : ' (first session)'));
         lines.push('');
-        lines.push('To open the Settings UI: `aidex_settings({ path: "...", open: true })`');
+        lines.push(`To open the Settings UI, run: ${cliCommand('viewer', ['<path>', '--tab=settings'])}`);
         return { content: [{ type: 'text', text: lines.join('\n') }] };
     } catch (err) {
         return { content: [{ type: 'text', text: `Error: ${err instanceof Error ? err.message : String(err)}` }] };

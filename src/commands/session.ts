@@ -16,7 +16,7 @@ import { createQueries } from '../db/index.js';
 import { openDatabase } from '../db/index.js';
 import { remove, update } from './update.js';
 import { DEFAULT_EXCLUDE, readGitignore, shortHash } from './init.js';
-import { validateIndex, noIndexError, withProjectDb } from './shared.js';
+import { validateIndex, noIndexError, withProjectDb, cliCommand } from './shared.js';
 import { PRODUCT_VERSION } from '../constants.js';
 import { checkScheduledTasks, type SchedulerResult } from './global/global-scheduler.js';
 
@@ -408,7 +408,7 @@ function probeEmbeddingsStatus(projectPath: string): EmbeddingsSessionStatus {
                 health = 'stale';
                 hint = `Embeddings index hasn't been refreshed in ${formatAge(ageDays)}` +
                     (filesChanged > 0 ? ` and ${filesChanged} files changed since.` : '.') +
-                    ' Consider running aidex_init({ embeddings: true }) again.';
+                    ' A fresh re-index with embeddings enabled would refresh it.';
             } else if (filesChanged > 10) {
                 health = 'drifting';
                 hint = `${filesChanged} files have changed since the last full embed — incremental updates have kept up, but a fresh re-index would tighten things.`;
@@ -468,14 +468,14 @@ function computeUpdateBanner(): string | null {
                     `(jina-code embeddings, 768d) plus an optional LLM layer for multilingual queries ` +
                     `and reranking (Anthropic / OpenAI / OpenRouter / Ollama). ` +
                     `New Viewer Settings tab puts everything one click away — privacy-switch defaults to OFF. ` +
-                    `Get started: aidex_settings({ path: "...", open: true }).`
+                    `Get started: ${cliCommand('viewer', ['<path>', '--tab=settings'])}`
                 );
             }
             return (
                 `🎉 AiDex ${current} — new features available! ` +
                 `Semantic search across code, docs & tasks, plus an optional LLM layer ` +
                 `for multilingual queries. ` +
-                `Open the Settings tab in the viewer to enable: aidex_settings({ path: "...", open: true }).`
+                `Open the Settings tab in the viewer to enable: ${cliCommand('viewer', ['<path>', '--tab=settings'])}`
             );
         } finally {
             db.close();

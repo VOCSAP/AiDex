@@ -2,7 +2,8 @@
 
 `settings.json.template` next to this file is the single reference for
 everything AiDex needs in your `settings.json`: ready-to-paste blocks
-covering search-time and read-time guidance (`PreToolUse`) and index
+covering the missing-index notice at session start (`SessionStart`),
+search-time and read-time guidance (`PreToolUse`) and index
 maintenance (`PostToolUse`, `Stop`). No installer exists for this fork -- do the steps
 below by hand.
 
@@ -14,15 +15,16 @@ below by hand.
    %USERPROFILE%\.claude\hooks\aidex-read-nudge.py
    %USERPROFILE%\.claude\hooks\aidex-queue-edit.py
    %USERPROFILE%\.claude\hooks\aidex-queue-drain.py
+   %USERPROFILE%\.claude\hooks\aidex-init-nudge.py
    %USERPROFILE%\.claude\hooks\aidex_hook_common.py
    ```
-   The source for all five is `hooks/claude/` in this repo (moved there from
+   The source for all six is `hooks/claude/` in this repo (moved there from
    the repo root in commit 6c66217 -- do not copy from the old root `hooks/`
    path). `aidex_hook_common.py` is required because `aidex-read-nudge.py`,
-   `aidex-queue-edit.py` and `aidex-queue-drain.py` import it;
-   `aidex-grep-nudge.py` is standalone.
+   `aidex-init-nudge.py`, `aidex-queue-edit.py` and `aidex-queue-drain.py`
+   import it; `aidex-grep-nudge.py` is standalone.
 2. Open your real `%USERPROFILE%\.claude\settings.json` and merge the
-   `PreToolUse`, `PostToolUse` and `Stop` entries from
+   `SessionStart`, `PreToolUse`, `PostToolUse` and `Stop` entries from
    `settings.json.template` into your existing `hooks` object. Merge, do not
    overwrite -- your settings.json almost certainly already has other
    entries in those same arrays (append to the array, do not replace it).
@@ -63,6 +65,16 @@ gate any search.
 
 ## What the hooks actually do
 
+- **SessionStart** (`aidex-init-nudge.py`, matcher `startup|clear`) adds one
+  line to the agent's context when the session starts at the root of a git
+  repository (`.git` directory or worktree file) that has no
+  `.aidex/index.db`: the index is missing, and the exact CLI `init` command
+  that builds it (interpreter and entry point resolved like the other hooks).
+  A subdirectory of a repository, a directory outside git, an indexed
+  repository, a `resume` or `compact` source, or an undiscoverable CLI entry
+  point all stay silent. The `aidex_init` MCP tool is no longer advertised by
+  default, which is why this notice exists. The session note, `status` and
+  global-index freshness are out of this hook's scope.
 - **PreToolUse** (`aidex-grep-nudge.py`) asks the coverage oracle's `aidex
   can` subcommand whether the index already covers what a `Grep`/`Bash`
   call is about to search for. It only blocks the call when the oracle
@@ -112,6 +124,10 @@ oracle must never be able to stop an agent from searching at all.
 `aidex-read-nudge.py` fails open the same way: any `outline` exit code other
 than 0, a timeout, a missing interpreter or entry point, an unreadable payload,
 an unwritable state file, or any exception lets the read proceed.
+
+`aidex-init-nudge.py` never blocks anything: an unreadable payload, a missing
+`cwd`, an import failure of `aidex_hook_common.py` or any exception prints
+nothing and exits 0.
 
 ## Environment variables (all optional)
 

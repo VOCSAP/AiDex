@@ -1,4 +1,16 @@
 {
+  "SessionStart": [
+    {
+      "matcher": "startup|clear",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python \"$USERPROFILE/.claude/hooks/aidex-init-nudge.py\"",
+          "timeout": 5
+        }
+      ]
+    }
+  ],
   "PreToolUse": [
     {
       "matcher": "Grep|Bash",

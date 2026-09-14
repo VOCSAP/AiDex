@@ -776,3 +776,49 @@ Dans les deux premiers cas, le comportement est celui d'avant le hook.
 ### Reference
 
 Plan : `docs/plans/cli-wrappers-hooks-plan.md`, sections 0.5, 0.7 (rang 1, point c) et 4.1. Specs `spec_423fcbf4` (hook et correctifs de revue) et `spec_ae348697` (latence).
+
+---
+
+## 24. Dix outils d'administration retires de `tools/list` -- rang 2 du plan wrappers CLI
+
+### Le probleme, en une phrase
+
+Le payload `tools/list` est paye a chaque session qui monte le serveur, appele ou non : dix outils d'administration de l'index et de suivi de session, a 1 a 70 appels agent chacun sur quatre mois et 80 projets, pesaient **6 580 octets sur 16 363, soit 40,2 pourcent** du `tools/list` servi (plan, section 0.5).
+
+Un premier lot, sans section ici jusqu'a present, avait deja retire onze outils jamais ou presque jamais appeles : `task`, `tasks`, `log`, `note`, `describe`, `link`, `unlink`, `links`, `global_query`, `global_signatures`, `global_guideline`.
+
+### Ce qui change
+
+**`DEFAULT_DISABLED_TOOLS` (`src/server/tools.ts`) gagne dix noms** : `init`, `global_init`, `coverage`, `settings`, `global_status`, `scan`, `global_refresh`, `viewer`, `remove`, `session`. Le filtre reste purement soustractif : chaque bras de `handleToolCall` repond toujours par son nom, et `AIDEX_TOOLS_DISABLE` arbitre comme avant. `update` et `status` restent annonces (1 790 et 71 appels agent).
+
+`settings`, `global_status`, `global_refresh` et `session` n'ont pas encore de sous-commande CLI : ils sont retires quand meme, une carte `could` couvre ces sous-commandes.
+
+Consequence du retrait de `session` : `checkScheduledTasks` n'avait qu'un appelant de production, `session.ts` (mesure du reviewer). Pour un agent Claude Code, les taches planifiees ne se declenchent donc plus (les outils `task` etaient deja masques par defaut), pas plus que la reindexation des fichiers modifies hors session au demarrage.
+
+**Messages qui renvoyaient vers un outil retire.** Ils donnent desormais une commande executable telle quelle via `cliCommand(subcommand, args)` (`src/commands/shared.ts`) : `"<process.execPath>" "<build/index.js absolu>" <sous-commande> "<arg>"...`. Le point d'entree est localise depuis le module, pas depuis `process.argv[1]`, qui nomme le script de l'appelant des qu'AiDex est charge comme bibliotheque (meme raisonnement que `rebuildCommand`, `src/commands/coverage.ts`). Si le fichier d'entree manque, repli sur la forme courte `aidex <sous-commande> ... (AiDex CLI)`. Sites : `noIndexError` (`shared.ts`), `coverage.ts`, `link.ts`, `global/global-shared.ts`, `embeddings/pipeline.ts`, `session.ts`, `update.ts` (fichier supprime : `update <projet> <fichier>` le retire de l'index) et plusieurs messages de `tools.ts`. Sans equivalent CLI : la fermeture d'un viewer servant un autre projet (`viewer/server.ts` dit d'arreter le processus qui le sert) et la reindexation avec embeddings (`init` CLI n'a pas d'option embeddings, mention retiree).
+
+**Hook `hooks/claude/aidex-init-nudge.py`, `SessionStart`, matcher `startup|clear`.** Une ligne de contexte seulement a la racine d'un depot git (`.git` repertoire ou fichier de worktree) sans `.aidex/index.db`, avec la commande `init` resolue par `aidex_hook_common`. Muet partout ailleurs, fail open, aucun chemin absolu dans le source. Non installe : entree dans `settings.json.template`, action operateur.
+
+### Mesures
+
+- `tools/list` servi (`registerTools()` du build, un `JSON.stringify` par outil, node 22.11.0) : **22 outils et 16 363 octets avant, 12 outils et 9 800 octets apres**, soit 6 563 octets et 40,1 pourcent de moins, 1 460 a 1 560 tokens par session au tarif de 4,2 a 4,5 octets par token.
+- Description de `kinds` dans `aidex_query`, seul texte de `tools/list` touche par la reecriture : texte statique court (`aidex can <pattern>`). La forme resolue, 100 octets de plus sur ce poste, mettrait le nom d'utilisateur et l'arborescence dans chaque session et ferait dependre le poids du schema des chemins de la machine ; `cliCommand` reste reserve aux messages rendus a l'appel.
+- `viewer "<projet>" "--tab=settings"` lance une fois avec la commande resolue : `Server running at http://localhost:3333#tab=settings`, puis `Client connected`. La CLI `viewer` n'a pas d'option `--no-open` : le navigateur s'ouvre.
+
+### Tests
+
+- `tests/tool-filter.test.js`, 31 tests. Liste annoncee : defaut egal aux declarations moins les desactives ; aucun schema annonce ne contient le binaire node ni le chemin du build du poste ; `none` et vide compares aux declarations lues par la branche liste explicite ; une liste explicite remplace le defaut. Appel par nom de chaque outil desactive, dans un processus enfant dont HOME et USERPROFILE pointent vers un dossier vide : sous jest, modifier `process.env` ne deplace pas `os.homedir()`, et `global_refresh` en processus reecrirait la vraie base globale. Garde sur `src/**/*.ts` : aucune ligne hors commentaire ne nomme un outil de `DEFAULT_DISABLED_TOOLS` ; exemptions `src/commands/setup.ts` entier (bloc CLAUDE.md upstream, non installe sur ce poste, risque accepte) et quatre lignes nommees de l'ancien lot, chacune devant encore matcher.
+- `tests/cli-command.test.js`, 5 tests : node et point d'entree reels, guillemets, chemin Windows a antislash final normalise (placeholders `<...>` intacts), repli etiquete avant la commande, commande resolue dans `noIndexError`.
+- `tests/hooks/aidex-init-nudge.test.py`, 16 cas.
+- Mutations dans le sens du risque, toutes rouges puis restaurees octet pour octet : message `Run aidex_init first` reintroduit ; bras `remove` renomme dans `handleToolCall` ; test `.git` retire du hook ; helper rendant `aidex` nu avec une entree resolvable ; lignes commencant par `*` sautees hors bloc de commentaire ; `cliCommand` reintroduit dans la description de `kinds`.
+
+### Ce qu'il ne faut pas reintroduire en rebasant
+
+- Localiser le point d'entree par `process.argv[1]` : sous jest ou dans une sonde, la commande rendue relancerait l'appelant.
+- Isoler HOME en assignant `process.env` dans un test jest : sans effet sur `os.homedir()`, le test toucherait la vraie base globale.
+- Sauter toute ligne commencant par `*` dans la garde : une puce dans un template litteral est du texte que l'agent lit.
+- Convertir la deny-list en allow-list : arbitrage operateur du 2026-09-02, rappele dans `.claude/CLAUDE.md`, section Outils.
+
+### Reference
+
+Plan : `docs/plans/cli-wrappers-hooks-plan.md`, sections 0.5, 0.7 (rang 2), 6.1 a 6.4. Spec `spec_4bc757e6`.

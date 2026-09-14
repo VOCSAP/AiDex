@@ -133,7 +133,7 @@ export async function startViewer(projectPath: string, initialTab?: string, opti
             return `Viewer already running at http://localhost:${PORT}${hash}`;
         }
         return `Viewer is already serving a different project (${servedProjectPath ?? 'unknown'}) at http://localhost:${PORT}. ` +
-            `Close it first (aidex_viewer action="close") before opening ${resolvedProjectPath}.`;
+            `Stop the process serving it first (a CLI viewer stops when its last browser tab closes), then open ${resolvedProjectPath}.`;
     }
 
     const dbPath = path.join(projectPath, INDEX_DIR, 'index.db');

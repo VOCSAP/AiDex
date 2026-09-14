@@ -12,7 +12,7 @@ import { existsSync, readFileSync } from 'fs';
 import { createHash } from 'crypto';
 import { fileURLToPath } from 'url';
 import { join, resolve, relative } from 'path';
-import { validateIndex, withDatabase, normalizePath } from './shared.js';
+import { validateIndex, withDatabase, normalizePath, cliCommand } from './shared.js';
 import { classifyPattern, readCoverage, coverageNotice, LITERAL_RULE_ID, LITERAL_RULE_VERSION, type PatternClass } from '../coverage/rule.js';
 
 // ============================================================
@@ -107,7 +107,7 @@ export function can(params: CoverageParams): CoverageVerdict {
         return {
             ...base,
             reason: 'project_not_indexed',
-            advice: `No index at ${params.path}. Run aidex_init to create one.`,
+            advice: `No index at ${params.path}. Create one: ${cliCommand('init', [params.path])}`,
         };
     }
 
@@ -274,7 +274,7 @@ export function globalNotice(pattern: string): string | null {
         return `"${pattern}" is not an indexable shape: AiDex never held it. Use grep.`;
     }
     if (cls.dimension === 'literal' || cls.reason === 'below_literal_rule') {
-        return `"${pattern}" is literal-shaped and literal coverage is per index: this zero is not proof of absence. Use grep, or check aidex_coverage on the project you care about.`;
+        return `"${pattern}" is literal-shaped and literal coverage is per index: this zero is not proof of absence. Use grep, or check ${cliCommand('can', ['<pattern>', '--project', '<dir>'])} on the project you care about.`;
     }
     return `Symbols only unless a project was rebuilt for literal coverage: a zero here is not proof of absence across all projects.`;
 }

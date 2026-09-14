@@ -50,11 +50,13 @@ AiDex is an MCP server that gives AI coding assistants a memory, semantic search
 | **Screenshots** | `screenshot`, `windows` | Cross-platform screen capture with LLM optimization — scale + color reduction saves up to 95% tokens |
 | **Viewer** | `viewer` | Interactive browser UI with file tree, signatures, tasks, logs, search, and live reload |
 
-> **Fork default: 22 of these 33 tools are advertised.** The `tools/list` payload lands in the context of
+> **Fork default: 12 of these 33 tools are advertised.** The `tools/list` payload lands in the context of
 > every session, so a tool nobody calls is a permanent tax. Measured on 1923 Claude Code transcripts
 > (70 projects, 3941 real calls), 11 tools carried 38 percent of the ~10800-token payload for 5 calls in
 > total, and are dropped from the advertised list: `task`, `tasks`, `log`, `note`, `describe`, `link`,
-> `unlink`, `links`, `global_query`, `global_signatures`, `global_guideline`. They stay fully implemented
+> `unlink`, `links`, `global_query`, `global_signatures`, `global_guideline`. Ten index-administration
+> and session tools follow, replaced by a CLI subcommand where one exists: `init`, `global_init`, `coverage`,
+> `settings`, `global_status`, `scan`, `global_refresh`, `viewer`, `remove`, `session`. All of them stay fully implemented
 > and still answer if a client invokes them by name.
 >
 > Set `AIDEX_TOOLS_DISABLE` in the MCP server config to change this. `none` or an empty value advertises

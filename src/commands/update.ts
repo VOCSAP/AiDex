@@ -12,7 +12,7 @@ import { minimatch } from 'minimatch';
 
 import { extract } from '../parser/index.js';
 import { DEFAULT_EXCLUDE, readGitignore, shortHash } from './init.js';
-import { validateIndex, noIndexError, withDatabase, withProjectDb } from './shared.js';
+import { validateIndex, noIndexError, withDatabase, withProjectDb, cliCommand } from './shared.js';
 import { readCoverage } from '../coverage/rule.js';
 import { invalidateGlobalCache } from './global/global-query.js';
 import { rebuildCandidateEdgeTargets } from '../relations/candidate-edges.js';
@@ -93,7 +93,7 @@ export function update(params: UpdateParams): UpdateResult {
             methodsUpdated: 0,
             typesUpdated: 0,
             durationMs: Date.now() - startTime,
-            error: `File does not exist: ${relativePath}`,
+            error: `File does not exist: ${relativePath}. To drop it from the index: ${cliCommand('update', [projectPath, relativePath, '--verbose'])}`,
         };
     }
 
