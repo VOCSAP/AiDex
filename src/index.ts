@@ -145,7 +145,7 @@ async function main() {
         }
 
         console.log(`Indexing: ${projectPath}`);
-        const { init } = await import('./commands/init.js');
+        const { init, LINE_RANGES_SCHEMA } = await import('./commands/init.js');
         const result = await init({ path: projectPath });
 
         if (!result.success) {
@@ -154,6 +154,12 @@ async function main() {
         }
 
         console.log(`Done!`);
+        if (result.literalCoverageUpgraded) {
+            console.log(`  Literal coverage migrated: the index did not declare it, so every file was re-indexed.`);
+        }
+        if (result.lineRangesUpgraded) {
+            console.log(`  Schema migrated: the index declared a schema older than ${LINE_RANGES_SCHEMA}, so every file was re-parsed once.`);
+        }
         console.log(`  Files: ${result.filesIndexed}`);
         console.log(`  Term-file pairs (raw case): ${result.itemsFound}`);
         console.log(`  Methods: ${result.methodsFound}`);
@@ -185,10 +191,9 @@ async function main() {
 
     // CLI mode: rebuild-index -- FULL rebuild, ignores the per-file hash skip.
     //
-    // Deliberately CLI-only and deliberately named for what it does. Reindexing
-    // is an operator decision, never automatic: there is no sweep, no migration
-    // on first query, no implicit rebuild. That is why this is not exposed as an
-    // MCP tool -- an agent must not be able to trigger it from a normal flow.
+    // Deliberately CLI-only and deliberately named for what it does: an
+    // unconditional rebuild is not exposed as an MCP tool, so an agent cannot
+    // trigger it from a normal flow.
     //
     // `fresh: true` clears `files` and `items` only; tasks, notes and metadata
     // survive (see db/database.ts createDatabase). If the run is interrupted the

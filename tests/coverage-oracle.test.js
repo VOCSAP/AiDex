@@ -27,7 +27,7 @@ import { fileURLToPath } from 'url';
 import { tmpdir, homedir } from 'os';
 import Database from 'better-sqlite3';
 
-import { init, isUnderSystemTemp } from '../build/commands/init.js';
+import { init, isUnderSystemTemp, LINE_RANGES_SCHEMA } from '../build/commands/init.js';
 import { update } from '../build/commands/update.js';
 import { query } from '../build/commands/query.js';
 import { can } from '../build/commands/coverage.js';
@@ -347,12 +347,12 @@ describe('coverage oracle differential', () => {
     // Lot 3 -- literals are indexed, measured, and then declared
     // --------------------------------------------------------
 
-    test('a full reindex declares 1.4 and stores a MEASURED per-language record', () => {
+    test('a full reindex declares the current schema and stores a MEASURED per-language record', () => {
         const db = new Database(join(dir, '.aidex', 'index.db'), { readonly: true });
         const read = (key) =>
             db.prepare('SELECT value FROM metadata WHERE key = ?').get(key)?.value ?? null;
 
-        expect(read('schema_version')).toBe('1.4');
+        expect(read('schema_version')).toBe(LINE_RANGES_SCHEMA);
         const record = JSON.parse(read('literal_coverage'));
         db.close();
 
@@ -674,7 +674,7 @@ describe('coverage oracle differential', () => {
             expect(result.filesIndexed).toBeGreaterThan(0);
 
             const db = new Database(join(stale, '.aidex', 'index.db'), { readonly: true });
-            expect(db.prepare("SELECT value v FROM metadata WHERE key='schema_version'").get().v).toBe('1.4');
+            expect(db.prepare("SELECT value v FROM metadata WHERE key='schema_version'").get().v).toBe(LINE_RANGES_SCHEMA);
             db.close();
 
             const after = query({ path: stale, term: 'sandbox:changed', kinds: ['literal'] });

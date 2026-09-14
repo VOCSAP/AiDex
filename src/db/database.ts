@@ -57,10 +57,12 @@ export class AiDexDatabase {
         const stmt = this.db.prepare(
             'INSERT OR IGNORE INTO metadata (key, value) VALUES (?, ?)'
         );
+        // Stays below LINE_RANGES_SCHEMA: only a complete init run may declare it.
         stmt.run('schema_version', '1.4');
         stmt.run('created_at', Date.now().toString());
 
-        // Update schema_version on existing DBs
+        // Relabels old DBs up to 1.4 only, below LINE_RANGES_SCHEMA, so an
+        // interrupted init run leaves an index that is re-parsed next time.
         this.db.prepare(
             "UPDATE metadata SET value = '1.4' WHERE key = 'schema_version' AND value IN ('1.0', '1.1', '1.2', '1.3')"
         ).run();

@@ -16,6 +16,7 @@ import {
     COVERAGE_METADATA_KEY,
     LITERAL_RULE_ID,
     LITERAL_RULE_VERSION,
+    compareVersions,
     readCoverage,
     type CoverageRecord,
 } from '../coverage/rule.js';
@@ -23,6 +24,15 @@ import type { IndexResult } from '../embeddings/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+/**
+ * Schema declared by a complete run. Line ranges (types.end_line, and
+ * methods.body_lines when store_bodies is off) are only computed while parsing,
+ * so an index declaring an older schema is re-parsed once, hash skip ignored.
+ * If an upstream merge also moves to this version for another reason, the
+ * trigger must be revisited.
+ */
+export const LINE_RANGES_SCHEMA = '1.5';
 
 /**
  * Run embedding in a fully isolated child process (spawn, not fork) so an
@@ -128,6 +138,12 @@ export interface InitResult {
      * 702-file Rust project) and wipes before it rebuilds.
      */
     literalCoverageUpgraded?: boolean;
+    /**
+     * True when this run reindexed everything because the index declared a
+     * schema older than LINE_RANGES_SCHEMA, whose files were parsed before line
+     * ranges existed. Same cost and same wipe as literalCoverageUpgraded.
+     */
+    lineRangesUpgraded?: boolean;
     errors: string[];
     embeddings?: {
         embedded: number;
@@ -476,7 +492,7 @@ export async function init(params: InitParams): Promise<InitResult> {
     // Determine if incremental (default) or fresh re-index.
     const dbExists = existsSync(dbPath);
 
-    // ---- literal-coverage migration -------------------------------------
+    // ---- forced full re-parse: literal coverage and line ranges ---------
     // Operator decision, 2026-08-11, reversing the more conservative reading
     // taken when Lot 3 landed: `init` IS the migration path, and an agent may
     // trigger it. The reason is that the conservative version was treacherous
@@ -488,22 +504,28 @@ export async function init(params: InitParams): Promise<InitResult> {
     // up to date file by file: the unchanged files are precisely the ones whose
     // literals were never extracted, and they are exactly the ones the per-file
     // hash skip would skip. So the run ignores the hash skip and reindexes
-    // everything. `rebuild-index` remains, for forcing a rebuild of an index
-    // that is already current.
+    // everything. An index declaring a schema older than LINE_RANGES_SCHEMA is
+    // in the same situation for line ranges. `rebuild-index` remains, for
+    // forcing a rebuild of an index that is already current.
     let literalCoverageUpgraded = false;
+    let lineRangesUpgraded = false;
     if (dbExists && !params.fresh) {
         try {
-            literalCoverageUpgraded = withDatabase(
-                dbPath, true, (peek) => !readCoverage(peek).literalsIndexed
-            );
+            const peeked = withDatabase(dbPath, true, (peek) => ({
+                literals: !readCoverage(peek).literalsIndexed,
+                lineRanges: compareVersions(peek.getMetadata('schema_version') ?? '0', LINE_RANGES_SCHEMA) < 0,
+            }));
+            literalCoverageUpgraded = peeked.literals;
+            lineRangesUpgraded = peeked.lineRanges;
         } catch {
             // An unreadable index is not a migration signal. Leave the mode
             // alone and let the normal path report whatever is wrong.
             literalCoverageUpgraded = false;
+            lineRangesUpgraded = false;
         }
     }
 
-    const incremental = dbExists && !params.fresh && !literalCoverageUpgraded;
+    const incremental = dbExists && !params.fresh && !literalCoverageUpgraded && !lineRangesUpgraded;
 
     // Create database (incremental keeps existing data)
     const db = createDatabase(dbPath, projectName, params.path, incremental);
@@ -669,7 +691,7 @@ export async function init(params: InitParams): Promise<InitResult> {
     // changed, not the repository; publishing those as the index's coverage
     // would be a measurement of nothing presented as a measurement.
     //
-    // `schema_version` moves to the current 1.4 here. It is part of the promise the
+    // `schema_version` moves to LINE_RANGES_SCHEMA here. It is part of the promise the
     // oracle reads back, so it must be made only once the literals are actually
     // in the tables: an interrupted reindex dies before this point, leaving the
     // prior version -- incomplete and honest about it, rather than complete-looking
@@ -696,7 +718,10 @@ export async function init(params: InitParams): Promise<InitResult> {
             measuredAt: Date.now(),
         };
         db.setMetadata(COVERAGE_METADATA_KEY, JSON.stringify(record));
-        db.setMetadata('schema_version', '1.4');
+        // Never lowers a newer declaration, e.g. an index written by a later build.
+        if (compareVersions(db.getMetadata('schema_version') ?? '0', LINE_RANGES_SCHEMA) < 0) {
+            db.setMetadata('schema_version', LINE_RANGES_SCHEMA);
+        }
     }
 
     // Reset session tracking after full re-index
@@ -770,6 +795,7 @@ export async function init(params: InitParams): Promise<InitResult> {
         typesFound: totalTypes,
         durationMs: Date.now() - startTime,
         literalCoverageUpgraded,
+        lineRangesUpgraded,
         errors,
         embeddings: embeddingsResult,
     };

@@ -678,6 +678,8 @@ Zero ligne de sortie ajoutee ; +3,9 a +7,0 pourcent d'octets mesures sur 3 fichi
 
 **`methods.body_lines` est desormais TOUJOURS stocke** (`src/commands/init.ts`, `src/commands/update.ts`), avant seulement si la metadonnee `store_bodies=1` ; `body_text` reste soumis a `store_bodies`. Mesure sur le poste : 5 projets indexes a `store_bodies=0` ne rendent aucune plage de methode avant reindexation.
 
+**Schema 1.5 -- re-parsing automatique** (`LINE_RANGES_SCHEMA`, `src/commands/init.ts`) : `init` sur un index qui declare un schema anterieur a 1.5 ignore une fois le saut par hash (meme lecture seule prealable et meme chemin que la migration litterale de la section 1.6), annonce `lineRangesUpgraded`, n'ecrit 1.5 qu'en fin de run complet puis redevient incremental ; `update` et les ouvertures en lecture seule sont inchanges, `rebuild-index` reste possible. Note pour les merges upstream : si upstream monte aussi en 1.5 pour une autre raison, ce declencheur devra etre revu.
+
 **Effet de bord embeddings, a surveiller en revue, pas un defaut.** Sur un projet avec embeddings actifs mais `store_bodies=0`, la formule de `src/embeddings/pipeline.ts` (lignes 410 et 585) elargit desormais le sac d'identifiants d'une methode a son corps entier, puisque `body_lines` existe maintenant meme sans `store_bodies`. `embeddingText` et `contentHash` changent en consequence, donc ces methodes sont RE-EMBEDDEES a la prochaine reindexation. C'est un alignement sur le comportement deja en place a `store_bodies=1`, pas un nouveau defaut, mais les vecteurs changent en silence : une reindexation apres ce patch va reconsommer du temps d'embedding sur des projets qui n'avaient pas demande `store_bodies`.
 
 **Nouvelle sous-commande CLI -- `aidex outline <file> [--project <dir>] [--limit <n>]`** (`src/commands/outline.ts`, cablee dans `src/index.ts`). Plan d'un fichier sans le lire en entier :
@@ -696,6 +698,7 @@ Mesures : `src/server/tools.ts` (134 Ko) -> plan de 3,3 Ko, facteur 40 ; plan de
 
 - Retirer le fallback debut-seul quand `end_line`/`body_lines` est absent (base legacy, projet a `store_bodies=0` pas encore reindexe) : casser silencieusement `aidex_signature`/`aidex_signatures` sur tout index qui n'a pas encore ete reindexe depuis ce patch.
 - Faire migrer `types.end_line` a l'ouverture en LECTURE SEULE : la doctrine de migration du depot est d'ecrire uniquement quand la base est deja ouverte en ecriture (voir la migration `schema_version` de la section 21).
+- Faire etiqueter `LINE_RANGES_SCHEMA` (1.5) ou plus par `initSchema` (`src/db/database.ts`, INSERT et UPDATE de `schema_version`) : seul un run `init` complet peut le declarer. Sinon un run coupe laisse un index vide deja etiquete 1.5, que plus aucun init ne re-parse ; le test `an interrupted run leaves an index that the next init re-parses` garde cet invariant.
 - Etendre `outline` a d'autres extensions de documentation sans repasser par `chunker-docs.ts` : le decoupage markdown est reutilise tel quel pour ne pas dupliquer une deuxieme logique de titres.
 - Oublier que `body_lines` desormais toujours stocke change le `contentHash` des methodes cote embeddings : toute mesure de cout de reindexation post-patch doit compter ce re-embedding, pas seulement le cout d'extraction.
 

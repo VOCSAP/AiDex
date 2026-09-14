@@ -10,6 +10,7 @@ import type { TaskRow } from '../db/index.js';
 import { openDatabase } from '../db/index.js';
 import { cliCommand } from '../commands/shared.js';
 import { LITERAL_COVERAGE_SCHEMA, LITERAL_RULE_ID, LITERAL_RULE_VERSION } from '../coverage/rule.js';
+import { LINE_RANGES_SCHEMA } from '../commands/init.js';
 import { startViewer, stopViewer } from '../viewer/index.js';
 import { PRODUCT_NAME, PRODUCT_NAME_LOWER, PRODUCT_VERSION, INDEX_DIR, TOOL_PREFIX } from '../constants.js';
 
@@ -1252,6 +1253,10 @@ async function handleInit(args: Record<string, unknown>): Promise<{ content: Arr
             message += `Literal coverage MIGRATED: the index did not declare it, so every file was `
                 + `re-indexed and the index now answers for literals (schema ${LITERAL_COVERAGE_SCHEMA}, `
                 + `rule ${LITERAL_RULE_ID}@${LITERAL_RULE_VERSION}). Query them with kinds: ["literal"].\n\n`;
+        }
+        if (result.lineRangesUpgraded) {
+            message += `Schema MIGRATED: the index declared a schema older than ${LINE_RANGES_SCHEMA}, so every file was `
+                + `re-parsed once; signatures and outlines now give end lines. Later runs are incremental again.\n\n`;
         }
         message += `Database: ${result.indexPath}/index.db\n`;
         message += `Files indexed: ${result.filesIndexed}`;
