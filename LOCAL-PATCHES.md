@@ -690,7 +690,7 @@ Zero ligne de sortie ajoutee ; +3,9 a +7,0 pourcent d'octets mesures sur 3 fichi
 
 Mesures : `src/server/tools.ts` (134 Ko) -> plan de 3,3 Ko, facteur 40 ; plan de `docs/plans/cli-wrappers-hooks-plan.md` (44 Ko) -> 1,9 Ko. Latence mesuree : 65 ms (code), 167 ms (markdown), un run chacun.
 
-**Limite connue** : les callbacks arrow inline sont indexes comme methodes par l'extracteur (comportement volontaire deja documente en section "Details d'implementation" du `CLAUDE.md`) et apparaissent donc dans le plan -- 7 lignes sur 48 pour `tools.ts`.
+**Limite connue** : les callbacks arrow inline sont indexes comme methodes par l'extracteur (comportement volontaire deja documente en section "Details d'implementation" du `CLAUDE.md`) et apparaissent donc dans le plan -- 8 lignes sur 49 pour `tools.ts`.
 
 ### Ce qu'il ne faut pas reintroduire en rebasant
 
@@ -702,3 +702,77 @@ Mesures : `src/server/tools.ts` (134 Ko) -> plan de 3,3 Ko, facteur 40 ; plan de
 ### Reference
 
 Sequencement et mesures completes : `docs/plans/cli-wrappers-hooks-plan.md`, section "0. Inventaire et mesure du 2026-09-14", rang 1.
+
+---
+
+## 23. Hook Claude Code de lecture bornee -- `hooks/claude/aidex-read-nudge.py`
+
+### Le probleme, en une phrase
+
+Les `Read` lances SANS `offset`/`limit` pesent **25,0 pourcent de tous les octets de `tool_result`** (`docs/plans/cli-wrappers-hooks-plan.md`, section 0.5) : la section 22 donne a l'agent les plages de lignes pour lire moins, mais rien ne le poussait a s'en servir.
+
+### Ce qui change
+
+**Un hook `PreToolUse`, matcher `Read|Bash`**, sur le modele de `aidex-grep-nudge.py` (section 2) : le pre-filtre Python decide seulement s'il faut INTERROGER `aidex outline` (section 22), l'oracle decide s'il existe un plan, et tout echec laisse passer la lecture. Meme asymetrie : un refus errone apprend au modele a contourner l'outillage, un passage errone coute une lecture.
+
+Ce qui est juge, et rien d'autre :
+- l'outil `Read` sans `offset` ET sans `limit`, avec un `file_path` absolu ;
+- une commande Bash qui est exactement `cat [flags] <un fichier>` : aucun `|`, `;`, `&`, `<`, `>`, `$`, parenthese, backtick ni saut de ligne. L'operande est resolu contre le `cwd` du PAYLOAD, jamais contre celui du processus hook ; la forme Git Bash `/c/...` est convertie sous Windows.
+
+Ce qui passe sans refus :
+- `head`, `tail`, `sed -n` : ils bornent deja ce qu'ils impriment ;
+- un `cat` enchaine (`&&`, `;`) ou en tuyau (`| head`) ;
+- un `cat` avec un flag d'affichage (`-A`, `-v`, `-e`, `-t`, `-E`, `-T`, `--show-*`) : l'intention est d'inspecter CR et caracteres de controle, ce qu'aucun plan ne remplace ;
+- un payload sans `session_id` : la promesse "une fois par fichier" ne peut pas etre tenue, et un refus jamais enregistre se repeterait sans fin ;
+- un fichier de 5000 octets ou moins (`AIDEX_READ_NUDGE_MIN_BYTES`, defaut `5000`, plage utile 2000 a 10000) : au-dessus de 5000 octets se trouvent 41 pourcent des `Read` sans borne mais 82 pourcent de leurs octets (plan, section 0.5) ;
+- un fichier hors de tout projet indexe : racine cherchee en REMONTANT depuis le fichier jusqu'au premier `.aidex/index.db`.
+
+Decision, dans cet ordre :
+1. `already_refused`, lecture seule de l'etat de session : deja refuse -> passe ;
+2. `aidex outline <fichier> --project <racine>`, timeout `AIDEX_READ_NUDGE_TIMEOUT_S` (defaut `1.5`) : tout code de sortie autre que `0`, dont `3` (aucun plan, stdout vide), et tout timeout -> muet ;
+3. regle des 3x : refus seulement si le fichier fait plus de trois fois la taille du plan ;
+4. `record_refusal`, puis refus. Ecriture de l'etat impossible -> passe.
+
+Le motif de refus porte le plan, dit de relire avec `offset=<premiere ligne>` et `limit=<derniere ligne - premiere ligne + 1>`, et annonce que repeter le meme appel le laisse passer : **un refus au plus par (session, fichier)**. Etat dans `<session>.read-nudge.txt`, dans le repertoire temporaire de la file de reindexation de la section 12 (meme purge a 7 jours), sous un nom distinct de celui que lit `aidex-queue-drain.py`.
+
+**Fail open partout** : JSON illisible ou non objet, `tool_input` non objet, interpreteur ou point d'entree introuvable, import de `aidex_hook_common` en echec, timeout, exception quelconque -> exit 0, aucune sortie.
+
+**Aucun chemin en dur** : interpreteur et point d'entree viennent de `aidex_hook_common` (declaration `mcpServers.aidex`), `AIDEX_NODE` / `AIDEX_ENTRY` restent prioritaires. Cet import est differe apres les filtres ci-dessus, parce qu'il relit la configuration Claude a chaque execution.
+
+### Il N'EST PAS installe
+
+L'entree vit dans `hooks/claude/settings.json.template` (`PreToolUse`, matcher `Read|Bash`, `"timeout": 5`) et est documentee dans `hooks/claude/settings.json.template.md`. Copier le script dans `~/.claude/hooks/` et fusionner l'entree dans le `settings.json` global est une action OPERATEUR : tant qu'elle n'est pas faite, aucune session n'est concernee.
+
+### Mesures
+
+- Refus reel sur `src/server/tools.ts` : fichier de 134 733 octets, plan de 3 363 octets, sortie JSON totale de 3 860 octets.
+- Latence, temps mur du processus hook entier (payload sur stdin jusqu'a la sortie), Python 3.10.11, 20 runs par chemin :
+  - plancher sans spawn (`Read` borne, `Read` sous le seuil, `cat` hors projet indexe, Bash autre que `cat`) : medianes de 31 a 40 ms sur les passages stables ; les passages perturbes par la charge du poste sont montes jusqu'a 103,6 ms. Ce plancher est paye par CHAQUE `Read` et CHAQUE commande Bash, a cause du matcher ;
+  - avec spawn `outline` (premier refus sur `tools.ts`) : medianes de 97,6 a 128,6 ms, maximum 285,1 ms ;
+  - import differe de `aidex_hook_common` : environ 6,0 ms economises par appel qui sort avant l'oracle (`python -X importtime`, 3 runs, 5 947 a 6 014 microsecondes). En A/B entrelace, ce gain reste sous le bruit du poste.
+- Les timeouts (5 s cote `settings.json`, 1,5 s cote oracle) n'ont jamais ete approches : maximum observe 293,8 ms, sur une seconde tentative avant correction de l'ordre ci-dessous.
+
+### Tests -- `tests/hooks/aidex-read-nudge.test.py`
+
+35 cas de bout en bout : payloads JSON sur stdin du hook lance en sous-processus, oracle `outline` reel, projet jetable indexe par `<node> <entry> init`. Le processus hook tourne avec le projet INDEXE comme cwd, pour attraper une resolution de `cat` sur le cwd du processus. Neuf mutations dans le sens du risque, toutes rouges : seuil ignore, regle des 3x ignoree, exit 3 traite comme un plan, `cat` resolu sur le cwd du processus, seconde tentative refusee, `Read` avec `limit` refuse, etat ecrit avant l'oracle, flags d'affichage ignores, controle du `session_id` retire. Les repertoires de fixture restent dans le dossier temporaire : un hook de garde du profil operateur refuse d'ecrire un script Python qui supprime des fichiers.
+
+### Faux passages acceptes en revue
+
+- `cat D:\chemin\fichier` sans guillemets : le decoupage POSIX consomme les antislashs, le fichier n'est pas trouve, la lecture passe.
+- `cat fichier 2>/dev/null` : la redirection porte un metacaractere, la commande n'est pas jugee.
+- Derive du `cwd` du payload par rapport au cwd reel du shell : cout borne a un tour.
+- Ajout non verrouille au fichier d'etat : au pire, un refus en trop.
+
+Dans les deux premiers cas, le comportement est celui d'avant le hook.
+
+### Ce qu'il ne faut pas reintroduire en rebasant
+
+- Appeler `outline` AVANT de lire l'etat : la seconde tentative relancait l'oracle pour rien, medianes de 113,9 a 146,5 ms au lieu du plancher.
+- Ecrire l'etat avant l'oracle ou avant la regle des 3x : un fichier encore sans plan (exit 3) serait marque refuse, et ne serait plus jamais refuse une fois indexe dans la meme session.
+- Importer `aidex_hook_common` en tete de fichier : chaque `Read` et chaque commande Bash relirait la configuration Claude avant tout filtre (6,0 ms mesures).
+- Resoudre l'operande de `cat` contre le cwd du processus hook, ou decider sur le cwd seul : c'est le defaut de la branche Bash de `aidex-grep-nudge` (carte `3c8c68ab`).
+- Refuser sans `session_id`, ou refuser sans pouvoir enregistrer l'etat : boucle de refus sans echappatoire.
+
+### Reference
+
+Plan : `docs/plans/cli-wrappers-hooks-plan.md`, sections 0.5, 0.7 (rang 1, point c) et 4.1. Specs `spec_423fcbf4` (hook et correctifs de revue) et `spec_ae348697` (latence).

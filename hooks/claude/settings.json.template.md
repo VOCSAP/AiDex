@@ -1,9 +1,9 @@
 # Installing the AiDex hooks
 
 `settings.json.template` next to this file is the single reference for
-everything AiDex needs in your `settings.json`: three ready-to-paste blocks
-covering search-time guidance (`PreToolUse`) and index maintenance
-(`PostToolUse`, `Stop`). No installer exists for this fork -- do the steps
+everything AiDex needs in your `settings.json`: ready-to-paste blocks
+covering search-time and read-time guidance (`PreToolUse`) and index
+maintenance (`PostToolUse`, `Stop`). No installer exists for this fork -- do the steps
 below by hand.
 
 ## Install steps
@@ -11,14 +11,16 @@ below by hand.
 1. Copy the hook scripts from this repo into your Claude Code profile:
    ```
    %USERPROFILE%\.claude\hooks\aidex-grep-nudge.py
+   %USERPROFILE%\.claude\hooks\aidex-read-nudge.py
    %USERPROFILE%\.claude\hooks\aidex-queue-edit.py
    %USERPROFILE%\.claude\hooks\aidex-queue-drain.py
    %USERPROFILE%\.claude\hooks\aidex_hook_common.py
    ```
-   The source for all four is `hooks/claude/` in this repo (moved there from
+   The source for all five is `hooks/claude/` in this repo (moved there from
    the repo root in commit 6c66217 -- do not copy from the old root `hooks/`
-   path). `aidex_hook_common.py` is required because `aidex-queue-edit.py`
-   and `aidex-queue-drain.py` import it; `aidex-grep-nudge.py` is standalone.
+   path). `aidex_hook_common.py` is required because `aidex-read-nudge.py`,
+   `aidex-queue-edit.py` and `aidex-queue-drain.py` import it;
+   `aidex-grep-nudge.py` is standalone.
 2. Open your real `%USERPROFILE%\.claude\settings.json` and merge the
    `PreToolUse`, `PostToolUse` and `Stop` entries from
    `settings.json.template` into your existing `hooks` object. Merge, do not
@@ -67,6 +69,18 @@ gate any search.
   answers `covered:true` -- steering the agent to `mcp__aidex__aidex_query`
   instead. Any other verdict, and any oracle failure (timeout, crash,
   unreachable), lets the search through unmodified.
+- **PreToolUse** (`aidex-read-nudge.py`, matcher `Read|Bash`) refuses an
+  unbounded read of a large file of an indexed project and hands back the
+  file's line-ranged plan from the CLI's `outline` subcommand, so the agent
+  re-reads with `offset`/`limit`. It only looks at a `Read` without `offset`
+  and `limit`, or a Bash command that is a lone `cat <file>` (resolved against
+  the session cwd from the payload); `head`, `tail`, `sed -n`, a piped or
+  chained `cat`, a `cat` with a display flag (`-A`, `-v`, `-e`, `-t`, `-E`,
+  `-T`, `--show-*`) and a payload without `session_id` pass. It refuses only when the file is over the threshold,
+  `outline` exits 0, and the file is more than three times the size of the
+  plan. Each (session, file) is refused at most once: repeating the same read
+  lets it through, recorded in a `<session>.read-nudge.txt` file next to the
+  reindex queue.
 - **PostToolUse** (`aidex-queue-edit.py`) ONLY appends a
   `<project>\t<file>` line to a per-session queue file in the OS temp dir.
   It never spawns Node and never touches the AiDex CLI.
@@ -95,10 +109,16 @@ an explicit `covered:true` verdict from the coverage oracle, so any oracle
 outage or ambiguous answer must let the search proceed -- an unavailable
 oracle must never be able to stop an agent from searching at all.
 
+`aidex-read-nudge.py` fails open the same way: any `outline` exit code other
+than 0, a timeout, a missing interpreter or entry point, an unreadable payload,
+an unwritable state file, or any exception lets the read proceed.
+
 ## Environment variables (all optional)
 
 Read by `hooks/claude/aidex_hook_common.py`, shared by the two reindex
-hooks (`aidex-grep-nudge.py` is standalone and does not import it). Node
+hooks and `aidex-read-nudge.py` (`aidex-grep-nudge.py` is standalone and does
+not import it), except the two `AIDEX_READ_NUDGE_*` variables, read by
+`aidex-read-nudge.py` alone. Node
 resolution is automatic (falls back to a pinned nvm path discovered from
 the `aidex` MCP server entry in `~/.claude.json` /
 `claude_desktop_config.json`), so normally nothing needs to be set.
@@ -108,6 +128,8 @@ the `aidex` MCP server entry in `~/.claude.json` /
 | `AIDEX_NODE` | Overrides the Node executable used to run the AiDex CLI. Falls back to auto-discovery, then a bare `node` on PATH. |
 | `AIDEX_ENTRY` | Overrides the path to `build/index.js`. Falls back to the same auto-discovery as `AIDEX_NODE`. |
 | `AIDEX_UPDATE_TIMEOUT_S` | Seconds the Stop hook waits for one `update` subprocess (per project, per chunk) before giving up and requeuing. Default `3`. Kept short on purpose: a held SQLite writer lock (e.g. a concurrent `aidex_init`) can stall for several seconds, and the Stop hook must fail fast and retry on the next Stop rather than block the turn. |
+| `AIDEX_READ_NUDGE_MIN_BYTES` | Size in bytes a file must exceed before `aidex-read-nudge.py` asks for its plan. Default `5000`; the useful range measured on this station's transcripts is `2000` to `10000`. |
+| `AIDEX_READ_NUDGE_TIMEOUT_S` | Seconds `aidex-read-nudge.py` waits for `outline` before letting the read through. Default `1.5` (`outline` answers in 65 to 167 ms). |
 
 There is no `CHUNK_SIZE` environment variable -- the 100-files-per-spawn
 chunk size is a hardcoded constant (`CHUNK_SIZE` in

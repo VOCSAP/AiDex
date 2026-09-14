@@ -8,6 +8,16 @@
           "command": "python \"$USERPROFILE/.claude/hooks/aidex-grep-nudge.py\""
         }
       ]
+    },
+    {
+      "matcher": "Read|Bash",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python \"$USERPROFILE/.claude/hooks/aidex-read-nudge.py\"",
+          "timeout": 5
+        }
+      ]
     }
   ],
   "PostToolUse": [
