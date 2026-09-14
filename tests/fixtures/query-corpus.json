@@ -1,7 +1,7 @@
 {
   "meta": {
     "spec_id": "spec_fd1ed424",
-    "pinnedCommit": "b3b8289036951156cf929ebb797536e0398627da",
+    "pinnedCommit": "8f0dcdd2cbe23f25be4d37a89cc6ad65509c238f",
     "purpose": "Reference query set to measure ranking/behavior changes from Lot B (roadmap b27f5663 trigram prefilter for contains mode, roadmap 10096483 multi-term IDF ranking) against a real, already-indexed codebase (this repo) instead of a synthetic fixture.",
     "corpus": "This repo (AiDex) at the pinned commit above. The harness reconstructs that exact tree via `git archive <pinnedCommit>` into a fresh temp dir at test time, so ground truth never drifts under concurrent edits to the live working tree.",
     "groundTruthMethod": {
