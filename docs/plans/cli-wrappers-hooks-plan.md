@@ -238,7 +238,99 @@ chaque `tool_result` par sa durée de vie dans le contexte (octets multipliés p
 nombre d'inférences suivantes jusqu'à compaction ou fin de session), recoupée avec
 `usage.cache_read_input_tokens`. Un Read de 20 Ko en début de longue session coûte
 bien plus qu'un `git diff` en fin de tour ; le classement pourrait changer, pas le
-signe des verdicts ci-dessus (SUPPOSÉ).
+signe des verdicts ci-dessus (SUPPOSÉ). **Réserve levée pour le hook Read : §0.8.**
+
+### 0.8 Borne mécanique du hook read-nudge (mesure du 2026-09-14)
+
+Scripts et sorties nommées sous `docs/dev-notes/ab-read-nudge/` (privé au fork,
+gitignore) : `replay-bound.mjs` (sortie `replay-bound.2026-09-14T14-58-05-578Z.out.txt`)
+et `prune-probe.mjs` (sortie `prune-probe.2026-09-14T17-18-03-748Z.out.txt`). Même
+corpus qu'en §0.1, transcripts principaux seulement, relu au moment du run : 1 904 puis
+1 918 fichiers (la session de mesure grossit entre deux runs).
+
+**Méthode du rejeu** (MESURÉ sur le code du script, aucun run modèle) :
+- sélection : `Read` sans `offset` ni `limit`, résultat non erroné de plus de N octets,
+  fichier résolu contre le `cwd` de la ligne et situé sous une racine du registre
+  global (`~/.aidex/global.db`, 19 racines ayant encore un `.aidex/index.db`) ;
+  `tool_use_id` compté une fois (628 doublons de transcripts repris) ; **premier Read
+  par (session, fichier)**, comme le hook ne refuse qu'une fois ;
+- plan : `aidex outline` lancé AUJOURD'HUI sur le fichier (1 307 appels) ; fichier
+  disparu, `outline` en exit 3 (`file not in index`, `no headings`, `no symbols`,
+  `stale index`) et règle 3x (taille du fichier aujourd'hui inférieure ou égale à
+  3 fois le plan) sont exclus et comptés ;
+- économie d'un Read refusé = (octets du résultat - octets du plan - octets du Read
+  borné de remplacement) x tours restants, un tour étant un message assistant à
+  `message.id` distinct, comptés jusqu'au prochain `system/compact_boundary` ou la
+  fin du transcript ;
+- remplacement : borne HAUTE = aucun Read de remplacement (0 octet) ; borne CENTRALE =
+  plage du symbole du plan contenant la première ligne du `old_string` du premier
+  `Edit` suivant sur le même fichier, sinon plage médiane du plan (une seule
+  hypothèse, DÉDUIT).
+
+**Résultat au seuil 5 000 octets** (MESURÉ) : 3 737 candidats toute taille ; 1 754
+sélectionnés ; 212 fichiers disparus (12,1 pourcent) ; 216 sans plan aujourd'hui
+(`file not in index` 102, `no headings` 89, `no symbols` 20, `stale index` 5) ; 78 sous
+la règle 3x ; **1 254 refusés**, dont 478 suivis d'un `Edit` du même fichier.
+Résultat médian d'un Read refusé 9 986 octets (p90 25 410), plan médian 806 octets ;
+tours restants médiane 65, p90 238, max 762, 12 à zéro. Économie HAUTE 1 453 117 146
+octets x tours, CENTRALE 1 217 646 253 (run précédent, 1 248 refusés, écart de six Reads
+dû à la croissance du corpus entre les deux runs).
+
+**Part des refus sans `Edit` ultérieur** (MESURÉ) : 776 Reads sur 1 254, soit 61,9
+pourcent, portant 742 192 509 octets x tours, soit 51,1 pourcent de la borne haute, sur
+331 sessions. Une famille de tâches en lecture seule couvre donc la moitié de
+l'économie mécanique.
+
+**Sensibilité au seuil** (MESURÉ, part de la borne haute dans les tokens d'entrée des
+sessions touchées, conversion à 4,5-4,2 octets par token, voir le piège d'unité
+ci-dessous) : 2 000 octets, 1 746 refusés, 1,76-1,89 pourcent ; 5 000, 1 254 refusés,
+1,78-1,91 ; 10 000, 615 refusés, 1,60-1,72. La part est plate : le seuil ne change
+presque rien, l'économie est portée par les gros fichiers lus tôt dans de longues
+sessions (les dix premiers Reads sont des `DESIGN-*.md` et des tests de 25 à 52 Ko à
+186-582 tours restants).
+
+**Dénominateur, même chemin de mesure** (MESURÉ) : somme de `cache_read` +
+`cache_creation` + `input` des messages assistant distincts des 427 sessions touchées :
+18 127 322 925 tokens ; sur les 1 904 sessions : 33 108 799 410. Par session touchée,
+borne haute à 4,5 octets par token : médiane 349 041 tokens, p90 2 022 073, max
+10 465 634.
+
+**Verdict élagage** (MESURÉ, `prune-probe.mjs`) : aucun élagage des `tool_result` sur ce
+poste. Taille du prompt par appel = `cache_read` + `cache_creation` + `input` par
+`message.id` distinct ; sur 138 370 paires de messages assistant consécutifs, 299 chutes
+de plus de 20 pourcent coïncident avec un `compact_boundary`, 19 n'en ont pas (0,014
+pourcent, 17 sessions), dont 12 aux tours 1-2 d'une session ; aucune ligne de journal
+entre les deux tours de ces chutes ne nomme un nettoyage. Sur 10 Reads sans borne de
+plus de 20 Ko tirés au sort (graine 1) dans 10 sessions de plus de 100 tours, le prompt
+ne redescend jamais sous sa valeur post-Read jusqu'à la compaction ou la fin (queues
+de 7 à 275 tours). Le multiplicateur "tours restants" est donc légitime. Piège de
+mesure : les messages assistant `model: "<synthetic>"` ou `isApiErrorMessage` (limite
+d'usage atteinte, "No response requested") portent une usage nulle et simulent des
+chutes à zéro ; ils sont filtrés.
+
+**Piège d'unité** : le taux de 4,2-4,5 octets par token de la doctrine a été mesuré sur
+des schémas JSON d'outils et ne s'applique pas à une sortie `Read`. MESURÉ sur 8 538
+tours portant plus de 5 000 octets de `tool_result` : octets de `tool_result` par token
+de croissance du prompt, p10 0,92, p25 1,60, **médiane 2,02**, p75 2,22, p90 2,42 ; en
+comptant tous les octets du message user plus 4 fois la sortie, médiane 2,44, p90
+2,97. Sur les 10 Reads échantillonnés, 0,87 à 2,76 après retrait du surcoût médian
+d'un tour sans `tool_result` (287 à 2 186 tokens selon la session) ; un cas hors
+distribution non expliqué (`MEMORY.md`, 20 593 octets pour un saut de 24 206 tokens).
+**Borne reconvertie** (DÉDUIT, taux observé appliqué au numérateur, dénominateur
+inchangé) : 1 453 M octets x tours à 2,44 puis 2,02 octets par token = **595 à 719 M
+tokens, soit 3,3 à 4,0 pourcent des tokens d'entrée des 427 sessions touchées** (au
+lieu de 1,8-1,9), 1,8 à 2,2 pourcent sur tout le corpus. Le plan est converti au même
+taux, le rapport résultat/plan ne change pas.
+
+**Conséquence sur le §3.4** (DÉDUIT) : une campagne A/B `claude -p` sur des tâches de
+8-15 tours ne peut pas conclure sur les tokens. Un Read refusé de 10 Ko y vaut
+quelques dizaines de milliers de tokens sur un run d'environ un million, soit un effet
+de l'ordre de 2 à 4 pourcent ; avec une variance run-à-run SUPPOSÉE à 30 pourcent, un
+test apparié demande de l'ordre de 7,84 x (0,30 / 0,03)^2, soit plusieurs centaines de
+paires. Le pilote de 3 runs garde une valeur QUALITATIVE seulement : le hook se
+déclenche par les réglages projet de la copie, un `Edit` après un `Read` partiel passe
+(MESURÉ au §0.2), pas de boucle de refus, pas d'échec de tâche. **La famille de tâches
+du pilote (édition ou lecture seule) est EN ATTENTE de la décision de l'opérateur.**
 
 ---
 
