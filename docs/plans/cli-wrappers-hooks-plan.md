@@ -1,9 +1,15 @@
 # Plan — Wrappers CLI et hooks de lecture : réduire le contexte hors recherche
 
-> **Statut (2026-09-13)** : document d'intention. Rien n'est codé, rien n'est mesuré
-> sur la trace. Chaque proposition ci-dessous est étiquetée SUPPOSÉ tant que la
-> Phase 0 (§3) n'a pas rendu ses chiffres. Un `non` mesuré en Phase 0 ferme la
-> piste concernée sans discussion.
+> **Statut (mise à jour 2026-09-14)** : inventaire du poste et Phase 0 (§3.1, §3.2,
+> §3.3) MESURÉS le 2026-09-14 sur la trace réelle. Verdict : piste Read ouverte
+> (rang 1), retrait deny-list de dix outils MCP ouvert (rang 2), piste git au seuil
+> (rang 3, périmètre réduit), piste test fermée côté tokens, `aidex git history`
+> fermé. Voir la section « 0. Inventaire et mesure du 2026-09-14 » ci-dessous.
+> Rien n'est codé. Script et sortie brute (privés au fork, `docs/dev-notes/`) :
+> `measure-tool-results.mjs`, `measure-tool-results.out.txt`.
+>
+> Statut d'origine (2026-09-13) : document d'intention ; chaque proposition était
+> étiquetée SUPPOSÉ tant que la Phase 0 n'avait pas rendu ses chiffres.
 
 **Date** : 2026-09-13.
 **Branche** : `local-patches` (doc seul, aucune modification de code).
@@ -16,6 +22,220 @@ pour réduire les tokens des outils internes d'une session de développement ? �
 Ce document est autoportant. Lire d'abord `.claude/CLAUDE.md` (doctrine) : ce plan s'y
 conforme, en particulier **chaque phase démarre par une MESURE, pas par du code**, et
 l'unité de jugement reste le **nombre de lignes rendues au contexte de l'agent**.
+
+---
+
+## 0. Inventaire et mesure du 2026-09-14
+
+Cette section documente l'inventaire du poste (§11) et la Phase 0 (§3) exécutés le
+2026-09-14 sur la station de l'opérateur. Elle ne remplace aucune décision arbitrée
+(§2) : elle ouvre, ferme ou reporte chaque piste par la mesure. Étiquetage : tout ce
+qui est chiffré ci-dessous est MESURÉ sauf mention DÉDUIT ou SUPPOSÉ.
+
+### 0.1 Inventaire du poste
+
+| # | Point | État mesuré | Preuve |
+|---|-------|-------------|--------|
+| 1 | `~/.claude/CLAUDE.md` | Aucun bloc AiDex. 19 062 octets, 0 marqueur `AIDEX-START`/`AIDEX-END`. Trois mentions génériques d'AiDex dans la doctrine outillage (lignes 8, 11, 69), deux citations de preuve dans `rules/agent-forge.md` et `rules/git.md`. L'affirmation de l'opérateur (« rien porté ») est confirmée. | `wc -c`, `grep -n "AIDEX-START\|AIDEX-END"` -> 0, `grep -ni aidex` sur l'arbre `~/.claude/` |
+| 2 | Hooks | Installés au niveau GLOBAL seulement (`~/.claude/settings.json`, symlink vers `claude-config/settings.json`), identiques au template : PreToolUse `Grep\|Bash` -> `aidex-grep-nudge.py` ; PostToolUse `Edit\|Write` -> `aidex-queue-edit.py` (timeout 5) ; Stop -> `aidex-queue-drain.py` (timeout 15). Les trois scripts existent. Le `.claude/settings.json` du projet (132 octets) et `settings.local.json` (171 octets) ne portent aucune clé `hooks`. | diff contre `hooks/claude/settings.json.template` : zéro divergence |
+| 3 | Skill `aidex` | EXISTE : `~/.claude/claude-config/skills/aidex/SKILL.md` (via symlink `~/.claude/skills`), 10 975 octets, 166 lignes. Contenu : substitution Grep/Glob/Read par `aidex_query`/`aidex_signature`, règle « AiDex pour trouver, grep pour prouver une absence ». Aucune mention des sous-commandes CLI. | `wc -c`, `wc -l` |
+| 4 | Serveur MCP `aidex` | Déclaré dans `~/.claude.json`, bloc `mcpServers` global : `command` = binaire Node 22.11.0 de nvm, `args` = `build/index.js` du dépôt, PAS de clé `env`, donc `AIDEX_TOOLS_DISABLE` non définie (le défaut `DEFAULT_DISABLED_TOOLS` s'applique). `tools/list` réel : **22 outils, 16 430 octets de payload JSON**. Concorde avec la doctrine (33 - 11 = 22). Non comparable aux 27 745 octets de §6.2, qui sont de la source TypeScript. | `initialize` puis `tools/list` en JSON-RPC stdio sur le binaire déclaré |
+| 5 | Corpus de trace | `~/.claude/projects/` : 80 projets, 2 305 fichiers `.jsonl` (dont 446 transcripts de sous-agents sous `<session>/subagents/`), 2 083 258 095 octets. Période : premier timestamp interne 2026-05-14T10:45Z, dernier 2026-09-14. Écart avec le plan (1 923 / 70 au 2026-09-02) : croissance normale sur 12 jours. | `find ... -name "*.jsonl" \| wc -l`, somme des tailles |
+| 6 | Node | `node` du PATH : v24.18.0. Binaire déclaré dans `CLAUDE.local.md` : v22.11.0, existe (80 511 640 octets). `.nvmrc` = `20`, `engines.node` = `>=20.0.0` (plancher upstream, cohérent avec la contrainte plus stricte du fork). | `node --version`, `ls -la` |
+
+Vérification §3.3 (prérequis du hook Read) : **un `Read` borné suffit à débloquer
+`Edit`.** MESURÉ dans la session du 2026-09-14 : `Read` avec `offset=1`, `limit=3`
+sur un fichier jamais lu dans la session (`docs/dev-notes/next-session-prompt.md`),
+puis `Edit` d'une chaîne de la ligne 1 ; sortie décisive : « The file ... has been
+updated successfully », aucune erreur « File has not been read yet » ; puis retour
+arrière par un second `Edit`. D3 tient. Non mesuré : un `Edit` d'une chaîne située HORS de la
+plage lue (sans intérêt pour le hook, qui borne la plage que l'agent va éditer).
+
+### 0.2 Phase 0 : méthode
+
+Script `docs/dev-notes/measure-tool-results.mjs` (privé au fork), Node 22.11.0.
+Unité unique : octets UTF-8 du `content` de chaque bloc `tool_result` (somme des
+blocs `text` quand `content` est un tableau ; 216 blocs image comptés à part, hors
+octets). Appariement `tool_use` -> `tool_result` par `tool_use_id` dans le même
+fichier, dédoublonnage global par `tool_use_id` (6 579 doublons de transcripts repris
+ou forkés ignorés ; 5 résultats orphelins, 51 appels sans résultat). « Même tour » :
+entre deux messages utilisateur ne portant aucun `tool_result` et non `isMeta`.
+Bash : segments coupés sur `&&`, `||`, `;`, `|`, retour à la ligne (découpe naïve,
+ignore les guillemets) ; premier segment effectif après `cd`, `export` et `VAR=val`.
+Ce sont des octets comptés UNE fois à l'émission, pas le coût facturé : un résultat
+lu en début de longue session est re-facturé à chaque inférence suivante (réserve de
+§0.6).
+
+Corpus principal : 1 860 transcripts de session, 0 fichier en erreur, 1 ligne JSON
+invalide, 141 972 résultats appariés, **167 324 169 octets**. Les 446 transcripts de
+sous-agents (6 248 résultats, 13,2 Mo) sont mesurés à part et ont le même profil
+(Read 49,9 pourcent, Bash 34,2 pourcent). Tous les chiffres des §0.2 à §0.4 viennent
+d'un seul run, le seul présent sur disque, horodaté 2026-09-14T07:43:46Z (période
+couverte 2026-05-14T10:45:41Z à 2026-09-14T07:43:35Z). Fichiers lus : 2 306 contre
+2 305 à l'inventaire, corpus vivant (il inclut la session de mesure).
+
+### 0.3 Classement commun (§3.1)
+
+Pourcentages sur le total tous outils confondus, corpus principal.
+
+| Outil | Appels | Pourcent appels | Octets | Pourcent octets |
+|-------|-------:|----------------:|-------:|----------------:|
+| Read | 19 074 | 13,4 | 74,4 M | **44,5** |
+| Bash | 66 064 | 46,5 | 60,4 M | **36,1** |
+| `roadmap_get` (MCP) | 845 | 0,6 | 5,66 M | 3,4 |
+| Grep | 5 397 | 3,8 | 5,26 M | 3,1 |
+| Edit | 17 912 | 12,6 | 3,45 M | 2,1 |
+| Write | 7 637 | 5,4 | 1,45 M | 0,9 |
+| Glob | 669 | 0,5 | 0,34 M | 0,2 |
+| tous les noms `mcp__aidex__*` | 5 417 | 3,8 | 2,75 M | 1,6 |
+| Tous MCP | 22 500 | 15,8 | 20,8 M | 12,4 |
+
+Bash par premier mot (part du total tous outils) : `sed` 3 582 appels / 8,32 M / 5,0
+pourcent ; `grep` 9 380 / 6,93 M / 4,1 ; `echo` 4 896 / 5,97 M / 3,6 ; `kleos-cli`
+7 192 / 4,83 M / 2,9 ; `cat` 2 887 / 4,62 M / 2,8 ; `git diff` 1 629 / 3,85 M / 2,3 ;
+`git show` 1 180 / 2,89 M / 1,7 ; `bun test` 4 488 / 2,29 M / 1,4.
+
+Lecture déguisée en Bash, premier segment strict, sans pipe : `sed -n` 2 679 appels /
+7,21 M ; `cat <fichier>` 610 / 2,64 M ; `head`/`tail` 422 / 0,51 M. Soit, pour `cat`
+plus `sed -n`, **3 289 appels, 9,84 M, 5,9 pourcent du total**. Les commandes entières
+qui CONTIENNENT `head` ou `tail` n'importe où pèsent 26,7 M ; ce sont les octets de ces
+commandes complètes, pas ceux de `head`/`tail`. DÉDUIT de l'écart avec les 0,51 M en
+premier segment : ce poste est presque entièrement du pipe réducteur (`| tail -N`), pas
+du dump. Cible, formule (relatif + sous `cwd`) / total de la même table (premier
+segment strict, pipes confondus) : `sed -n` (6 738 567 + 687 401) / 8 226 128 = 90,3
+pourcent ; `cat` (2 307 845 + 692 920) / 3 547 219 = 84,6 pourcent. DÉDUIT : un
+préfixe `cd DIR &&` est compté relatif sans vérification.
+
+### 0.4 Mesures par piste (§3.2)
+
+**Read.**
+- Taille des résultats : p50 2 225 octets, p90 8 717, p99 27 977, max 67 376.
+- Le plafond de 2 000 lignes n'est JAMAIS atteint (max observé 1 531 lignes sur
+  18 500 Read portant `numLines`). La borne réelle est le plafond de tokens : 19
+  erreurs « exceeds maximum allowed tokens », 29 résultats tronqués (0,2 pourcent).
+  Le §1 (« lit jusqu'à 2 000 lignes ») est exact mais non contraignant en pratique.
+- Sans `offset` ni `limit` : **6 428 appels (33,7 pourcent), 41,8 M (56,2 pourcent des
+  octets Read, 25,0 pourcent du total tous outils)**.
+- Suivis d'un `Edit`/`Write`/`MultiEdit`/`NotebookEdit` du même chemin dans le même
+  tour : 9 818 appels (51,5 pourcent), 31,0 M (41,7 pourcent).
+- Sans borne ET suivis d'édition : 1 968 appels, 13,6 M. Donc **sans borne et NON
+  édités : 6 428 - 1 968 = 4 460 appels, 41,83 M - 13,58 M = 28,25 M, 16,9 pourcent du
+  total tous outils**. C'est le gisement du hook Read.
+- Profil de ce sous-ensemble (compte direct du même run : 4 460 appels, 28 254 530
+  octets, égal à la différence ci-dessus) : p50 3 895 octets, p90 15 048, p99 41 259.
+  Seuils : au-dessus de 2 Ko, 68,4 pourcent des appels et 96,3 pourcent des octets ;
+  au-dessus de 5 Ko, 41,2 et 81,8 ; au-dessus de 10 Ko, 18,1 et 55,7 ; au-dessus de
+  20 Ko, 5,7 et 28,2.
+- Extensions (appels / octets / part des octets du sous-ensemble) : `.md` 794 /
+  7 401 725 / 26,2 ; `.py` 1 057 / 7 049 581 / 25,0 ; `.ts` 726 / 5 620 939 / 19,9 ;
+  `.diff` 151 / 1 701 060 / 6,0 ; `.go` 240 / 1 392 916 / 4,9 ; `.rs` 127 / 983 112 /
+  3,5 ; `.txt` 130 / 703 434 / 2,5 ; `.tsx` 65 / 590 564 / 2,1 ; `.json` 284 / 581 150
+  / 2,1 ; `.sh` 80 / 397 931 / 1,4.
+  DÉDUIT : `.md` + `.diff` + `.txt` = 34,7 pourcent des octets sur des fichiers que
+  `aidex_signature` ne structure pas en méthodes.
+- Fichier sous un projet ayant un `.aidex/index.db` sur disque AUJOURD'HUI (remontée
+  des parents depuis le fichier, chemin résolu contre le `cwd` de la ligne) : 61,7
+  pourcent des appels, **68,1 pourcent des octets** ; hors de tout projet indexé : 36,8
+  et 31,8 ; non résolvable : 63 appels. Sous-agents, profil inversé : 68,9 pourcent des
+  octets hors projet indexé. Limites : projet indexé ne veut pas dire fichier indexé
+  (croisement extension x indexé non calculé) ; état du disque du jour, pas de la date
+  de la session.
+
+**git.**
+- Formes à hunks : `git diff` nu (sans `--stat`/`--name-only`/`--numstat`/
+  `--shortstat`/`--name-status`) 1 121 appels / 3,45 M / 2,1 pourcent ; `git show`
+  avec hunks 892 / 2,21 M / 1,3 ; `git log -p` 6 / 9 917 octets. **Total exclusif :
+  2 019 appels, 5,67 M, 3,4 pourcent** du total tous outils. Borne haute (commandes
+  composées CONTENANT une forme à hunks) : 3 282 appels, 8,07 M, 4,8 pourcent.
+- `git blame` 1 appel / 576 octets, `git log -L` 3 / 2 058, `git log -S`/`-G` 39 /
+  10 474 : **43 appels, 13 108 octets, 0,008 pourcent**.
+- Échelle : `git show --stat` 288 / 0,68 M ; `git diff --stat` 508 / 0,40 M ; git
+  total 9 263 appels / 10,3 M / 6,2 pourcent.
+
+**test / build.**
+- `jest` 113 appels / 183 495 octets ; `npm run build` 235 / 157 971 ; `tsc` 190 /
+  71 220 ; `npm test` 17 / 24 079 ; `npx jest` 3 / 4 355. **Total des classes du
+  brief : 558 appels, 441 120 octets, 0,26 pourcent** du total.
+- Échelle des autres runners (autres projets du poste) : `bun test` 4 488 / 2,29 M
+  (1,4 pourcent), `pytest` 326 / 0,29 M, `cargo test` 213 / 0,15 M. Toutes classes
+  test/build confondues : 8,5 pourcent des appels Bash, 5,3 pourcent des octets Bash.
+- Part des runs en échec : les deux critères DIVERGENT (`is_error` du bloc contre
+  motif `FAIL`/`failed`/`error TS` dans le texte) : jest 5 contre 37 (recouvrement 2),
+  tsc 26 contre 39 (recouvrement 9), `npm run build` 8 contre 14. Cause DÉDUITE, non
+  vérifiée : les pipes `| tail` masquent le code de sortie, et `failed` attrape des
+  logs. La question reste ouverte mais sans objet, la piste étant fermée par le volume.
+
+**Appels agent par nom `mcp__aidex__*`** (condition du §6.1 avant tout retrait),
+corpus principal, appels / octets : `signature` 500 / 1 142 604 (41,5 pourcent des
+octets `mcp__aidex__*`) ; `query` 2 754 / 1 026 286 (37,3) ; `update` 1 790 / 182 505 ;
+`signatures` 25 / 99 651 ; `search` 54 / 99 559 ; `status` 71 / 34 233 ; `session` 3 /
+23 300 ; `init` 70 / 22 910 ; `edges` 14 / 22 097 ; `tree` 18 / 17 519 ; `scan` 19 /
+14 123 ; `files` 12 / 8 502 ; `global_status` 4 / 5 819 ; `settings` 10 / 3 030 ;
+`screenshot` 15 / 2 938 ; `summary` 6 / 2 721 ; `global_refresh` 6 / 1 357 ; `remove`
+19 / 1 111 ; `viewer` 5 / 630 ; `coverage` 3 / 593 ; `global_init` 1 / 290 ; `windows`
+1 / 69. Hors `tools.ts` : `aidex_refs` 12 / 35 335 (prototype). Les 11 outils déjà
+filtrés : `note` 3 / 2 698, `task` 1 / 122, `log` 1 / 47, les huit autres 0, soit 5
+appels au total, le chiffre exact de la doctrine. Sous-agents : 136 appels, dont `query` 89 et `signature` 11 ; aucun appel
+sur les 12 candidats sauf `update` 26, `status` 4, `init` 2, `scan` 1.
+
+### 0.5 Verdict
+
+| Piste ou candidat | Verdict | Chiffre qui tranche |
+|-------------------|---------|---------------------|
+| Read borné (hook + `aidex outline`) | **OUVRIR, rang 1** | 25,0 pourcent du total en Read sans borne, dont 16,9 points non suivis d'édition ; plus 5,9 pourcent en `cat`/`sed -n` directs, ce qui justifie le matcher `Read\|Bash` du §4.1 |
+| Seuil du hook Read (§9.1) | 5 Ko comme point de départ, à tourner entre 2 et 10 Ko | au-dessus de 5 Ko : 41 pourcent des appels du sous-ensemble mais 82 pourcent de ses octets ; 2 Ko refuserait 68 pourcent des appels pour 14,5 points de plus |
+| Hook Read hors projet indexé (§9.4) | Position par défaut (non) MAINTENUE | un hook limité aux projets indexés couvre 68,1 pourcent des octets du sous-ensemble ; les 31,8 pourcent restants (8,97 M) sont laissés hors hook, faute d'index pour rendre un plan (DÉDUIT : un hook sans plan à proposer ne ferait que refuser) |
+| `aidex outline` markdown | OUVRIR avec la piste Read, pas après | `.md` = 26,2 pourcent des octets du sous-ensemble (première extension en octets ; en appels, `.py` passe devant) |
+| git digest (`aidex git diff`) | **OUVRIR, rang 3, périmètre réduit** (digest seul ; `--callers` en option ultérieure) | 3,4 pourcent exclusif, 4,8 borne haute : au seuil « quelques pourcents » du §3.1, arbitrage opérateur demandé le 2026-09-14 |
+| `aidex git history` | **FERMER** | 43 appels, 13 108 octets, 0,008 pourcent sur quatre mois |
+| test / build digest (`aidex test`, `aidex build`) | **FERMER côté tokens** | 0,26 pourcent du total. Le garde des pièges d'environnement (D7 : refus de `--runInBand`, binaire Node) reste légitime mais c'est un hook de refus sans digest, hors de ce lot (SUPPOSÉ quant à sa taille) |
+| Deny-list : `init`, `global_init`, `coverage`, `settings`, `global_status`, `scan`, `global_refresh`, `viewer`, `remove`, `session` | **OUVRIR, rang 2, manque une mesure** | 1 à 70 appels agent chacun sur quatre mois et 80 projets (`init` 70, `scan` 19, `remove` 19, `settings` 10, les six autres à un chiffre). `init` et `session` sont couverts par le hook `SessionStart` du §6.4 ; `remove`, `scan`, `settings` n'ont pas de déclencheur autre que `aidex --help` (DÉDUIT). Manque : le poids en octets de ces dix définitions dans les 16 430 octets du `tools/list`, à mesurer avant le retrait pour connaître le gain par session |
+| Deny-list : `update` | **FERMER le retrait, manque une mesure** | 1 790 appels agent, deuxième outil en appels (derrière `query` 2 754), troisième en octets : ce n'est pas seulement un appelant hook. À mesurer avant de rouvrir : la part des appels postérieurs à l'installation des hooks `queue-edit`/`queue-drain` (les hooks sont entrés dans le dépôt au commit `fca6184` du 2026-08-11, MESURÉ par `git log -- hooks/claude/aidex-queue-edit.py` ; la date d'installation sur le poste reste à établir, SUPPOSÉ le même jour) |
+| Deny-list : `status` | **FERMER le retrait** | 71 appels contre 6 pour `summary` : l'agent préfère `status`. Fusionner `summary` dans `status` serait la piste, hors de ce lot |
+| `screenshot`, `windows` | inchangé (restent MCP, §6.4) | 15 et 1 appels ; non mesuré ici au-delà du compte |
+
+### 0.6 Contradictions entre l'état du poste et le plan
+
+1. **Le skill `aidex` existe déjà** (10 975 octets), orienté outils MCP. Le §6.4
+   propose un skill `aidex-cli` séparé. Ajustement : étendre le skill existant d'une
+   section CLI plutôt que d'en créer un second, une seule ligne de description par
+   session au lieu de deux. Arbitrage mineur, à trancher au moment de l'écrire.
+2. **Le bloc `CLAUDE_MD_BLOCK` de `aidex setup` n'est pas installé.** Le constat du
+   §6.4 point 3 vaut pour le code de `setup.ts`, pas pour le poste : réduire ce bloc
+   reste une correction du code, sans effet mesurable sur cette station.
+3. **`update` est un geste agent, pas seulement un geste de hook** (1 790 appels). Le
+   §6.2 le classe « appelant réel : les hooks git et Stop » ; la trace dit autre chose.
+   Le retrait est suspendu (§0.5).
+4. **Le plafond de 2 000 lignes de `Read` ne mord jamais** ; la borne réelle est le
+   plafond de tokens (19 erreurs). Le §1 reste vrai, mais ce n'est pas lui qui coûte.
+5. **Les hooks vivent au niveau global uniquement.** Le `settings.json` du projet n'en
+   porte aucun ; un lecteur du dépôt seul ne peut pas le savoir. Pas une contradiction,
+   une réserve à recopier dans tout brief.
+
+### 0.7 Ordre de réalisation ajusté (sans coder)
+
+Chaque rang démarre par sa vérification, pas par du code.
+
+1. **Read** : (a) variante minimale du §5.1, `body_lines` exposé dans
+   `aidex_signature` et ligne de fin des `types` ; (b) `aidex outline <file>` avec la
+   branche markdown dès la première version ; (c) hook `aidex-read-nudge.py`, matcher
+   `Read|Bash`, seuil 5 Ko, muet hors projet indexé, fail open. Mesure de l'effet
+   ensuite par le harnais A/B du §3.4.
+2. **Deny-list** des dix outils du §0.5 plus hook `SessionStart` pour `init`/`session`.
+   Prérequis : vérifier que le stdout d'un hook `SessionStart` est injecté dans le
+   contexte (réserve du §6.2, DÉDUIT de la documentation).
+3. **git digest**, périmètre réduit, sous réserve de l'arbitrage opérateur ; `history`
+   et `--callers` hors du premier lot.
+4. **test / build** : pas de digest. Si le garde D7 est voulu, c'est un hook Bash
+   autonome qui refuse `--runInBand` / `--maxWorkers=1` et un `node` non conforme,
+   sans sous-commande CLI.
+
+Réserve la plus rentable non mesurée (nommée par le worker, non faite) : pondérer
+chaque `tool_result` par sa durée de vie dans le contexte (octets multipliés par le
+nombre d'inférences suivantes jusqu'à compaction ou fin de session), recoupée avec
+`usage.cache_read_input_tokens`. Un Read de 20 Ko en début de longue session coûte
+bien plus qu'un `git diff` en fin de tour ; le classement pourrait changer, pas le
+signe des verdicts ci-dessus (SUPPOSÉ).
 
 ---
 
