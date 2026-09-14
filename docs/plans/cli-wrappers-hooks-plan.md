@@ -329,8 +329,76 @@ de l'ordre de 2 à 4 pourcent ; avec une variance run-à-run SUPPOSÉE à 30 pou
 test apparié demande de l'ordre de 7,84 x (0,30 / 0,03)^2, soit plusieurs centaines de
 paires. Le pilote de 3 runs garde une valeur QUALITATIVE seulement : le hook se
 déclenche par les réglages projet de la copie, un `Edit` après un `Read` partiel passe
-(MESURÉ au §0.2), pas de boucle de refus, pas d'échec de tâche. **La famille de tâches
-du pilote (édition ou lecture seule) est EN ATTENTE de la décision de l'opérateur.**
+(MESURÉ au §0.2), pas de boucle de refus, pas d'échec de tâche. La famille de tâches
+du pilote a été arbitrée en lecture seule par l'opérateur (18:36 UTC) ; le pilote est
+au §0.9.
+
+### 0.9 Pilote qualitatif du hook read-nudge (2026-09-14, soir)
+
+Harnais `docs/dev-notes/ab-read-nudge/ab-run.mjs` (privé au fork, gitignore),
+lancé par l'opérateur depuis PowerShell, hors de toute session Claude Code, avec le
+Node 22.11.0 de nvm. Résultats sous
+`~/.agent-forge/scratch/ab-read-nudge/results-pilot2/` (manifeste JSON, flux
+`stream-json` complet et stderr par run). Analyse par lecture des flux avec `jq`,
+aucun run supplémentaire.
+
+**Conditions** (MESURÉ) : HEAD `b592a6f` ; copie jetable extraite par `git
+checkout-index` sous le temp système et indexée par `aidex init` ; `--model sonnet
+--effort medium`, modèle servi `claude-sonnet-5` (événement `system/init`) ; 4 serveurs
+MCP du poste montés dans la session `-p` (`claude-peers`, `kleos`, `crawl4ai-rag`,
+`aidex`, 92 outils) et tous les hooks globaux actifs dans les deux bras ; 3 runs : `t3
+without`, `t3 with`, `t2 with` (questions en lecture seule, réponse attendue hors de la
+copie, ligne finale `ANSWER:`). Seule différence entre bras : le `.claude/settings.json`
+de la copie portant le hook `aidex-read-nudge.py` (matcher `Read|Bash`).
+
+**Résultats** (MESURÉ) : `valid` 3/3, `result.subtype` `success` ; réponses justes
+3/3 (`pushed, committed` ; `'pushed' (avec remote), 'committed' (sans remote)` ;
+`exact, item_offset`), dont un FAUX échec du contrôle sur `t3 with` : les annotations
+entre parenthèses ne sont pas retirées par la normalisation, défaut du harnais consigné
+dans `PROTOCOL.md`, non corrigé ; 0 `Read` sans borne, 0 refus, fichier d'état du hook
+à 0 ligne sur les 3 runs ; copie intacte (empreintes) ; coûts `total_cost_usd` 0,446
+(`t3 without`), 0,354 (`t3 with`), 0,456 (`t2 with`) ; 5, 5 et 11 tours ; premier tour
+72 769 tokens de prompt dans les trois runs.
+
+**Chemin de lecture** (MESURÉ, `tool_use` dans l'ordre) : `Grep` sur le symbole ->
+REFUSÉ par le hook global `aidex-grep-nudge` (« AiDex can answer this search ») ->
+`aidex_query` -> numéro de ligne (`:948 (method)` ; `:1364`, `:1377`) -> `Read` avec
+`offset`/`limit` (920/70, 920/60 ; 1355/60 puis 1414/40). DÉDUIT : sur ce poste, la
+chaîne grep-nudge puis `aidex_query` borne déjà le `Read` dès que la question vise un
+symbole nommé ; le gisement du hook Read (§0.8) est ailleurs : lecture d'un fichier
+pour le comprendre, avant édition, ou d'un `.md`.
+
+**Preuve d'exécution du hook** (MESURÉ) : `--include-hook-events` émet en `-p` des
+paires `system/hook_started` et `system/hook_response` (17, 18 et 37 par run) portant
+`hook_name` de forme `Event:matcher` (`PreToolUse:Read`, `PostToolUse:mcp__aidex__aidex_query`,
+`SessionStart:startup`...), `exit_code`, `outcome`, `output`, jamais le nom du script.
+Comptes de `PreToolUse:Read` pour un seul `Read` par run : 1 dans `t3 without`, 2 dans
+`t3 with` ; aucun hook `Read` dans `~/.claude/settings.json`. DÉDUIT : le handler
+read-nudge a tourné dans le bras `with`, `exit_code` 0, sortie vide, c'est-à-dire qu'il
+a laissé passer un `Read` borné, comme prévu. Le détecteur d'isolation du harnais,
+qui cherchait un nom de script, est aveugle par construction (liste vide dans les deux
+bras) ; remède consigné dans `PROTOCOL.md` : comparer les comptes par `hook_name`.
+
+**Prouvé** : le harnais tourne de bout en bout sous PowerShell ; le hook injecté par
+les réglages projet s'exécute dans le bras `with` sans casser la tâche, sans boucle,
+sans modifier la copie ; le coût d'un run de ce type est 0,35 à 0,46 USD.
+**Non prouvé** : le REFUS lui-même et son effet, faute de tout `Read` sans borne.
+
+**Conséquence** (DÉDUIT) : aucun A/B court sur des questions ciblées ne prouvera le
+refus, quel que soit le nombre de runs, parce que la question qui nomme un symbole est
+bornée en amont par grep-nudge. La preuve la moins chère est le rejeu de la trace
+réelle APRÈS installation : compte des refus (motif « Unbounded Read of a » dans les
+`tool_result` des transcripts), part suivie d'un `Read` borné au tour suivant, part
+suivie d'une relecture entière (abandon), tours restants ; la trace contient les `Read`
+sans borne (1 254 sur quatre mois, §0.8) qu'une tâche fabriquée ne reproduit pas.
+Recommandation du lead : installer, puis rejeu à 7 jours. **La décision d'installation
+est EN ATTENTE de l'opérateur.**
+
+Réserve hors périmètre (DÉDUIT) : un saut de `cache_creation` de 20 824 (`t3`) et
+17 237 (`t2`) tokens au tour qui suit le premier `Read` d'un `.ts`, sans message user
+correspondant, est attribué au chargement des rules à frontmatter `paths:` du poste
+(`~/.claude/claude-config/rules/*.md`) ; ~20 k tokens par session, premier poste de
+coût d'un `Read` sur cette station, sans lien avec le hook.
 
 ---
 
