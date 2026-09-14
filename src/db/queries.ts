@@ -71,6 +71,8 @@ export interface TypeRow {
     name: string;
     kind: 'class' | 'struct' | 'interface' | 'enum' | 'type';
     line_number: number;
+    /** Undefined on a legacy DB opened read-only, before migration. */
+    end_line?: number | null;
 }
 
 export interface DependencyRow {
@@ -483,12 +485,13 @@ export class Queries {
         fileId: number,
         name: string,
         kind: TypeRow['kind'],
-        lineNumber: number
+        lineNumber: number,
+        endLine: number | null = null
     ): number {
         this._insertType ??= this.db.prepare(
-            'INSERT INTO types (file_id, name, kind, line_number) VALUES (?, ?, ?, ?)'
+            'INSERT INTO types (file_id, name, kind, line_number, end_line) VALUES (?, ?, ?, ?, ?)'
         );
-        const result = this._insertType.run(fileId, name, kind, lineNumber);
+        const result = this._insertType.run(fileId, name, kind, lineNumber, endLine);
         return result.lastInsertRowid as number;
     }
 

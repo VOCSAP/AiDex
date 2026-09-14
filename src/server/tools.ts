@@ -1586,7 +1586,7 @@ function handleSignature(args: Record<string, unknown>): { content: Array<{ type
     if (result.types.length > 0) {
         message += `## Types (${result.types.length})\n`;
         for (const t of result.types) {
-            message += `- **${t.kind}** \`${t.name}\` (line ${t.lineNumber})\n`;
+            message += `- **${t.kind}** \`${t.name}\` (line ${lineSpan(t.lineNumber, t.endLine)})\n`;
         }
         message += '\n';
     }
@@ -1600,7 +1600,7 @@ function handleSignature(args: Record<string, unknown>): { content: Array<{ type
             if (m.isStatic) modifiers.push('static');
             if (m.isAsync) modifiers.push('async');
             const prefix = modifiers.length > 0 ? `[${modifiers.join(' ')}] ` : '';
-            message += `- ${prefix}\`${m.prototype}\` (line ${m.lineNumber})\n`;
+            message += `- ${prefix}\`${m.prototype}\` (line ${lineSpan(m.lineNumber, m.endLine)})\n`;
         }
     }
 
@@ -1611,6 +1611,10 @@ function handleSignature(args: Record<string, unknown>): { content: Array<{ type
     return {
         content: [{ type: 'text', text: message.trimEnd() }],
     };
+}
+
+function lineSpan(start: number, end: number | null): string {
+    return end !== null && end > start ? `${start}-${end}` : `${start}`;
 }
 
 /**
@@ -1662,7 +1666,11 @@ function handleSignatures(args: Record<string, unknown>): { content: Array<{ typ
         // Compact summary
         const parts: string[] = [];
         if (sig.types.length > 0) {
-            const typesSummary = sig.types.map(t => `${t.kind} ${t.name}`).join(', ');
+            const typesSummary = sig.types
+                .map(t => t.endLine !== null
+                    ? `${t.kind} ${t.name} :${lineSpan(t.lineNumber, t.endLine)}`
+                    : `${t.kind} ${t.name}`)
+                .join(', ');
             parts.push(`Types: ${typesSummary}`);
         }
         if (sig.methods.length > 0) {
@@ -1681,7 +1689,7 @@ function handleSignatures(args: Record<string, unknown>): { content: Array<{ typ
                 if (m.isStatic) modifiers.push('static');
                 if (m.isAsync) modifiers.push('async');
                 const prefix = modifiers.length > 0 ? `[${modifiers.join(' ')}] ` : '';
-                message += `  - ${prefix}${m.prototype} :${m.lineNumber}\n`;
+                message += `  - ${prefix}${m.prototype} :${lineSpan(m.lineNumber, m.endLine)}\n`;
             }
         }
 

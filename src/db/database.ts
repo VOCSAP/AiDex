@@ -91,6 +91,12 @@ export class AiDexDatabase {
                 'CREATE INDEX IF NOT EXISTS idx_methods_name_nocase ON methods(name COLLATE NOCASE)');
         }
 
+        // types.end_line stays NULL until the file is reindexed.
+        const typeCols = this.tableColumns('types');
+        if (typeCols.size > 0 && !typeCols.has('end_line')) {
+            this.db.exec('ALTER TABLE types ADD COLUMN end_line INTEGER');
+        }
+
         // occurrences.kind (Lot 2): symbol / literal / both.
         // Plain ADD COLUMN with a DEFAULT, so every pre-existing row reads as
         // 'symbol' -- which is exactly what it is on an index built before

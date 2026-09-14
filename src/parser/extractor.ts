@@ -57,6 +57,7 @@ export interface ExtractedType {
     name: string;
     kind: 'class' | 'struct' | 'interface' | 'enum' | 'type';
     lineNumber: number;
+    endLineNumber: number;
 }
 
 export interface ExtractedEdge {
@@ -538,6 +539,7 @@ function extractTypeInfo(node: Parser.SyntaxNode, language: SupportedLanguage): 
                 name: parts.join('.'),
                 kind: 'type',
                 lineNumber: node.startPosition.row + 1,
+                endLineNumber: node.endPosition.row + 1,
             };
         }
     }
@@ -566,6 +568,7 @@ function extractTypeInfo(node: Parser.SyntaxNode, language: SupportedLanguage): 
         name: nameNode.text,
         kind,
         lineNumber: node.startPosition.row + 1,
+        endLineNumber: node.endPosition.row + 1,
     };
 }
 

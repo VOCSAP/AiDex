@@ -110,6 +110,7 @@ CREATE TABLE IF NOT EXISTS types (
     name TEXT NOT NULL,
     kind TEXT NOT NULL CHECK(kind IN ('class', 'struct', 'interface', 'enum', 'type')),
     line_number INTEGER NOT NULL,
+    end_line INTEGER,
     FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE
 );
 

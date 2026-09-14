@@ -286,14 +286,14 @@ export function update(params: UpdateParams): UpdateResult {
                         method.isStatic,
                         method.isAsync,
                         storeBodies ? method.bodyText : null,
-                        storeBodies ? method.bodyLines : null,
+                        method.bodyLines,
                         storeBodies ? method.bodyTruncated : false
                     );
                 }
 
                 // Insert types
                 for (const type of extraction.types) {
-                    queries.insertType(fileId, type.name, type.kind, type.lineNumber);
+                    queries.insertType(fileId, type.name, type.kind, type.lineNumber, type.endLineNumber);
                 }
 
 
