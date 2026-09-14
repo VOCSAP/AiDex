@@ -186,7 +186,7 @@ sur les 12 candidats sauf `update` 26, `status` 4, `init` 2, `scan` 1.
 | Seuil du hook Read (§9.1) | 5 Ko comme point de départ, à tourner entre 2 et 10 Ko | au-dessus de 5 Ko : 41 pourcent des appels du sous-ensemble mais 82 pourcent de ses octets ; 2 Ko refuserait 68 pourcent des appels pour 14,5 points de plus |
 | Hook Read hors projet indexé (§9.4) | Position par défaut (non) MAINTENUE | un hook limité aux projets indexés couvre 68,1 pourcent des octets du sous-ensemble ; les 31,8 pourcent restants (8,97 M) sont laissés hors hook, faute d'index pour rendre un plan (DÉDUIT : un hook sans plan à proposer ne ferait que refuser) |
 | `aidex outline` markdown | OUVRIR avec la piste Read, pas après | `.md` = 26,2 pourcent des octets du sous-ensemble (première extension en octets ; en appels, `.py` passe devant) |
-| git digest (`aidex git diff`) | **OUVRIR, rang 3, périmètre réduit** (digest seul ; `--callers` en option ultérieure) | 3,4 pourcent exclusif, 4,8 borne haute : au seuil « quelques pourcents » du §3.1, arbitrage opérateur demandé le 2026-09-14 |
+| git digest (`aidex git diff`) | **OUVRIR, rang 3, périmètre réduit** (digest seul ; `--callers` en option ultérieure) | 3,4 pourcent exclusif, 4,8 borne haute : au seuil « quelques pourcents » du §3.1 ; arbitrage opérateur du 2026-09-14 : rang 3, périmètre réduit, fermeture possible sans perte si l'envie tombe après les rangs 1 et 2 |
 | `aidex git history` | **FERMER** | 43 appels, 13 108 octets, 0,008 pourcent sur quatre mois |
 | test / build digest (`aidex test`, `aidex build`) | **FERMER côté tokens** | 0,26 pourcent du total. Le garde des pièges d'environnement (D7 : refus de `--runInBand`, binaire Node) reste légitime mais c'est un hook de refus sans digest, hors de ce lot (SUPPOSÉ quant à sa taille) |
 | Deny-list : `init`, `global_init`, `coverage`, `settings`, `global_status`, `scan`, `global_refresh`, `viewer`, `remove`, `session` | **OUVRIR, rang 2, manque une mesure** | 1 à 70 appels agent chacun sur quatre mois et 80 projets (`init` 70, `scan` 19, `remove` 19, `settings` 10, les six autres à un chiffre). `init` et `session` sont couverts par le hook `SessionStart` du §6.4 ; `remove`, `scan`, `settings` n'ont pas de déclencheur autre que `aidex --help` (DÉDUIT). Manque : le poids en octets de ces dix définitions dans les 16 430 octets du `tools/list`, à mesurer avant le retrait pour connaître le gain par session |
@@ -224,7 +224,7 @@ Chaque rang démarre par sa vérification, pas par du code.
 2. **Deny-list** des dix outils du §0.5 plus hook `SessionStart` pour `init`/`session`.
    Prérequis : vérifier que le stdout d'un hook `SessionStart` est injecté dans le
    contexte (réserve du §6.2, DÉDUIT de la documentation).
-3. **git digest**, périmètre réduit, sous réserve de l'arbitrage opérateur ; `history`
+3. **git digest**, périmètre réduit, arbitré par l'opérateur le 2026-09-14 ; `history`
    et `--callers` hors du premier lot.
 4. **test / build** : pas de digest. Si le garde D7 est voulu, c'est un hook Bash
    autonome qui refuse `--runInBand` / `--maxWorkers=1` et un `node` non conforme,
