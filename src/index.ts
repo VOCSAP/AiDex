@@ -75,6 +75,33 @@ async function main() {
         }
     }
 
+    // CLI mode: outline -- line-ranged plan of one file, read by a Read hook.
+    //   exit 0 -> plan on stdout
+    //   exit 3 -> no plan for this file (no index, not indexed, no symbols);
+    //             stdout empty, reason on stderr, the caller stays silent
+    //   exit 2 -> usage error
+    if (args[0] === 'outline') {
+        const file = args[1];
+        const projectFlag = args.indexOf('--project');
+        const project = projectFlag !== -1 ? args[projectFlag + 1] : undefined;
+        const limitFlag = args.indexOf('--limit');
+        const limit = limitFlag !== -1 ? parseInt(args[limitFlag + 1] ?? '', 10) : undefined;
+        if (!file || file.startsWith('-')
+            || (projectFlag !== -1 && (!project || project.startsWith('-')))
+            || (limit !== undefined && !(limit > 0))) {
+            console.error(`Usage: ${PRODUCT_NAME_LOWER} outline <file> [--project <dir>] [--limit <n>]`);
+            process.exit(2);
+        }
+        const { outline, formatOutline } = await import('./commands/outline.js');
+        const result = outline({ file, project, limit });
+        if (result.status !== 'ok') {
+            console.error(`no outline: ${result.reason} (${result.file})`);
+            process.exit(3);
+        }
+        console.log(formatOutline(result));
+        return;
+    }
+
     // CLI mode: scan
     if (args[0] === 'scan') {
         const searchPath = args[1];
