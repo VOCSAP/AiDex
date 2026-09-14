@@ -936,7 +936,10 @@ Close with `aidex_viewer({ path: ".", action: "close" })`
 ```bash
 aidex scan Q:/develop       # Find all indexed projects
 aidex init ./myproject      # Index a project from command line
+aidex outline src/foo.ts    # Line-ranged plan of one file (code symbols or markdown headings)
 ```
+
+`aidex outline <file> [--project <dir>] [--limit <n>]` prints a plan (symbol/heading, line range, signature) instead of the whole file. Exit codes: `0` plan printed ; `3` no plan available (reason on stderr, e.g. `no outline: stale index (src/foo.ts)`) ; `2` usage error ; `1` unexpected error.
 
 > `aidex-mcp` works as an alias for `aidex`.
 

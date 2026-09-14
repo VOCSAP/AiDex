@@ -657,3 +657,48 @@ La doctrine (`.claude/CLAUDE.md`, pistes closes numero 8) ferme une couche LSP g
 - Faire choisir le resolveur parmi plusieurs homonymes (par ordre alphabetique, par premier trouve, par proximite de chemin). Le `return` sur `candidates.length !== 1` est la propriete, pas une limitation a lever.
 - Retirer le caveat d'absence de la sortie MCP pour economiser des tokens. Il coute deux lignes et c'est le seul endroit ou l'agent apprend que le graphe est incomplet.
 - Remplacer le rebuild global par une resolution locale au fichier reindexe sans traiter le cas "la declaration cible a bouge ailleurs" : le test `incremental target changes rebuild existing call resolution` existe exactement pour ca.
+
+---
+
+## 22. Plages de lignes et `aidex outline` -- lire moins que le fichier entier
+
+### Le probleme, en une phrase
+
+`Read` sans `offset`/`limit` est le premier poste de cout du contexte agent, loin devant toute recherche : **44,5 pourcent des octets de `tool_result`** sur 1860 transcripts (141 972 resultats apparies), et **25,0 pourcent du total tous outils confondus** rien que pour les `Read` lances SANS borne (mesure du 2026-09-14, `docs/plans/cli-wrappers-hooks-plan.md` section 0). `aidex_signature` et `aidex_signatures` savaient dire OU commence un symbole, jamais ou il finit : l'agent n'avait aucun moyen de calculer un `offset`/`limit` exact et lisait le fichier entier "pour etre sur".
+
+### Ce qui change
+
+**Plage de lignes dans `aidex_signature` et `aidex_signatures`.** Chaque methode et chaque type porte desormais sa plage de fin en plus de sa ligne de debut :
+- `aidex_signature` : `(line 15-42)` pour un type, `(line 20-25)` pour une methode. Si la fin est inconnue ou egale au debut, format inchange, debut seul : `(line 15)` (`lineSpan()`, `src/server/tools.ts`).
+- `aidex_signatures` : `:15-42` pour une methode (toujours affiche, `lineSpan()` degrade seul si `endLine` est `null`) ; pour un type, `kind Name :15-42` seulement si la base a une fin connue, sinon `kind Name` sans aucun numero de ligne -- c'est la forme legacy inchangee, pas une regression du patch.
+
+Zero ligne de sortie ajoutee ; +3,9 a +7,0 pourcent d'octets mesures sur 3 fichiers. But : que l'agent appelle `Read` avec `offset`/`limit` exacts au lieu de lire le fichier entier.
+
+**Stockage -- `src/db/schema.sql`.** Colonne `types.end_line` (nullable), calculee par l'extracteur comme `methods.body_lines` l'est deja (`node.endPosition.row`, `src/parser/extractor.ts`). Migree par `migrateLegacySchema` **uniquement a l'ouverture en ecriture** (`src/db/database.ts`) : une base legacy ouverte en lecture seule degrade silencieusement en debut seul, sans erreur. Les index existants ne rendent la plage des types qu'apres reindexation du fichier concerne.
+
+**`methods.body_lines` est desormais TOUJOURS stocke** (`src/commands/init.ts`, `src/commands/update.ts`), avant seulement si la metadonnee `store_bodies=1` ; `body_text` reste soumis a `store_bodies`. Mesure sur le poste : 5 projets indexes a `store_bodies=0` ne rendent aucune plage de methode avant reindexation.
+
+**Effet de bord embeddings, a surveiller en revue, pas un defaut.** Sur un projet avec embeddings actifs mais `store_bodies=0`, la formule de `src/embeddings/pipeline.ts` (lignes 410 et 585) elargit desormais le sac d'identifiants d'une methode a son corps entier, puisque `body_lines` existe maintenant meme sans `store_bodies`. `embeddingText` et `contentHash` changent en consequence, donc ces methodes sont RE-EMBEDDEES a la prochaine reindexation. C'est un alignement sur le comportement deja en place a `store_bodies=1`, pas un nouveau defaut, mais les vecteurs changent en silence : une reindexation apres ce patch va reconsommer du temps d'embedding sur des projets qui n'avaient pas demande `store_bodies`.
+
+**Nouvelle sous-commande CLI -- `aidex outline <file> [--project <dir>] [--limit <n>]`** (`src/commands/outline.ts`, cablee dans `src/index.ts`). Plan d'un fichier sans le lire en entier :
+- Code : une ligne par symbole, `S-E  signature` (methodes triees par ligne de debut avec les types) ; methodes via `line_number` + `body_lines`, types via `end_line` si present.
+- Markdown (`.md`, `.markdown`) : titres avec leur plage, via le decoupage deja existant de `src/embeddings/chunker-docs.ts` (`splitMarkdown`) -- rien n'est indexe pour ca, la plage d'un titre s'arrete au prochain titre de niveau inferieur ou egal.
+- En-tete `<rel>: <N> lines, <K> symbol(s)|heading(s)`, plus ` [showing first N]` quand le plafond (100 par defaut) mord.
+- Racine de projet : `--project`, sinon remontee depuis le dossier du fichier jusqu'au premier `.aidex/index.db`.
+- Codes de sortie : `0` = plan sur stdout ; `3` = aucun plan, stdout VIDE, une ligne stderr `no outline: <raison> (<fichier>)` -- raisons `file not found`, `no indexed project`, `file outside project`, `file not in index`, `stale index`, `no symbols`, `no headings` ; `2` = erreur d'usage (dont `--project` sans valeur) ; `1` = erreur inattendue.
+- `stale index` : `outline` recalcule le hash du fichier sur disque exactement comme `init`/`update` (sha256 de la chaine utf-8, 16 premiers caracteres hex) et refuse de rendre des plages si le fichier a change depuis l'indexation, plutot que de rendre des lignes perimees en silence.
+
+Mesures : `src/server/tools.ts` (134 Ko) -> plan de 3,3 Ko, facteur 40 ; plan de `docs/plans/cli-wrappers-hooks-plan.md` (44 Ko) -> 1,9 Ko. Latence mesuree : 65 ms (code), 167 ms (markdown), un run chacun.
+
+**Limite connue** : les callbacks arrow inline sont indexes comme methodes par l'extracteur (comportement volontaire deja documente en section "Details d'implementation" du `CLAUDE.md`) et apparaissent donc dans le plan -- 7 lignes sur 48 pour `tools.ts`.
+
+### Ce qu'il ne faut pas reintroduire en rebasant
+
+- Retirer le fallback debut-seul quand `end_line`/`body_lines` est absent (base legacy, projet a `store_bodies=0` pas encore reindexe) : casser silencieusement `aidex_signature`/`aidex_signatures` sur tout index qui n'a pas encore ete reindexe depuis ce patch.
+- Faire migrer `types.end_line` a l'ouverture en LECTURE SEULE : la doctrine de migration du depot est d'ecrire uniquement quand la base est deja ouverte en ecriture (voir la migration `schema_version` de la section 21).
+- Etendre `outline` a d'autres extensions de documentation sans repasser par `chunker-docs.ts` : le decoupage markdown est reutilise tel quel pour ne pas dupliquer une deuxieme logique de titres.
+- Oublier que `body_lines` desormais toujours stocke change le `contentHash` des methodes cote embeddings : toute mesure de cout de reindexation post-patch doit compter ce re-embedding, pas seulement le cout d'extraction.
+
+### Reference
+
+Sequencement et mesures completes : `docs/plans/cli-wrappers-hooks-plan.md`, section "0. Inventaire et mesure du 2026-09-14", rang 1.

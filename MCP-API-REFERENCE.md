@@ -264,8 +264,8 @@ Get the signature of a single file: types, methods, header comments. **Use inste
 
 **Returns:**
 - Header comments (if any)
-- Types: classes, structs, interfaces, enums with line numbers
-- Methods: prototypes with visibility, static/async modifiers, line numbers
+- Types: classes, structs, interfaces, enums, with a line range (`start-end`) when the end is known, otherwise the start line alone
+- Methods: prototypes with visibility, static/async modifiers, and a line range (`start-end`) when the method's body length is indexed, otherwise the start line alone
 
 **Example:**
 ```json
@@ -283,14 +283,16 @@ Get the signature of a single file: types, methods, header comments. **Use inste
 Game engine core implementation
 
 ## Types (2)
-- class Engine (line 15)
-- struct Config (line 8)
+- **class** `Engine` (line 15-120)
+- **struct** `Config` (line 8)
 
 ## Methods (5)
-- [public] void Initialize() :20
-- [public async] Task LoadAsync(string path) :45
-- [private] void Update(float delta) :78
+- [public] `void Initialize()` (line 20-25)
+- [public async] `Task LoadAsync(string path)` (line 45-58)
+- [private] `void Update(float delta)` (line 78)
 ```
+
+The end line is only known once the file has been (re)indexed after this feature shipped, and only for methods whose body length AiDex tracks (`methods.body_lines`, always stored since this patch) and for types whose extractor records an end position (`types.end_line`). A start line alone (no `-end`) means the index has no end for that symbol yet, or start and end coincide.
 
 ---
 
@@ -310,7 +312,7 @@ Get signatures for multiple files at once using glob pattern. Efficient for expl
 
 **Returns:**
 - Compact summary per file: types and method counts
-- Method list with modifiers and line numbers
+- Method list with modifiers and line ranges
 
 **Examples:**
 ```json
@@ -323,6 +325,16 @@ Get signatures for multiple files at once using glob pattern. Efficient for expl
 // Explicit file list
 { "path": ".", "files": ["src/index.ts", "src/server/tools.ts"] }
 ```
+
+**Output example (per file):**
+```
+## src/commands/shared.ts
+Types: class Config :8-42, interface Options | Methods: 3
+  - [public] normalizePath(p: string): string :15-17
+  - [public] withDatabase<T>(...): T :46-58
+```
+
+Line format: `:start-end` when the end line is known. For methods, a start-only value (`:15`) means the index has no end for that method yet (needs a reindex after this feature shipped). For a type with no known end line, the line is omitted entirely from the compact summary (`interface Options` above has none) -- this is the pre-existing compact format, unchanged by adding the end-line column.
 
 ---
 

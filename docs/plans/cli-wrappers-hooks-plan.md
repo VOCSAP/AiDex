@@ -189,7 +189,7 @@ sur les 12 candidats sauf `update` 26, `status` 4, `init` 2, `scan` 1.
 | git digest (`aidex git diff`) | **OUVRIR, rang 3, périmètre réduit** (digest seul ; `--callers` en option ultérieure) | 3,4 pourcent exclusif, 4,8 borne haute : au seuil « quelques pourcents » du §3.1 ; arbitrage opérateur du 2026-09-14 : rang 3, périmètre réduit, fermeture possible sans perte si l'envie tombe après les rangs 1 et 2 |
 | `aidex git history` | **FERMER** | 43 appels, 13 108 octets, 0,008 pourcent sur quatre mois |
 | test / build digest (`aidex test`, `aidex build`) | **FERMER côté tokens** | 0,26 pourcent du total. Le garde des pièges d'environnement (D7 : refus de `--runInBand`, binaire Node) reste légitime mais c'est un hook de refus sans digest, hors de ce lot (SUPPOSÉ quant à sa taille) |
-| Deny-list : `init`, `global_init`, `coverage`, `settings`, `global_status`, `scan`, `global_refresh`, `viewer`, `remove`, `session` | **OUVRIR, rang 2, manque une mesure** | 1 à 70 appels agent chacun sur quatre mois et 80 projets (`init` 70, `scan` 19, `remove` 19, `settings` 10, les six autres à un chiffre). `init` et `session` sont couverts par le hook `SessionStart` du §6.4 ; `remove`, `scan`, `settings` n'ont pas de déclencheur autre que `aidex --help` (DÉDUIT). Manque : le poids en octets de ces dix définitions dans les 16 430 octets du `tools/list`, à mesurer avant le retrait pour connaître le gain par session |
+| Deny-list : `init`, `global_init`, `coverage`, `settings`, `global_status`, `scan`, `global_refresh`, `viewer`, `remove`, `session` | **OUVRIR, rang 2** | 1 à 70 appels agent chacun sur quatre mois et 80 projets (`init` 70, `scan` 19, `remove` 19, `settings` 10, les six autres à un chiffre). `init` et `session` sont couverts par le hook `SessionStart` du §6.4 ; `remove`, `scan`, `settings` n'ont pas de déclencheur autre que `aidex --help` (DÉDUIT). Mesure du poids maintenant faite (2026-09-14) : sur le `tools/list` réellement servi (22 outils, `DEFAULT_DISABLED_TOOLS` appliqué, un `JSON.stringify` par outil), les dix définitions pèsent **6 580 octets sur 16 363, soit 40,2 pourcent**, 1 462 à 1 567 tokens par session au tarif de 4,2-4,5 octets par token de la doctrine. Écart de 67 octets avec les 16 430 octets cités au §0.1 point 4 : même chemin de mesure, build rafraîchi entre les deux relevés. |
 | Deny-list : `update` | **FERMER le retrait, manque une mesure** | 1 790 appels agent, deuxième outil en appels (derrière `query` 2 754), troisième en octets : ce n'est pas seulement un appelant hook. À mesurer avant de rouvrir : la part des appels postérieurs à l'installation des hooks `queue-edit`/`queue-drain` (les hooks sont entrés dans le dépôt au commit `fca6184` du 2026-08-11, MESURÉ par `git log -- hooks/claude/aidex-queue-edit.py` ; la date d'installation sur le poste reste à établir, SUPPOSÉ le même jour) |
 | Deny-list : `status` | **FERMER le retrait** | 71 appels contre 6 pour `summary` : l'agent préfère `status`. Fusionner `summary` dans `status` serait la piste, hors de ce lot |
 | `screenshot`, `windows` | inchangé (restent MCP, §6.4) | 15 et 1 appels ; non mesuré ici au-delà du compte |
@@ -220,10 +220,13 @@ Chaque rang démarre par sa vérification, pas par du code.
    `aidex_signature` et ligne de fin des `types` ; (b) `aidex outline <file>` avec la
    branche markdown dès la première version ; (c) hook `aidex-read-nudge.py`, matcher
    `Read|Bash`, seuil 5 Ko, muet hors projet indexé, fail open. Mesure de l'effet
-   ensuite par le harnais A/B du §3.4.
+   ensuite par le harnais A/B du §3.4. **(a) et (b) réalisés** (LOCAL-PATCHES.md
+   section 22) ; (c) reste à faire.
 2. **Deny-list** des dix outils du §0.5 plus hook `SessionStart` pour `init`/`session`.
-   Prérequis : vérifier que le stdout d'un hook `SessionStart` est injecté dans le
-   contexte (réserve du §6.2, DÉDUIT de la documentation).
+   Prérequis levé : MESURÉ que Claude Code injecte les deux formes de sortie d'un hook
+   `SessionStart` dans le contexte de l'agent, `hookSpecificOutput.additionalContext`
+   en JSON et le stdout brut (préfixé automatiquement `SessionStart:startup hook
+   success:`) -- la réserve du §6.2 (DÉDUIT de la documentation) est fermée.
 3. **git digest**, périmètre réduit, arbitré par l'opérateur le 2026-09-14 ; `history`
    et `--callers` hors du premier lot.
 4. **test / build** : pas de digest. Si le garde D7 est voulu, c'est un hook Bash
@@ -462,9 +465,8 @@ Restent MCP (15 663 octets) : `query`, `edges`, `signature`, `signatures`, `sear
 contre `Glob` et `ls` avant de trancher ; ils ne sont pas administratifs, donc hors
 de ce lot.
 
-Réserve sur `session` : vérifier que le harness injecte bien le stdout d'un hook
-`SessionStart` dans le contexte de l'agent (DÉDUIT de la documentation des hooks,
-non mesuré ici).
+Réserve sur `session` : levée au §0.7 rang 2 -- MESURÉ que le harness injecte bien la
+sortie d'un hook `SessionStart` dans le contexte de l'agent.
 
 ### 6.4 Découvrabilité : comment l'agent apprend qu'une commande CLI existe
 
