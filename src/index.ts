@@ -216,7 +216,7 @@ async function main() {
         console.log(`  Term-file pairs (raw case): ${result.itemsFound}`);
         console.log(`  Time: ${result.durationMs}ms`);
 
-        // bfb7bf8f: same visibility gap as init() before 16d8512 -- errors[]
+        // bfb7bf8f: same visibility gap as init() before 1e20302 -- errors[]
         // was only printed when success was false, so a partially-successful
         // rebuild showed "Done!" with a silently-reduced Files count and the
         // diagnostic in errors[] was thrown away. Shared with the init block

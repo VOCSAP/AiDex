@@ -6,7 +6,7 @@
  * "Warnings" block whenever result.errors.length > 0, even when the run
  * overall reports success:true -- so a partially-successful run can never
  * again hide a genuine per-file failure behind a "Done!" and a silently-
- * reduced Files count (16d8512 for init, extended to rebuild-index in
+ * reduced Files count (1e20302 for init, extended to rebuild-index in
  * bfb7bf8f). Both call sites were character-for-character identical and are
  * now the same extracted function, src/utils/cli-warnings.ts.
  *

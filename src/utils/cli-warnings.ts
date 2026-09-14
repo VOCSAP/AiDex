@@ -7,7 +7,7 @@
  * print its errors[] even when the run reports success:true, so a partially
  * failed run never again hides its diagnostic behind a "Done!" and a
  * silently-reduced Files count (the exact gap fixed for init() alone in
- * 16d8512, then extended to rebuild-index in bfb7bf8f).
+ * 1e20302, then extended to rebuild-index in bfb7bf8f).
  *
  * Lives outside src/index.ts specifically so it can be unit-tested directly:
  * src/index.ts is a CLI entry point whose module-level `main().catch(...)`

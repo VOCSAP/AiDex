@@ -37,7 +37,7 @@
  * error: ...}`, tracked separately as InitResult.filesEmpty).
  *
  * DISTINCT from the CRLF fence bug fixed the same day in the same function
- * (astro-frontmatter-eol.test.js, commit 651f23c). That bug was about a
+ * (astro-frontmatter-eol.test.js, commit 901a2cd). That bug was about a
  * WELL-FORMED frontmatter block failing to be recognised because of a CRLF
  * checkout. This one is about a file that never had a frontmatter block to
  * begin with, and should never have been treated as a failure.

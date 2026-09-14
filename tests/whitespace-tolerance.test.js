@@ -1,6 +1,6 @@
 /**
  * Whitespace-tolerance differential -- spec_90f49672, dispatched against
- * commit 34532c8 (card f08aeeb1).
+ * commit b29ee61 (card f08aeeb1).
  *
  * WHY THIS EXISTS
  * f08aeeb1 shipped two halves. The multi-word-literal-indexing half is proven
