@@ -166,7 +166,7 @@ def run_update(project_dir, files):
     (already chunked to CHUNK_SIZE by the caller). Returns True only on a
     confirmed zero-error run, False on anything else.
 
-    The CLI's update branch always exits 0 by design (commit 3a79c86: a
+    The CLI's update branch always exits 0 by design (commit 292cc5b: a
     hook must never look like a failed commit), so the exit code alone
     cannot signal per-file failure. --verbose is required to get that
     signal back, via the 'Errors: N' summary line on stdout; N > 0, or the
