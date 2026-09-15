@@ -37,7 +37,7 @@
 // imports of the MCP server, the viewer, the log hub and the `commands` barrel
 // cost 355 ms per spawn against 75 ms once the same branch loads only what it
 // needs -- and the branch itself does 5 ms of real work.
-import { PRODUCT_NAME, PRODUCT_NAME_LOWER } from './constants.js';
+import { PRODUCT_NAME, PRODUCT_NAME_LOWER, TOOL_PREFIX } from './constants.js';
 
 async function main() {
     const args = process.argv.slice(2);
@@ -136,17 +136,32 @@ async function main() {
         return;
     }
 
-    // CLI mode: init
-    if (args[0] === 'init') {
-        const projectPath = args[1];
-        if (!projectPath) {
-            console.error(`Usage: ${PRODUCT_NAME_LOWER} init <path>`);
-            process.exit(1);
+    // CLI mode: init and rebuild-index. Flags come from the aidex_init schema
+    // and reach init() through the mapping the MCP handler uses.
+    //
+    // rebuild-index adds `fresh: true`, a FULL rebuild that ignores the per-file
+    // hash skip. It stays CLI-only so an agent cannot trigger it from a normal
+    // flow. `fresh` clears `files` and `items` only; tasks, notes and metadata
+    // survive. An interrupted run leaves an incomplete index whose
+    // schema_version does not advance.
+    if (args[0] === 'init' || args[0] === 'rebuild-index') {
+        const subcommand = args[0];
+        const rebuild = subcommand === 'rebuild-index';
+        const { declaredTools, initParamsFromArgs, embeddingsSummary } = await import('./server/tools.js');
+        const { parseToolArgs, toolUsage } = await import('./cli/tool-args.js');
+        const schema = declaredTools().find((t) => t.name === `${TOOL_PREFIX}init`)!.inputSchema;
+        const parsed = parseToolArgs(schema, args.slice(1), ['path']);
+        if (!parsed.ok) {
+            console.error(`Error: ${parsed.error}`);
+            console.error(toolUsage(subcommand, schema, ['path']));
+            if (rebuild) console.error('Rebuilds the whole index from scratch, ignoring the per-file hash skip.');
+            process.exit(2);
         }
 
-        console.log(`Indexing: ${projectPath}`);
+        const params = initParamsFromArgs(parsed.args);
+        console.log(rebuild ? `Rebuilding index (full, no hash skip): ${params.path}` : `Indexing: ${params.path}`);
         const { init, LINE_RANGES_SCHEMA } = await import('./commands/init.js');
-        const result = await init({ path: projectPath });
+        const result = await init(rebuild ? { ...params, fresh: true } : params);
 
         if (!result.success) {
             console.error(`Error: ${result.errors.join(', ')}`);
@@ -154,90 +169,32 @@ async function main() {
         }
 
         console.log(`Done!`);
-        if (result.literalCoverageUpgraded) {
+        if (!rebuild && result.literalCoverageUpgraded) {
             console.log(`  Literal coverage migrated: the index did not declare it, so every file was re-indexed.`);
         }
-        if (result.lineRangesUpgraded) {
+        if (!rebuild && result.lineRangesUpgraded) {
             console.log(`  Schema migrated: the index declared a schema older than ${LINE_RANGES_SCHEMA}, so every file was re-parsed once.`);
         }
         console.log(`  Files: ${result.filesIndexed}`);
         console.log(`  Term-file pairs (raw case): ${result.itemsFound}`);
-        console.log(`  Methods: ${result.methodsFound}`);
-        console.log(`  Types: ${result.typesFound}`);
+        if (!rebuild) {
+            console.log(`  Methods: ${result.methodsFound}`);
+            console.log(`  Types: ${result.typesFound}`);
+        }
         console.log(`  Time: ${result.durationMs}ms`);
+        if (result.embeddings) {
+            console.log(`  ${embeddingsSummary(result.embeddings)}`);
+        }
 
-        // a7039829: shown even on success -- a file that genuinely failed
-        // during indexing used to fill errors[] invisibly behind a "Done!"
-        // and a silently-reduced Files count. Mirrors the Warnings block
-        // handleInit (src/server/tools.ts) already prints on the MCP side.
-        // Shared with the rebuild-index block below (bfb7bf8f): the two were
-        // character-for-character identical, extracted to avoid duplication.
-        //
-        // a9d43516: printEmptyFilesNote is the THIRD outcome, not a warning --
-        // a file that legitimately had nothing to index (e.g. a fenceless
-        // .astro component). Printed separately from printIndexWarnings so
-        // that block stays reserved for genuine failures.
+        // Warnings print even on success: a file that failed would otherwise
+        // hide behind "Done!" and a reduced Files count. Files with nothing to
+        // index are a separate note, not a warning.
         try {
             const { printIndexWarnings, printEmptyFilesNote } = await import('./utils/cli-warnings.js');
             printIndexWarnings(result.errors);
             printEmptyFilesNote(result.filesEmpty);
         } catch {
-            // A diagnostic printer must never turn an already-successful run
-            // into a failure (e.g. a stale/partial build/ missing this module).
-        }
-
-        return;
-    }
-
-    // CLI mode: rebuild-index -- FULL rebuild, ignores the per-file hash skip.
-    //
-    // Deliberately CLI-only and deliberately named for what it does: an
-    // unconditional rebuild is not exposed as an MCP tool, so an agent cannot
-    // trigger it from a normal flow.
-    //
-    // `fresh: true` clears `files` and `items` only; tasks, notes and metadata
-    // survive (see db/database.ts createDatabase). If the run is interrupted the
-    // index is simply incomplete and its schema_version does NOT advance, so the
-    // honest per-index answer keeps applying until a run goes all the way through.
-    if (args[0] === 'rebuild-index') {
-        const projectPath = args[1];
-        if (!projectPath) {
-            console.error(`Usage: ${PRODUCT_NAME_LOWER} rebuild-index <path>`);
-            console.error('Rebuilds the whole index from scratch, ignoring the per-file hash skip.');
-            process.exit(1);
-        }
-
-        console.log(`Rebuilding index (full, no hash skip): ${projectPath}`);
-        const { init } = await import('./commands/init.js');
-        const result = await init({ path: projectPath, fresh: true });
-
-        if (!result.success) {
-            console.error(`Error: ${result.errors.join(', ')}`);
-            process.exit(1);
-        }
-
-        console.log(`Done!`);
-        console.log(`  Files: ${result.filesIndexed}`);
-        console.log(`  Term-file pairs (raw case): ${result.itemsFound}`);
-        console.log(`  Time: ${result.durationMs}ms`);
-
-        // bfb7bf8f: same visibility gap as init() before 1e20302 -- errors[]
-        // was only printed when success was false, so a partially-successful
-        // rebuild showed "Done!" with a silently-reduced Files count and the
-        // diagnostic in errors[] was thrown away. Shared with the init block
-        // above via printIndexWarnings() (the two were character-for-
-        // character identical). `result.success` above is already gated by
-        // AIDEX_SUCCESS_MODE (default/empty/strict, alias
-        // AIDEX_INIT_SUCCESS_MODE) via the init() call in this same branch -- no
-        // separate resolution needed here, since rebuild-index always goes
-        // through init()'s own resolveSuccessMode()/computeInitSuccess().
-        try {
-            const { printIndexWarnings, printEmptyFilesNote } = await import('./utils/cli-warnings.js');
-            printIndexWarnings(result.errors);
-            printEmptyFilesNote(result.filesEmpty);
-        } catch {
-            // A diagnostic printer must never turn an already-successful run
-            // into a failure (e.g. a stale/partial build/ missing this module).
+            // A diagnostic printer must never turn a successful run into a failure.
         }
 
         return;

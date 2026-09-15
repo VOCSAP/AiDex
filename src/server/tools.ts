@@ -5,7 +5,7 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { existsSync } from 'fs';
 import { join } from 'path';
-import { init, query, edges, signature, signatures, update, remove, summary, tree, describe, link, unlink, listLinks, scan, files, note, getSessionNote, session, formatSessionTime, formatDuration, task, tasks, screenshot, listWindows, globalInit, globalStatus, globalQuery, globalSignatures, globalRefresh, globalGuideline, log, can, noticeFor, globalNotice, type QueryMode, type QueryKind, type EdgeDirection, type TaskAction, type ScreenshotMode, type ScreenshotColors, type SignatureKind, type GuidelineAction, type LogAction, type LogLevel } from '../commands/index.js';
+import { init, type InitParams, type InitResult, query, edges, signature, signatures, update, remove, summary, tree, describe, link, unlink, listLinks, scan, files, note, getSessionNote, session, formatSessionTime, formatDuration, task, tasks, screenshot, listWindows, globalInit, globalStatus, globalQuery, globalSignatures, globalRefresh, globalGuideline, log, can, noticeFor, globalNotice, type QueryMode, type QueryKind, type EdgeDirection, type TaskAction, type ScreenshotMode, type ScreenshotColors, type SignatureKind, type GuidelineAction, type LogAction, type LogLevel } from '../commands/index.js';
 import type { TaskRow } from '../db/index.js';
 import { openDatabase } from '../db/index.js';
 import { cliCommand } from '../commands/shared.js';
@@ -91,10 +91,10 @@ export function applyToolFilter(tools: Tool[]): Tool[] {
 }
 
 /**
- * Register all available tools
+ * Every declared tool, before the tools/list filter.
  */
-export function registerTools(): Tool[] {
-    return applyToolFilter([
+export function declaredTools(): Tool[] {
+    return [
         {
             name: `${TOOL_PREFIX}init`,
             description: `Initialize ${PRODUCT_NAME} indexing: scans source files, builds an index of identifiers, methods, types, signatures.`,
@@ -1089,7 +1089,38 @@ export function registerTools(): Tool[] {
                 required: ['query'],
             },
         },
-    ]);
+    ];
+}
+
+/**
+ * Register all available tools
+ */
+export function registerTools(): Tool[] {
+    return applyToolFilter(declaredTools());
+}
+
+/**
+ * aidex_init arguments as init() parameters, shared by the MCP handler and the
+ * CLI init and rebuild-index subcommands.
+ */
+export function initParamsFromArgs(args: Record<string, unknown>): InitParams {
+    return {
+        path: args.path as string,
+        name: args.name as string | undefined,
+        exclude: args.exclude as string[] | undefined,
+        store_bodies: args.store_bodies as boolean | undefined,
+        embeddings: args.embeddings as boolean | undefined,
+        llm_endpoint: args.llm_endpoint as string | undefined,
+        llm_model: args.llm_model as string | undefined,
+        llm_send_code: args.llm_send_code as boolean | undefined,
+    };
+}
+
+export function embeddingsSummary(e: NonNullable<InitResult['embeddings']>): string {
+    let line = `Embeddings: ${e.embedded} embedded`;
+    if (e.skipped > 0) line += `, ${e.skipped} unchanged (skipped)`;
+    if (e.removed > 0) line += `, ${e.removed} pruned`;
+    return `${line} in ${e.durationMs}ms`;
 }
 
 /**
@@ -1233,16 +1264,7 @@ async function handleInit(args: Record<string, unknown>): Promise<{ content: Arr
         };
     }
 
-    const result = await init({
-        path,
-        name: args.name as string | undefined,
-        exclude: args.exclude as string[] | undefined,
-        store_bodies: args.store_bodies as boolean | undefined,
-        embeddings: args.embeddings as boolean | undefined,
-        llm_endpoint: args.llm_endpoint as string | undefined,
-        llm_model: args.llm_model as string | undefined,
-        llm_send_code: args.llm_send_code as boolean | undefined,
-    });
+    const result = await init(initParamsFromArgs(args));
 
     if (result.success) {
         let message = `✓ ${PRODUCT_NAME} initialized for project\n\n`;
@@ -1273,11 +1295,7 @@ async function handleInit(args: Record<string, unknown>): Promise<{ content: Arr
         message += `Duration: ${result.durationMs}ms`;
 
         if (result.embeddings) {
-            const e = result.embeddings;
-            message += `\n\nEmbeddings: ${e.embedded} embedded`;
-            if (e.skipped > 0) message += `, ${e.skipped} unchanged (skipped)`;
-            if (e.removed > 0) message += `, ${e.removed} pruned`;
-            message += ` in ${e.durationMs}ms`;
+            message += `\n\n${embeddingsSummary(result.embeddings)}`;
         }
 
         if (result.errors.length > 0) {
