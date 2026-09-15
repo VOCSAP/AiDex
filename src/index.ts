@@ -482,6 +482,10 @@ async function main() {
 
     // CLI mode: setup
     if (args[0] === 'setup') {
+        if (args.includes('--help') || args.includes('-h')) {
+            console.log(`Usage: ${PRODUCT_NAME_LOWER} setup`);
+            return;
+        }
         const { setupMcpClients } = await import('./commands/setup.js');
         setupMcpClients();
         return;
@@ -489,6 +493,10 @@ async function main() {
 
     // CLI mode: unsetup
     if (args[0] === 'unsetup') {
+        if (args.includes('--help') || args.includes('-h')) {
+            console.log(`Usage: ${PRODUCT_NAME_LOWER} unsetup`);
+            return;
+        }
         const { unsetupMcpClients } = await import('./commands/setup.js');
         unsetupMcpClients();
         return;

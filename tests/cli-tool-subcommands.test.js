@@ -1,5 +1,5 @@
 import { spawnSync } from 'child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { mkdtempSync, mkdirSync, readdirSync, writeFileSync, rmSync } from 'fs';
 import { join, dirname } from 'path';
 import { tmpdir } from 'os';
 import { fileURLToPath, pathToFileURL } from 'url';
@@ -33,6 +33,27 @@ function cli(argv, home) {
         env: { ...process.env, HOME: home, USERPROFILE: home },
     });
     return { status: r.status, stdout: r.stdout, stderr: r.stderr };
+}
+
+function setupHelpCli(argv) {
+    const home = tempDir('aidex-setup-help-home-');
+    const emptyPath = tempDir('aidex-setup-help-path-');
+    const r = spawnSync(NODE_BIN, [CLI_ENTRY, ...argv], {
+        encoding: 'utf-8',
+        timeout: 110000,
+        env: {
+            ...process.env,
+            HOME: home,
+            USERPROFILE: home,
+            HOMEDRIVE: '',
+            HOMEPATH: '',
+            APPDATA: join(home, 'AppData'),
+            LOCALAPPDATA: join(home, 'LocalAppData'),
+            XDG_CONFIG_HOME: join(home, 'xdg-config'),
+            PATH: emptyPath,
+        },
+    });
+    return { ...r, home };
 }
 
 function startSettingsViewer(home) {
@@ -91,6 +112,16 @@ describe.each([
         const argv = errorArgv.map((a) => (a === '<dir>' ? unindexed : a));
         const r = cli([subcommand, ...argv], tempDir('aidex-sub-home-'));
         expect({ status: r.status, stderr: r.stderr.slice(0, 5) }).toEqual({ status: 1, stderr: 'Error' });
+    });
+});
+
+describe.each(['setup', 'unsetup'])('%s help', (subcommand) => {
+    test.each([['--help'], ['ignored', '-h']])('prints usage without mutating an isolated home for %j', (...args) => {
+        const r = setupHelpCli([subcommand, ...args]);
+        expect(r.status).toBe(0);
+        expect(r.stdout).toBe(`Usage: aidex ${subcommand}\n`);
+        expect(r.stderr).toBe('');
+        expect(readdirSync(r.home)).toEqual([]);
     });
 });
 

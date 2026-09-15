@@ -1,0 +1,27 @@
+#!/bin/sh
+
+SOURCE=$0
+while [ -L "$SOURCE" ]; do
+    DIR=$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)
+    SOURCE=$(readlink "$SOURCE")
+    case $SOURCE in
+        /*|[A-Za-z]:/*) ;;
+        *) SOURCE=$DIR/$SOURCE ;;
+    esac
+done
+
+DIR=$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)
+ENTRY=$DIR/../build/index.js
+
+if [ ! -f "$ENTRY" ]; then
+    printf '%s\n' 'AiDex build is missing. Run npm run build.' >&2
+    exit 1
+fi
+
+if [ -n "${AIDEX_NODE:-}" ]; then
+    NODE=$AIDEX_NODE
+else
+    NODE=node
+fi
+
+exec "$NODE" "$ENTRY" "$@"

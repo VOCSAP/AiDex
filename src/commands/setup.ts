@@ -79,7 +79,7 @@ Grep and Read stay fine for config, logs and free text.
 - Drop a file from the index: \`aidex remove <path> <file>\`
 - All projects: \`aidex global-init <path>\`, \`aidex global-status\`, \`aidex global-refresh\`
 - Viewer and settings: \`aidex viewer <path>\`, \`aidex settings <path> --open\`
-- Every subcommand lists its options with \`--help\`.
+- Every subcommand lists its options with \`--help\`, except \`can\`, which reads it as the pattern.
 ${CLAUDE_MD_END}`;
 
 // ============================================================

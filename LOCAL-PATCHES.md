@@ -798,7 +798,7 @@ Un premier lot, sans section ici jusqu'a present, avait deja retire onze outils 
 
 Consequence du retrait de `session` : `checkScheduledTasks` n'avait qu'un appelant de production, `session.ts` (mesure du reviewer). Pour un agent Claude Code, les taches planifiees ne se declenchent donc plus (les outils `task` etaient deja masques par defaut), pas plus que la reindexation des fichiers modifies hors session au demarrage.
 
-**Messages qui renvoyaient vers un outil retire.** Ils donnent desormais une commande executable telle quelle via `cliCommand(subcommand, args)` (`src/commands/shared.ts`) : `"<process.execPath>" "<build/index.js absolu>" <sous-commande> "<arg>"...`. Le point d'entree est localise depuis le module, pas depuis `process.argv[1]`, qui nomme le script de l'appelant des qu'AiDex est charge comme bibliotheque (meme raisonnement que `rebuildCommand`, `src/commands/coverage.ts`). Si le fichier d'entree manque, repli sur la forme courte `aidex <sous-commande> ... (AiDex CLI)`. Sites : `noIndexError` (`shared.ts`), `coverage.ts`, `link.ts`, `global/global-shared.ts`, `embeddings/pipeline.ts`, `session.ts`, `update.ts` (fichier supprime : `update <projet> <fichier>` le retire de l'index) et plusieurs messages de `tools.ts`. Sans equivalent CLI : la fermeture d'un viewer servant un autre projet (`viewer/server.ts` dit d'arreter le processus qui le sert).
+**Messages qui renvoyaient vers un outil retire.** Ils donnent desormais une commande executable telle quelle via `cliCommand(subcommand, args)` (`src/commands/shared.ts`) : `"<process.execPath>" "<build/index.js absolu>" <sous-commande> "<arg>"...`. Le point d'entree est localise depuis le module, pas depuis `process.argv[1]`, qui nomme le script de l'appelant des qu'AiDex est charge comme bibliotheque (meme raisonnement que `rebuildCommand`, `src/commands/coverage.ts`). Pour l'ancien outil `aidex_coverage`, la sous-commande est `can`, donc la forme courte est `aidex can <pattern> ...`, jamais `aidex coverage`. Si le fichier d'entree manque, repli sur la forme courte `aidex <sous-commande> ... (AiDex CLI)`. Sites : `noIndexError` (`shared.ts`), `coverage.ts`, `link.ts`, `global/global-shared.ts`, `embeddings/pipeline.ts`, `session.ts`, `update.ts` (fichier supprime : `update <projet> <fichier>` le retire de l'index) et plusieurs messages de `tools.ts`. Sans equivalent CLI : la fermeture d'un viewer servant un autre projet (`viewer/server.ts` dit d'arreter le processus qui le sert).
 
 **Hook `hooks/claude/aidex-init-nudge.py`, `SessionStart`, matcher `startup|clear`.** Une ligne de contexte seulement a la racine d'un depot git (`.git` repertoire ou fichier de worktree) sans `.aidex/index.db`, avec la commande `init` resolue par `aidex_hook_common`. Muet partout ailleurs, fail open, aucun chemin absolu dans le source. Non installe : entree dans `settings.json.template`, action operateur.
 
@@ -832,11 +832,13 @@ Plan : `docs/plans/cli-wrappers-hooks-plan.md`, sections 0.5, 0.7 (rang 2), 6.1 
 
 ### Contrat des sous-commandes
 
-Les sous-commandes derivees d'un outil MCP lisent directement son `inputSchema` dans `src/cli/tool-args.ts`. Les booleens acceptent `--flag`, `--flag=true` ou `--flag=false` ; les nombres et chaines acceptent une valeur espacee ou `=`, les tableaux repetent le flag et les enums sont controles. Une chaine vide est refusee, sauf pour `llm_*`, ou elle signifie effacer le reglage. `--help` sort en 0, un `--` seul termine les options, et un flag, une valeur ou un argument refuses sortent en 2.
+Les sous-commandes derivees d'un outil MCP lisent directement son `inputSchema` dans `src/cli/tool-args.ts`. Les booleens acceptent `--flag`, `--flag=true` ou `--flag=false` ; les nombres et chaines acceptent une valeur espacee ou `=`, les tableaux repetent le flag et les enums sont controles. Une chaine vide est refusee, sauf pour `llm_*`, ou elle signifie effacer le reglage. Pour ces sous-commandes, `--help` sort en 0, un `--` seul termine les options, et un flag, une valeur ou un argument refuses sortent en 2.
 
 `src/cli/run-tool.ts` recupere le schema dans `declaredTools()`, parse les arguments, puis appelle `handleToolCall` avec le nom MCP. `remove`, `session`, `settings` sans `--open`, `global-status` et `global-refresh` partagent ainsi le handler MCP. La CLI imprime le texte tel quel et sort en 1 si la reponse porte `isError` ou commence par `Error` ; les handlers actuels signalent leurs erreurs dans ce texte.
 
 `init`, `rebuild-index`, `scan` et `global-init` gardent leurs sorties propres a la CLI, mais leurs options passent respectivement par `initParamsFromArgs`, `scanParamsFromArgs` et `globalInitParamsFromArgs`, les mappings des handlers MCP. Pour un appelant, un chemin manquant, un argument en trop ou un flag inconnu sont maintenant refuses en exit 2 au lieu de poursuivre avec une interpretation partielle.
+
+L'ancien outil MCP `aidex_coverage` est expose par `aidex can <pattern>`, jamais par `aidex coverage`; `--help` est un pattern comme un autre, pas une option d'aide. En revanche, `aidex setup` et `aidex unsetup` detectent `--help` ou `-h` a toute position, impriment leur usage et retournent avant toute installation ou desinstallation.
 
 ### Viewer et settings
 
@@ -855,3 +857,25 @@ Les tests ont ete rendus rouges puis les sources restaurees pour un parser qui i
 ### Reference
 
 Spec `spec_6fa66df4`.
+
+---
+
+## 26. Lanceurs `bin/`
+
+### Contrat
+
+`bin/aidex` remonte a son fichier cible reel, y compris apres un symlink, puis localise `build/index.js` relativement a cette cible. `bin/aidex.cmd` le localise depuis `%~dp0`. Les deux lanceurs utilisent `AIDEX_NODE` s'il est non vide, sinon `node` du `PATH`, et transmettent arguments, flux standards et code de sortie. Un build absent ecrit une instruction `npm run build` sur stderr et sort en 1. Dans le lanceur cmd, le bloc conditionnel ne choisit que `NODE`; l'invocation qui developpe `%*` reste hors de tout bloc parenthese afin que les parentheses presentes dans un argument ne soient pas interpretees par cmd. Les deux lanceurs transmettent aussi sans effet `setup --help` et `unsetup --help`, qui rendent seulement leur usage.
+
+### Mesures
+
+- Un symlink natif vers le lanceur sh atteint `aidex settings --help` avec **exit 0**.
+- Un symlink natif vers `aidex.cmd` sort en **exit 1** : `%~dp0` designe le dossier du lien, dont le parent ne contient pas le build. L'installation commune aux deux environnements est donc l'ajout de `bin` au `PATH`.
+- Un `AIDEX_NODE` inexistant sort en **127** dans le lanceur sh.
+
+### EOL et tests
+
+`core.autocrlf=true` risquerait de convertir les fins de ligne et de casser le shebang : `.gitattributes` impose `bin/aidex text eol=lf`. `bin/aidex` est suivi en mode Git `100755`. `tests/bin-launchers.test.js` resout `sh` depuis le `PATH`, execute directement le lanceur sur POSIX, couvre les deux lanceurs avec `AIDEX_NODE` valide ou invalide, un build manquant et `can` sans pattern, puis verifie que les patterns avec espaces, guillemets et parentheses restent exactement inchanges. Il couvre aussi un symlink relatif et une chaine de deux symlinks pour le lanceur sh, avec un skip motive si la plateforme interdit les symlinks. Les mutations qui replacent `%*` dans le bloc cmd, retirent le suivi de symlink sh ou le mode executable Git rendent le test rouge.
+
+### Reference
+
+Spec `spec_4caf3ff4`.

@@ -1,6 +1,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { tmpdir } from 'os';
+import { fileURLToPath } from 'url';
 
 import { describe, test, expect, afterAll } from '@jest/globals';
 
@@ -9,6 +10,8 @@ import { DEFAULT_DISABLED_TOOLS } from '../build/server/tools.js';
 
 const START = '<!-- AIDEX-START -->';
 const END = '<!-- AIDEX-END -->';
+const HELP_SENTENCE = 'Every subcommand lists its options with `--help`, except `can`, which reads it as the pattern.';
+const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
 const tempDirs = [];
 afterAll(() => {
@@ -33,6 +36,11 @@ describe('CLAUDE.md block', () => {
 
     test('does not contain a local path', () => {
         expect(CLAUDE_MD_BLOCK).not.toMatch(/[A-Za-z]:[\\/]|\/(?:Users|home)\//);
+    });
+
+    test('matches the README help exception for can', () => {
+        expect(CLAUDE_MD_BLOCK).toContain(HELP_SENTENCE);
+        expect(readFileSync(join(REPO_ROOT, 'README.md'), 'utf8')).toContain(HELP_SENTENCE);
     });
 
     test('sits between its markers', () => {
