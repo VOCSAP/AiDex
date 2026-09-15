@@ -937,3 +937,29 @@ Le mutant 3 survivait a la premiere version du test, qui ne lisait que `isProgre
 ### Reference
 
 Hypothese agent-forge `hyp_ae392915`.
+
+---
+
+## 28. Delai configurable du worker d'embeddings -- carte 44d9f07c
+
+### Contrat
+
+`embedding_timeout_minutes` dans `~/.aidex/llm.json` regle le delai maximal du worker d'embeddings. Une valeur finie strictement positive est appliquee, sinon le repli est de 10 minutes. La valeur est plafonnee a `2 147 483 647` millisecondes, soit environ `35 791,394` minutes, la borne des timers Node.
+
+`indexProjectInWorker` conserve un second plafonnement apres la conversion des minutes en millisecondes : la multiplication au plafond peut arrondir legerement au-dessus de la borne Node, que Node convertirait sinon en delai d'une milliseconde. Au plafond, le message de timeout indique que la limite Node est atteinte plutot que de conseiller une augmentation impossible.
+
+### Tests
+
+`tests/embedding-timeout.test.js` couvre les valeurs invalides, le plafonnement de la configuration et du payload Settings, un worker injecte qui termine apres 50 ms avec une configuration au-dessus du plafond, et un worker qui depasse un court delai configure. La sonde externe est bornee a 5 secondes. La fixture `delayed-success-embed-worker.mjs` rend le cas de succes au plafond deterministe.
+
+Les mutations qui retirent le plafonnement en millisecondes, remplacent le delai par 10 minutes, ou retirent le plafonnement de configuration rendent le test rouge. Les sources sont restaurees octet pour octet apres chaque mutation.
+
+### Ce qu'il ne faut pas reintroduire en rebasant
+
+- Ne pas supprimer le plafonnement apres `timeoutMinutes * 60_000`.
+- Ne pas exposer le chemin du worker injectable par MCP ou par la CLI.
+- Ne pas conseiller d'augmenter le delai quand la borne Node est deja atteinte.
+
+### Reference
+
+Specs agent-forge `spec_8162418c` et `spec_31736819`.

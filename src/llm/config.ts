@@ -268,9 +268,15 @@ async function probeOllama(endpoint: string): Promise<boolean> {
 }
 
 /** Read the global LLM config file (~/.aidex/llm.json). */
+export const DEFAULT_EMBEDDING_TIMEOUT_MINUTES = 10;
+export const MAX_EMBEDDING_TIMEOUT_MILLISECONDS = 2_147_483_647;
+export const MAX_EMBEDDING_TIMEOUT_MINUTES = MAX_EMBEDDING_TIMEOUT_MILLISECONDS / 60_000;
+
 export interface LlmConfigFile {
     /** Master switch. If false: LLM layer is disabled, no provider is resolved. */
     enabled?: boolean;
+    /** Maximum time the embedding worker may run for one project. */
+    embedding_timeout_minutes?: number;
     /** A literal API key (e.g. "sk-proj-..."). Mutually exclusive with api_key_env. */
     api_key?: string;
     /** Name of an environment variable to read the key from (e.g. "OPENAI_API_KEY"). */
@@ -289,6 +295,15 @@ export interface LlmConfigFile {
         /** Optional Bearer token. */
         api_key?: string;
     };
+}
+
+export function resolveEmbeddingTimeoutMinutes(config: unknown): number {
+    const value = config && typeof config === 'object'
+        ? (config as { embedding_timeout_minutes?: unknown }).embedding_timeout_minutes
+        : undefined;
+    return typeof value === 'number' && Number.isFinite(value) && value > 0
+        ? Math.min(value, MAX_EMBEDDING_TIMEOUT_MINUTES)
+        : DEFAULT_EMBEDDING_TIMEOUT_MINUTES;
 }
 
 /**
@@ -345,6 +360,9 @@ export function writeLlmConfigFile(cfg: LlmConfigFile): void {
     // api_key and api_key_env are mutually exclusive — last write wins.
     const clean: LlmConfigFile = {};
     if (typeof cfg.enabled === 'boolean') clean.enabled = cfg.enabled;
+    if (typeof cfg.embedding_timeout_minutes === 'number' && Number.isFinite(cfg.embedding_timeout_minutes) && cfg.embedding_timeout_minutes > 0) {
+        clean.embedding_timeout_minutes = cfg.embedding_timeout_minutes;
+    }
     if (cfg.api_key && cfg.api_key.trim()) {
         clean.api_key = cfg.api_key.trim();
     } else if (cfg.api_key_env && cfg.api_key_env.trim()) {

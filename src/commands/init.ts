@@ -21,6 +21,7 @@ import {
     type CoverageRecord,
 } from '../coverage/rule.js';
 import type { IndexResult } from '../embeddings/index.js';
+import { MAX_EMBEDDING_TIMEOUT_MILLISECONDS, readLlmConfigFile, resolveEmbeddingTimeoutMinutes } from '../llm/config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -37,19 +38,27 @@ export const LINE_RANGES_SCHEMA = '1.5';
 /**
  * Run embedding in a fully isolated child process (spawn, not fork) so an
  * ONNX OOM crash kills only the worker — the MCP server stays alive.
- * Communication via stdin/stdout JSON. Timeout: 10 minutes per project.
+ * Communication via stdin/stdout JSON.
  */
-function indexProjectInWorker(projectPath: string, force = false): Promise<IndexResult> {
+export function indexProjectInWorker(
+    projectPath: string,
+    force = false,
+    workerPath = join(__dirname, '..', 'embeddings', 'embed-worker.js')
+): Promise<IndexResult> {
+    const timeoutMinutes = resolveEmbeddingTimeoutMinutes(readLlmConfigFile());
+    const timeoutMilliseconds = Math.min(timeoutMinutes * 60_000, MAX_EMBEDDING_TIMEOUT_MILLISECONDS);
+    const timeoutMessage = timeoutMilliseconds === MAX_EMBEDDING_TIMEOUT_MILLISECONDS
+        ? `Embedding timed out after ${timeoutMinutes} minutes; the maximum Node timer limit has been reached`
+        : `Embedding timed out after ${timeoutMinutes} minutes; set embedding_timeout_minutes in ~/.aidex/llm.json to increase it`;
     return new Promise((resolve, reject) => {
-        const workerPath = join(__dirname, '..', 'embeddings', 'embed-worker.js');
         const child = spawn(process.execPath, [workerPath], {
             stdio: ['pipe', 'pipe', 'pipe'],
         });
 
         const timeout = setTimeout(() => {
             child.kill();
-            reject(new Error('Embedding timed out after 10 minutes'));
-        }, 10 * 60 * 1000);
+            reject(new Error(timeoutMessage));
+        }, timeoutMilliseconds);
 
         let stdout = '';
         let stderr = '';

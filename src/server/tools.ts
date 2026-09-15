@@ -3256,6 +3256,7 @@ async function handleSettings(args: Record<string, unknown>): Promise<{ content:
         lines.push('');
         lines.push(`**Embeddings:** ${s.embeddings.enabled ? `enabled (${s.embeddings.totalEmbeddings} vectors, model: ${s.embeddings.modelId})` : 'disabled'}`);
         lines.push(`**Model cached on disk:** ${s.embeddings.modelCached ? 'yes' : 'no'}`);
+        lines.push(`**Embedding worker timeout:** ${s.embeddings.timeoutMinutes} minutes (embedding_timeout_minutes in ~/.aidex/llm.json)`);
         lines.push('');
         lines.push(`**LLM active:** ${s.llm.active ? `${s.llm.active.backend} / ${s.llm.active.model} (source: ${s.llm.active.source})` : '(none)'}`);
         lines.push(`**LLM file (~/.aidex/llm.json):** ${s.llm.file.hasKey ? 'has key' : 'no key'}` +

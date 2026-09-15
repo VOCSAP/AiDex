@@ -90,6 +90,7 @@ interface ViewerMessage {
     payload?: {
         enableEmbeddings?: boolean;
         embeddingModel?: string;
+        embeddingTimeoutMinutes?: number;
         llmEndpoint?: string | null;
         llmModel?: string | null;
         llmApiKey?: string | null;
@@ -4311,6 +4312,7 @@ function getViewerHTML(projectPath: string): string {
                 rerankerKeyInput: '',     // user's pending input (stored key never echoed)
                 enableEmbeddings: !!data.embeddings.enabled,
                 embeddingModel: data.embeddings.modelId || (data.embeddings.availableModels[0] && data.embeddings.availableModels[0].id) || 'jina-code',
+                embeddingTimeoutMinutes: data.embeddings.timeoutMinutes,
                 modelDropdownOpen: false, // custom dropdown state
             };
         }
@@ -4398,6 +4400,10 @@ function getViewerHTML(projectPath: string): string {
                       '<span class="label-help">Indexing takes ~30s per project. Adds ~10 MB to <code>~/.aidex/global.db</code>. ' + cachedHint + '</span>' +
                     '</div>' +
                   '</label>' +
+                  '<div class="settings-row">' +
+                    '<label for="embTimeout">Worker timeout (minutes)</label>' +
+                    '<input type="number" id="embTimeout" min="0.001" step="any" value="' + escapeAttr(String(form.embeddingTimeoutMinutes)) + '">' +
+                  '</div>' +
                   (form.enableEmbeddings
                     ? '<div class="settings-row">' +
                         '<label for="embModel">Model</label>' +
@@ -4537,6 +4543,7 @@ function getViewerHTML(projectPath: string): string {
                 });
             }
             bindSelect('embModel', v => form.embeddingModel = v);
+            bindInput('embTimeout', v => form.embeddingTimeoutMinutes = Number(v));
 
             // LLM master toggle (lives in the embeddings panel) — re-render to
             // show/hide the LLM section.
@@ -4649,6 +4656,7 @@ function getViewerHTML(projectPath: string): string {
             const payload = {
                 enableEmbeddings: f.enableEmbeddings,
                 embeddingModel: f.embeddingModel,
+                embeddingTimeoutMinutes: f.embeddingTimeoutMinutes,
                 llmEnabled: f.llmEnabled,
                 llmEndpoint: f.endpoint || null,
                 llmModel: f.model || null,

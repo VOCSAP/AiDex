@@ -20,10 +20,12 @@ import {
     type LlmBackend,
     type LlmConfigFile,
     type LlmCreds,
+    MAX_EMBEDDING_TIMEOUT_MINUTES,
     isEnvVarName,
     isLlmEnabled,
     llmConfigPath,
     readLlmConfigFile,
+    resolveEmbeddingTimeoutMinutes,
     resolveLlmCreds,
     writeLlmConfigFile,
 } from './config.js';
@@ -123,6 +125,7 @@ export interface EmbeddingsSettings {
     modelCached: boolean;
     /** Available models from the registry. */
     availableModels: Array<{ id: string; description: string; dim: number; license: string }>;
+    timeoutMinutes: number;
 }
 
 export interface LlmSettings {
@@ -207,6 +210,7 @@ export async function getSettings(projectPath: string): Promise<ProjectSettings>
                 dim: m.dim,
                 license: m.license,
             })),
+            timeoutMinutes: resolveEmbeddingTimeoutMinutes(file),
         },
         llm: {
             enabled: isLlmEnabled(),
@@ -258,6 +262,7 @@ export async function getSettings(projectPath: string): Promise<ProjectSettings>
 export interface SetSettingsPayload {
     enableEmbeddings?: boolean;
     embeddingModel?: string;
+    embeddingTimeoutMinutes?: number;
     /** Master switch for the LLM layer. When false, no provider is resolved. */
     llmEnabled?: boolean;
     llmEndpoint?: string | null;
@@ -302,6 +307,12 @@ export function validateSetSettingsPayload(raw: unknown): SetSettingsPayload {
         if (typeof src.embeddingModel !== 'string') throw new Error('embeddingModel must be a string');
         if (src.embeddingModel.length > MAX_MODEL_LEN) throw new Error(`embeddingModel exceeds max length ${MAX_MODEL_LEN}`);
         out.embeddingModel = src.embeddingModel;
+    }
+    if ('embeddingTimeoutMinutes' in src) {
+        if (typeof src.embeddingTimeoutMinutes !== 'number' || !Number.isFinite(src.embeddingTimeoutMinutes) || src.embeddingTimeoutMinutes <= 0) {
+            throw new Error('embeddingTimeoutMinutes must be a positive number');
+        }
+        out.embeddingTimeoutMinutes = Math.min(src.embeddingTimeoutMinutes, MAX_EMBEDDING_TIMEOUT_MINUTES);
     }
     if ('llmEndpoint' in src) {
         out.llmEndpoint = checkStr('llmEndpoint', src.llmEndpoint, MAX_STRING_LEN);
@@ -353,6 +364,7 @@ export async function setSettings(
     try {
         // 1. Update LLM config file (~/.aidex/llm.json) — only fields explicitly given.
         if (
+            payload.embeddingTimeoutMinutes !== undefined ||
             payload.llmEnabled !== undefined ||
             payload.llmEndpoint !== undefined ||
             payload.llmModel !== undefined ||
@@ -364,6 +376,9 @@ export async function setSettings(
         ) {
             const current = readLlmConfigFile() ?? {};
             const next = { ...current };
+            if (payload.embeddingTimeoutMinutes !== undefined) {
+                next.embedding_timeout_minutes = payload.embeddingTimeoutMinutes;
+            }
             if (payload.llmEnabled !== undefined) {
                 next.enabled = payload.llmEnabled;
             }

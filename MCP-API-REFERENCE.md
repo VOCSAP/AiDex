@@ -720,7 +720,7 @@ Read or write session notes. Persists in the database between sessions.
 | `open` | boolean | - | If true, open the viewer (start it if needed) and switch to the Settings tab |
 
 **Returns (without `open`):**
-- `embeddings` — `{ enabled, modelId, dim, total, byKind, byType }` or `{ enabled: false }`
+- `embeddings` — `{ enabled, modelId, dim, total, byKind, byType, timeoutMinutes }` or `{ enabled: false }`; `timeoutMinutes` is the applied embedding worker limit
 - `llm` — active provider, endpoint, model, key source (env var name / file / none)
 - `llm_send_code` — privacy switch state (default: `false` — only metadata sent)
 - `version` — current AiDex version + last seen version
@@ -734,7 +734,7 @@ Read or write session notes. Persists in the database between sessions.
 { "path": ".", "open": true }
 ```
 
-The Settings tab features a custom combobox for model selection, a live API-key field that auto-detects environment variable names (e.g. `OPENAI_API_KEY`), a master toggle for the LLM layer (LLM only enables when embeddings are enabled), and a "Test connection" button with latency measurement. API keys persist to `~/.aidex/llm.json` (chmod 600).
+The Settings tab features a custom combobox for model selection, a live API-key field that auto-detects environment variable names (e.g. `OPENAI_API_KEY`), a master toggle for the LLM layer (LLM only enables when embeddings are enabled), an embedding worker timeout in minutes, and a "Test connection" button with latency measurement. The timeout persists as `embedding_timeout_minutes` in `~/.aidex/llm.json`: it defaults to `10` minutes when missing, non-numeric, zero, negative, or non-finite, and values above the Node maximum of `2,147,483,647` milliseconds (about `35,791.394` minutes) are clamped. API keys persist to `~/.aidex/llm.json` (chmod 600).
 
 The model combobox is a free-text field: the dropdown entries are only suggestions, any model name your endpoint serves can be typed directly (e.g. a custom Ollama tag like `qwen3:8b-ctx16k`).
 

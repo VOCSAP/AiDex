@@ -152,7 +152,9 @@ aidex_search({ query: "how do we batch requests to the LLM", path: "." })
 aidex_search({ query: "retry with backoff", scope: "all" })  // across every embedded project
 ```
 
-Or use the **Settings tab** in the Viewer (`aidex_settings({ path: ".", open: true })`) — toggles for embeddings, LLM provider, model, and the privacy switch.
+Or use the **Settings tab** in the Viewer (`aidex_settings({ path: ".", open: true })`) -- toggles for embeddings, LLM provider, model, the privacy switch, and the embedding worker timeout.
+
+Set `embedding_timeout_minutes` in `~/.aidex/llm.json` to a positive finite number of minutes. The default is `10`; missing, non-numeric, zero, negative, or non-finite values fall back to `10`. Values above the Node timer maximum of `2,147,483,647` milliseconds (about `35,791.394` minutes) are clamped to that maximum.
 
 ### Optional LLM layer
 
