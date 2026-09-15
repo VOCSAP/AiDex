@@ -137,8 +137,6 @@ describe('user-facing text points to the CLI, not to a hidden tool', () => {
 
     const retired = new Set(DEFAULT_DISABLED_TOOLS);
 
-    // setup.ts installs an upstream CLAUDE.md block: accepted risk.
-    const EXEMPT_FILES = new Set(['src/commands/setup.ts']);
     const EXEMPT_LINES = [
         { file: 'src/viewer/server.ts', tool: 'task', line: 'to create tasks from the chat' },
         { file: 'src/viewer/server.ts', tool: 'log', line: 'Start the Log Hub with' },
@@ -204,7 +202,6 @@ describe('user-facing text points to the CLI, not to a hidden tool', () => {
         const used = new Set();
         for (const file of sourceFiles(join(REPO, 'src'))) {
             const rel = relative(REPO, file).split('\\').join('/');
-            if (EXEMPT_FILES.has(rel)) continue;
             for (const hit of scanLines(readFileSync(file, 'utf8').split('\n'))) {
                 const exemption = EXEMPT_LINES.find(
                     (x) => x.file === rel && x.tool === hit.tool && hit.text.includes(x.line)

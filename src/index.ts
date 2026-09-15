@@ -39,6 +39,40 @@
 // needs -- and the branch itself does 5 ms of real work.
 import { PRODUCT_NAME, PRODUCT_NAME_LOWER, TOOL_PREFIX } from './constants.js';
 
+async function runCliViewer(
+    projectPath: string,
+    initialTab?: string,
+    start?: (projectPath: string, initialTab?: string) => Promise<string>
+): Promise<void> {
+    console.log(`Starting Viewer for: ${projectPath}`);
+    const { startCliViewer } = await import('./cli/run-tool.js');
+    let result: string;
+    try {
+        result = await (start ?? startCliViewer)(projectPath, initialTab);
+        console.log(result);
+    } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exit(1);
+    }
+
+    // Port already in use: another viewer serves and the browser was just opened
+    // on it. Exit 2 lets a launcher keep its window open to show the message;
+    // the short delay lets the detached browser spawn complete first.
+    if (result.includes('already in use')) {
+        await new Promise(r => setTimeout(r, 400));
+        process.exit(2);
+    }
+
+    console.log('Server runs until you close the browser tab or press Ctrl+C.');
+    const { stopViewer } = await import('./viewer/server.js');
+    const shutdownViewer = () => {
+        try { console.log(stopViewer()); } catch { /* ignore */ }
+        process.exit(0);
+    };
+    process.on('SIGINT', shutdownViewer);
+    process.on('SIGTERM', shutdownViewer);
+}
+
 async function main() {
     const args = process.argv.slice(2);
 
@@ -104,14 +138,11 @@ async function main() {
 
     // CLI mode: scan
     if (args[0] === 'scan') {
-        const searchPath = args[1];
-        if (!searchPath) {
-            console.error(`Usage: ${PRODUCT_NAME_LOWER} scan <path>`);
-            process.exit(1);
-        }
-
+        const { toolSchema, parseOrExit } = await import('./cli/run-tool.js');
+        const toolArgs = parseOrExit('scan', await toolSchema('scan'), ['path'], args.slice(1));
+        const { scanParamsFromArgs } = await import('./server/tools.js');
         const { scan } = await import('./commands/scan.js');
-        const result = scan({ path: searchPath });
+        const result = scan(scanParamsFromArgs(toolArgs));
 
         if (!result.success) {
             console.error(`Error: ${result.error}`);
@@ -147,18 +178,12 @@ async function main() {
     if (args[0] === 'init' || args[0] === 'rebuild-index') {
         const subcommand = args[0];
         const rebuild = subcommand === 'rebuild-index';
-        const { declaredTools, initParamsFromArgs, embeddingsSummary } = await import('./server/tools.js');
-        const { parseToolArgs, toolUsage } = await import('./cli/tool-args.js');
-        const schema = declaredTools().find((t) => t.name === `${TOOL_PREFIX}init`)!.inputSchema;
-        const parsed = parseToolArgs(schema, args.slice(1), ['path']);
-        if (!parsed.ok) {
-            console.error(`Error: ${parsed.error}`);
-            console.error(toolUsage(subcommand, schema, ['path']));
-            if (rebuild) console.error('Rebuilds the whole index from scratch, ignoring the per-file hash skip.');
-            process.exit(2);
-        }
+        const { initParamsFromArgs, embeddingsSummary } = await import('./server/tools.js');
+        const { toolSchema, parseOrExit } = await import('./cli/run-tool.js');
+        const notes = rebuild ? ['Rebuilds the whole index from scratch, ignoring the per-file hash skip.'] : [];
+        const toolArgs = parseOrExit(subcommand, await toolSchema('init'), ['path'], args.slice(1), notes);
 
-        const params = initParamsFromArgs(parsed.args);
+        const params = initParamsFromArgs(toolArgs);
         console.log(rebuild ? `Rebuilding index (full, no hash skip): ${params.path}` : `Indexing: ${params.path}`);
         const { init, LINE_RANGES_SCHEMA } = await import('./commands/init.js');
         const result = await init(rebuild ? { ...params, fresh: true } : params);
@@ -202,22 +227,14 @@ async function main() {
 
     // CLI mode: global-init
     if (args[0] === 'global-init') {
-        const searchPath = args[1];
-        if (!searchPath) {
-            console.error(`Usage: ${PRODUCT_NAME_LOWER} global-init <path> [--index-unindexed]`);
-            process.exit(1);
-        }
+        const { toolSchema, parseOrExit } = await import('./cli/run-tool.js');
+        const toolArgs = parseOrExit('global-init', await toolSchema('global_init'), ['path'], args.slice(1));
+        const { globalInitParamsFromArgs } = await import('./server/tools.js');
+        const params = globalInitParamsFromArgs(toolArgs);
 
-        const indexUnindexed = args.includes('--index-unindexed');
-        const showProgress = args.includes('--show-progress');
-
-        console.log(`Scanning: ${searchPath}${indexUnindexed ? ' (will index unindexed projects)' : ''}${showProgress ? ' (with progress UI)' : ''}`);
+        console.log(`Scanning: ${params.path}${params.indexUnindexed ? ' (will index unindexed projects)' : ''}${params.showProgress ? ' (with progress UI)' : ''}`);
         const { globalInit } = await import('./commands/global/index.js');
-        const result = await globalInit({
-            path: searchPath,
-            indexUnindexed,
-            showProgress,
-        });
+        const result = await globalInit(params);
 
         if (!result.success) {
             console.error(`Error: ${result.error}`);
@@ -254,43 +271,29 @@ async function main() {
         return;
     }
 
-    // CLI mode: viewer
+    // The handler can only stop a viewer owned by this process.
     if (args[0] === 'viewer') {
-        const projectPath = args[1] || process.cwd();
-        const tabArg = args.find(a => a.startsWith('--tab='));
-        const initialTab = tabArg ? tabArg.slice('--tab='.length) : undefined;
-
-        console.log(`Starting Viewer for: ${projectPath}`);
-        const { startViewer, stopViewer } = await import('./viewer/server.js');
-        let result: string;
-        try {
-            result = await startViewer(projectPath, initialTab, { exitOnLastClientClose: true });
-            console.log(result);
-        } catch (err) {
-            console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
-            process.exit(1);
-        }
-
-        // If the port was already in use, another viewer instance is serving.
-        // We just opened the browser — no need to keep this CLI process alive.
-        // Exit code 2 signals "already running" so the launcher can keep its
-        // console window open for the user to read the message.
-        // Small delay so the detached browser-spawn definitely completes before
-        // this process (and any inherited stdio) goes away.
-        if (result.includes('already in use')) {
-            await new Promise(r => setTimeout(r, 400));
-            process.exit(2);
-        }
-
-        console.log('Server runs until you close the browser tab or press Ctrl+C.');
-
-        // Keep the process alive — the viewer runs until SIGINT.
-        const shutdownViewer = () => {
-            try { console.log(stopViewer()); } catch { /* ignore */ }
-            process.exit(0);
+        const { toolSchema, parseOrExit, printToolResponse } = await import('./cli/run-tool.js');
+        const schema = await toolSchema('viewer');
+        const cliSchema = {
+            properties: {
+                ...schema.properties,
+                tab: { type: 'string', description: 'Tab to open first (e.g. settings)' },
+            },
+            required: [],
         };
-        process.on('SIGINT', shutdownViewer);
-        process.on('SIGTERM', shutdownViewer);
+        const stopNote = 'A viewer started by `aidex viewer` stops when its last browser tab closes, or with Ctrl+C in its terminal.';
+        const toolArgs = parseOrExit('viewer', cliSchema, ['path'], args.slice(1), [stopNote]);
+        const projectPath = (toolArgs.path as string | undefined) ?? process.cwd();
+
+        if (toolArgs.action === 'close') {
+            const { handleToolCall } = await import('./server/tools.js');
+            const failed = printToolResponse(await handleToolCall(`${TOOL_PREFIX}viewer`, { path: projectPath, action: 'close' }));
+            if (!failed) console.log(stopNote);
+            return;
+        }
+
+        await runCliViewer(projectPath, toolArgs.tab as string | undefined);
         return;
     }
 
@@ -450,6 +453,30 @@ async function main() {
         // invoked it, regardless of what happened above or what the rest of
         // this file's error handling does.
         process.exitCode = 0;
+        return;
+    }
+
+    if (args[0] === 'settings') {
+        const { startSettingsCliViewer, toolSchema, parseOrExit } = await import('./cli/run-tool.js');
+        const toolArgs = parseOrExit('settings', await toolSchema('settings'), ['path'], args.slice(1));
+        if (toolArgs.open === true) {
+            const path = toolArgs.path as string;
+            await runCliViewer(path, 'settings', (projectPath) => startSettingsCliViewer(projectPath));
+            return;
+        }
+    }
+
+    const toolSubcommands: Record<string, { tool: string; positional: string[] }> = {
+        'remove': { tool: 'remove', positional: ['path', 'file'] },
+        'session': { tool: 'session', positional: ['path'] },
+        'settings': { tool: 'settings', positional: ['path'] },
+        'global-status': { tool: 'global_status', positional: [] },
+        'global-refresh': { tool: 'global_refresh', positional: [] },
+    };
+    if (args[0] !== undefined && Object.hasOwn(toolSubcommands, args[0])) {
+        const { tool, positional } = toolSubcommands[args[0]];
+        const { runToolSubcommand } = await import('./cli/run-tool.js');
+        await runToolSubcommand(args[0], tool, positional, args.slice(1));
         return;
     }
 

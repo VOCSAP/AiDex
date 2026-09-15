@@ -794,11 +794,11 @@ Un premier lot, sans section ici jusqu'a present, avait deja retire onze outils 
 
 **`DEFAULT_DISABLED_TOOLS` (`src/server/tools.ts`) gagne dix noms** : `init`, `global_init`, `coverage`, `settings`, `global_status`, `scan`, `global_refresh`, `viewer`, `remove`, `session`. Le filtre reste purement soustractif : chaque bras de `handleToolCall` repond toujours par son nom, et `AIDEX_TOOLS_DISABLE` arbitre comme avant. `update` et `status` restent annonces (1 790 et 71 appels agent).
 
-`settings`, `global_status`, `global_refresh` et `session` n'ont pas encore de sous-commande CLI : ils sont retires quand meme, une carte `could` couvre ces sous-commandes.
+`session`, `global_status`, `global_refresh` et `settings` sans `--open` disposent maintenant de sous-commandes CLI qui appellent le meme handler MCP. `settings --open` passe par le viewer CLI et acquitte la version vue. Ils restent retires de `tools/list`.
 
 Consequence du retrait de `session` : `checkScheduledTasks` n'avait qu'un appelant de production, `session.ts` (mesure du reviewer). Pour un agent Claude Code, les taches planifiees ne se declenchent donc plus (les outils `task` etaient deja masques par defaut), pas plus que la reindexation des fichiers modifies hors session au demarrage.
 
-**Messages qui renvoyaient vers un outil retire.** Ils donnent desormais une commande executable telle quelle via `cliCommand(subcommand, args)` (`src/commands/shared.ts`) : `"<process.execPath>" "<build/index.js absolu>" <sous-commande> "<arg>"...`. Le point d'entree est localise depuis le module, pas depuis `process.argv[1]`, qui nomme le script de l'appelant des qu'AiDex est charge comme bibliotheque (meme raisonnement que `rebuildCommand`, `src/commands/coverage.ts`). Si le fichier d'entree manque, repli sur la forme courte `aidex <sous-commande> ... (AiDex CLI)`. Sites : `noIndexError` (`shared.ts`), `coverage.ts`, `link.ts`, `global/global-shared.ts`, `embeddings/pipeline.ts`, `session.ts`, `update.ts` (fichier supprime : `update <projet> <fichier>` le retire de l'index) et plusieurs messages de `tools.ts`. Sans equivalent CLI : la fermeture d'un viewer servant un autre projet (`viewer/server.ts` dit d'arreter le processus qui le sert) et la reindexation avec embeddings (`init` CLI n'a pas d'option embeddings, mention retiree).
+**Messages qui renvoyaient vers un outil retire.** Ils donnent desormais une commande executable telle quelle via `cliCommand(subcommand, args)` (`src/commands/shared.ts`) : `"<process.execPath>" "<build/index.js absolu>" <sous-commande> "<arg>"...`. Le point d'entree est localise depuis le module, pas depuis `process.argv[1]`, qui nomme le script de l'appelant des qu'AiDex est charge comme bibliotheque (meme raisonnement que `rebuildCommand`, `src/commands/coverage.ts`). Si le fichier d'entree manque, repli sur la forme courte `aidex <sous-commande> ... (AiDex CLI)`. Sites : `noIndexError` (`shared.ts`), `coverage.ts`, `link.ts`, `global/global-shared.ts`, `embeddings/pipeline.ts`, `session.ts`, `update.ts` (fichier supprime : `update <projet> <fichier>` le retire de l'index) et plusieurs messages de `tools.ts`. Sans equivalent CLI : la fermeture d'un viewer servant un autre projet (`viewer/server.ts` dit d'arreter le processus qui le sert).
 
 **Hook `hooks/claude/aidex-init-nudge.py`, `SessionStart`, matcher `startup|clear`.** Une ligne de contexte seulement a la racine d'un depot git (`.git` repertoire ou fichier de worktree) sans `.aidex/index.db`, avec la commande `init` resolue par `aidex_hook_common`. Muet partout ailleurs, fail open, aucun chemin absolu dans le source. Non installe : entree dans `settings.json.template`, action operateur.
 
@@ -810,7 +810,7 @@ Consequence du retrait de `session` : `checkScheduledTasks` n'avait qu'un appela
 
 ### Tests
 
-- `tests/tool-filter.test.js`, 31 tests. Liste annoncee : defaut egal aux declarations moins les desactives ; aucun schema annonce ne contient le binaire node ni le chemin du build du poste ; `none` et vide compares aux declarations lues par la branche liste explicite ; une liste explicite remplace le defaut. Appel par nom de chaque outil desactive, dans un processus enfant dont HOME et USERPROFILE pointent vers un dossier vide : sous jest, modifier `process.env` ne deplace pas `os.homedir()`, et `global_refresh` en processus reecrirait la vraie base globale. Garde sur `src/**/*.ts` : aucune ligne hors commentaire ne nomme un outil de `DEFAULT_DISABLED_TOOLS` ; exemptions `src/commands/setup.ts` entier (bloc CLAUDE.md upstream, non installe sur ce poste, risque accepte) et quatre lignes nommees de l'ancien lot, chacune devant encore matcher.
+- `tests/tool-filter.test.js`, 31 tests. Liste annoncee : defaut egal aux declarations moins les desactives ; aucun schema annonce ne contient le binaire node ni le chemin du build du poste ; `none` et vide compares aux declarations lues par la branche liste explicite ; une liste explicite remplace le defaut. Appel par nom de chaque outil desactive, dans un processus enfant dont HOME et USERPROFILE pointent vers un dossier vide : sous jest, modifier `process.env` ne deplace pas `os.homedir()`, et `global_refresh` en processus reecrirait la vraie base globale. Garde sur `src/**/*.ts` : aucune ligne hors commentaire ne nomme un outil de `DEFAULT_DISABLED_TOOLS` ; quatre lignes nommees de l'ancien lot, chacune devant encore matcher.
 - `tests/cli-command.test.js`, 5 tests : node et point d'entree reels, guillemets, chemin Windows a antislash final normalise (placeholders `<...>` intacts), repli etiquete avant la commande, commande resolue dans `noIndexError`.
 - `tests/hooks/aidex-init-nudge.test.py`, 16 cas.
 - Mutations dans le sens du risque, toutes rouges puis restaurees octet pour octet : message `Run aidex_init first` reintroduit ; bras `remove` renomme dans `handleToolCall` ; test `.git` retire du hook ; helper rendant `aidex` nu avec une entree resolvable ; lignes commencant par `*` sautees hors bloc de commentaire ; `cliCommand` reintroduit dans la description de `kinds`.
@@ -825,3 +825,33 @@ Consequence du retrait de `session` : `checkScheduledTasks` n'avait qu'un appela
 ### Reference
 
 Plan : `docs/plans/cli-wrappers-hooks-plan.md`, sections 0.5, 0.7 (rang 2), 6.1 a 6.4. Spec `spec_4bc757e6`.
+
+---
+
+## 25. Parite CLI/MCP
+
+### Contrat des sous-commandes
+
+Les sous-commandes derivees d'un outil MCP lisent directement son `inputSchema` dans `src/cli/tool-args.ts`. Les booleens acceptent `--flag`, `--flag=true` ou `--flag=false` ; les nombres et chaines acceptent une valeur espacee ou `=`, les tableaux repetent le flag et les enums sont controles. Une chaine vide est refusee, sauf pour `llm_*`, ou elle signifie effacer le reglage. `--help` sort en 0, un `--` seul termine les options, et un flag, une valeur ou un argument refuses sortent en 2.
+
+`src/cli/run-tool.ts` recupere le schema dans `declaredTools()`, parse les arguments, puis appelle `handleToolCall` avec le nom MCP. `remove`, `session`, `settings` sans `--open`, `global-status` et `global-refresh` partagent ainsi le handler MCP. La CLI imprime le texte tel quel et sort en 1 si la reponse porte `isError` ou commence par `Error` ; les handlers actuels signalent leurs erreurs dans ce texte.
+
+`init`, `rebuild-index`, `scan` et `global-init` gardent leurs sorties propres a la CLI, mais leurs options passent respectivement par `initParamsFromArgs`, `scanParamsFromArgs` et `globalInitParamsFromArgs`, les mappings des handlers MCP. Pour un appelant, un chemin manquant, un argument en trop ou un flag inconnu sont maintenant refuses en exit 2 au lieu de poursuivre avec une interpretation partielle.
+
+### Viewer et settings
+
+`aidex viewer <path> --action close` appelle le handler MCP, puis rappelle que le viewer lance par la CLI s'arrete au dernier onglet ferme ou avec Ctrl+C. La fermeture par une route HTTP dediee ou par arret du processus qui sert le port n'est pas exposee.
+
+`aidex settings <path> --open` lance le viewer sur l'onglet Settings avec `exitOnLastClientClose: true`, afin que le processus CLI ne serve pas indefiniment apres la fermeture du dernier onglet. Apres le demarrage, la voie CLI applique le meme acquittement de version que le handler MCP. `settings` recupere sa configuration par `getSettings()`, qui initialise le schema d'embeddings : une base globale doit donc avoir ete initialisee avant son usage. Dans `global-init`, `--exclude` ne filtre que la recherche de projets non indexes ; les projets deja enregistres suivent leur propre parcours de registration.
+
+### Instructions installees par setup
+
+`CLAUDE_MD_BLOCK` de `aidex setup` est passe de 8 900 octets et 154 lignes, nommant 29 outils, a 1 249 octets et 22 lignes, nommant les 12 outils annonces. Il presente `aidex` comme l'interface en ligne de commande qui couvre les operations retirees de `tools/list`, puis renvoie chaque sous-commande vers `--help`. La garde de `tests/tool-filter.test.js` couvre aussi `src/commands/setup.ts` : le bloc installe ne peut plus nommer un outil masque. `tests/setup-instructions.test.js` refuse aussi un chemin local dans le bloc.
+
+### Mutations de preuve
+
+Les tests ont ete rendus rouges puis les sources restaurees pour un parser qui ignore les booleens, `handleInit` avec `init({ path })` a la place de `init(initParamsFromArgs(args))` (rouge sur `name and exclude reach init() the same way through the MCP handler and the CLI`), un runner qui ne remonte jamais les erreurs, `scanParamsFromArgs` sans `maxDepth`, une chaine vide acceptee, `aidex_init` dans le bloc installe, un chemin local dans `CLAUDE_MD_BLOCK`, `startCliViewer` sans l'option de fermeture du dernier onglet, et un viewer Settings qui n'acquitte pas la version vue.
+
+### Reference
+
+Spec `spec_6fa66df4`.

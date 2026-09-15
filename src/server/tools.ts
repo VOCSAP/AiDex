@@ -39,8 +39,7 @@ export const DEFAULT_DISABLED_TOOLS: readonly string[] = [
     'log',
     'note',
     // Index administration and session tracking: 1 to 70 agent calls each over
-    // four months. A CLI subcommand replaces them where one exists; settings,
-    // global_status, global_refresh and session have none yet.
+    // four months, each replaced by a CLI subcommand.
     'init',
     'global_init',
     'coverage',
@@ -1116,6 +1115,24 @@ export function initParamsFromArgs(args: Record<string, unknown>): InitParams {
     };
 }
 
+export function scanParamsFromArgs(args: Record<string, unknown>): Parameters<typeof scan>[0] {
+    return {
+        path: args.path as string,
+        maxDepth: args.max_depth as number | undefined,
+    };
+}
+
+export function globalInitParamsFromArgs(args: Record<string, unknown>): Parameters<typeof globalInit>[0] {
+    return {
+        path: args.path as string,
+        maxDepth: args.max_depth as number | undefined,
+        tags: args.tags as string | undefined,
+        exclude: args.exclude as string[] | undefined,
+        indexUnindexed: args.index_unindexed as boolean | undefined,
+        showProgress: args.show_progress as boolean | undefined,
+    };
+}
+
 export function embeddingsSummary(e: NonNullable<InitResult['embeddings']>): string {
     let line = `Embeddings: ${e.embedded} embedded`;
     if (e.skipped > 0) line += `, ${e.skipped} unchanged (skipped)`;
@@ -2063,10 +2080,7 @@ function handleScan(args: Record<string, unknown>): { content: Array<{ type: str
         };
     }
 
-    const result = scan({
-        path,
-        maxDepth: args.max_depth as number | undefined,
-    });
+    const result = scan(scanParamsFromArgs(args));
 
     if (!result.success) {
         return {
@@ -2689,14 +2703,7 @@ async function handleGlobalInit(args: Record<string, unknown>): Promise<{ conten
         };
     }
 
-    const result = await globalInit({
-        path,
-        maxDepth: args.max_depth as number | undefined,
-        tags: args.tags as string | undefined,
-        exclude: args.exclude as string[] | undefined,
-        indexUnindexed: args.index_unindexed as boolean | undefined,
-        showProgress: args.show_progress as boolean | undefined,
-    });
+    const result = await globalInit(globalInitParamsFromArgs(args));
 
     if (!result.success) {
         return {

@@ -12,7 +12,7 @@ import { spawnSync } from 'child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { join, dirname } from 'path';
 import { tmpdir } from 'os';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 
 import { jest, describe, test, expect, afterAll } from '@jest/globals';
 import Database from 'better-sqlite3';
@@ -124,6 +124,21 @@ describe('flags derived from the aidex_init schema', () => {
         expect(parseToolArgs(INIT_SCHEMA, argv, ['path']).ok).toBe(false);
     });
 
+    test('an empty value is refused except for an llm_* property, where it clears the setting', () => {
+        expect(parseToolArgs(INIT_SCHEMA, ['/p', '--name='], ['path']).ok).toBe(false);
+        expect(parseToolArgs(INIT_SCHEMA, ['/p', '--exclude='], ['path']).ok).toBe(false);
+        expect(parseToolArgs(INIT_SCHEMA, ['/p', '--llm-endpoint='], ['path']))
+            .toEqual({ ok: true, args: { path: '/p', llm_endpoint: '' } });
+    });
+
+    test('--help asks for the usage, and a lone -- ends the options', () => {
+        expect(parseToolArgs(INIT_SCHEMA, ['/p', '--help'], ['path'])).toEqual({ ok: false, help: true, error: '' });
+        expect(parseToolArgs(INIT_SCHEMA, ['--', '--odd-dir'], ['path'])).toEqual({ ok: true, args: { path: '--odd-dir' } });
+        const afterEnd = parseToolArgs(INIT_SCHEMA, ['/p', '--', '--help'], ['path']);
+        expect(afterEnd.ok).toBe(false);
+        expect(afterEnd.help).toBe(false);
+    });
+
     test('a non numeric value for a number is refused', () => {
         const numeric = { properties: { max_depth: { type: 'number' } } };
         expect(parseToolArgs(numeric, ['--max-depth', 'deep']).ok).toBe(false);
@@ -144,6 +159,60 @@ describe('CLI init and rebuild-index', () => {
 
     test('init without a path exits 2', () => {
         expect(cli(['init']).status).toBe(2);
+    });
+
+    test('init --help prints the usage and exits 0', () => {
+        const r = cli(['init', '--help']);
+        expect(r.status).toBe(0);
+        expect(r.out).toContain('Usage: aidex init <path> [options]');
+    });
+
+    test('name and exclude reach init() the same way through the MCP handler and the CLI', () => {
+        const home = tempDir('aidex-cli-tool-args-home-');
+        const env = { HOME: home, USERPROFILE: home };
+        const fixture = () => {
+            const dir = project();
+            mkdirSync(join(dir, 'skip'), { recursive: true });
+            writeFileSync(join(dir, 'skip', 'hidden.ts'), 'export function hidden(): number { return 2; }\n', 'utf-8');
+            return dir;
+        };
+
+        const viaCli = fixture();
+        expect(cli(['init', viaCli, '--name', 'parity-name', '--exclude', 'skip/**'], env).status).toBe(0);
+
+        const viaMcp = fixture();
+        const toolsUrl = pathToFileURL(join(REPO_ROOT, 'build', 'server', 'tools.js')).href;
+        const code = [
+            `import { handleToolCall } from ${JSON.stringify(toolsUrl)};`,
+            `const r = await handleToolCall('${TOOL_PREFIX}init', JSON.parse(process.env.AIDEX_PARITY_ARGS));`,
+            `process.stdout.write(r.content[0].text);`,
+        ].join('\n');
+        const mcp = spawnSync(NODE_BIN, ['--input-type=module', '-e', code], {
+            encoding: 'utf-8',
+            timeout: 110000,
+            env: {
+                ...process.env,
+                ...env,
+                AIDEX_PARITY_ARGS: JSON.stringify({ path: viaMcp, name: 'parity-name', exclude: ['skip/**'] }),
+            },
+        });
+        expect(mcp.status).toBe(0);
+
+        const indexed = (dir) => {
+            const db = new Database(join(dir, '.aidex', 'index.db'), { readonly: true });
+            try {
+                return {
+                    name: db.prepare("SELECT value FROM metadata WHERE key = 'project_name'").get()?.value,
+                    files: db.prepare('SELECT path FROM files ORDER BY path').all().map((r) => r.path),
+                };
+            } finally {
+                db.close();
+            }
+        };
+        const cliIndex = indexed(viaCli);
+        expect(cliIndex.name).toBe('parity-name');
+        expect(cliIndex.files).not.toContain('skip/hidden.ts');
+        expect(indexed(viaMcp)).toEqual(cliIndex);
     });
 
     test('--embeddings reaches the embeddings path of init', () => {
