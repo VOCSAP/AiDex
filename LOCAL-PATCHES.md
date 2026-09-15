@@ -879,3 +879,61 @@ Spec `spec_6fa66df4`.
 ### Reference
 
 Spec `spec_4caf3ff4`.
+
+---
+
+## 27. Serveur de progression 3334 : un port pris ne tue plus le processus MCP -- carte 97a68208
+
+### Le defaut
+
+`src/viewer/progress.ts` appelait `listen()` sans handler `'error'`. Node emet `EADDRINUSE` de facon asynchrone, comme evenement `'error'` du serveur ; sans ecouteur, `EventEmitter` le releve en exception non capturee et le processus hote meurt. Le seul appelant, `global_init` avec `showProgress` (handler MCP ou sous-commande CLI `global-init`), faisait donc tomber tout le serveur MCP, et avec lui tous les outils `aidex_*` de la session, des qu'un autre processus tenait deja `127.0.0.1:3334`. C'est le cas courant avec deux sessions en parallele.
+
+### Preuve
+
+- Rouge sur le build d'avant correctif : temoin sur `127.0.0.1:3334`, import de `build/viewer/progress.js`, `startProgress()`. Sortie : `startProgress RETURNED, running=true`, `PROCESS EXIT code=1`, `Error: listen EADDRINUSE: address already in use 127.0.0.1:3334`.
+- Vert apres, meme script : `running=false`, `[Progress] Server not started (port 3334 is already in use), progress UI disabled`, `STILL ALIVE after 1500ms`, exit 0.
+
+### Decisions
+
+- **Modele du Log Hub.** `src/loghub/log-server.ts` resolvait deja ce probleme dans le depot : handler `'error'` qui remet l'etat a null. Sa forme est recopiee plutot que reinventee. `startProgress` reste `void`, parce qu'aucun appelant n'attend son resultat : l'echec se degrade en une ligne stderr et l'indexation continue sans interface. Le bind reste sur `127.0.0.1`, qui ne declenche pas de prompt pare-feu Windows, contrairement au `0.0.0.0` du Log Hub.
+- **`isProgressRunning()` lit `server.listening`.** Remettre l'etat a null dans le handler ne suffit pas : l'objet `Server` existe entre l'appel a `listen()` et l'emission de l'erreur, et pendant ce tick l'ancien `progressServer !== null` rendait `true` pour un port jamais lie. Aucun consommateur actuel (seulement le re-export de `viewer/index.ts`), mais le garde interne `if (progressServer) return` aurait bloque tout redemarrage apres un echec.
+- **URL loguee et ouverte en `http://127.0.0.1:<port lie>`**, port lu par `server.address()` dans le callback de `listen`. Sur ce poste, `localhost` resout `::1` avant `127.0.0.1` : un lien `localhost` vers un serveur lie en IPv4 peut atteindre un autre serveur qui tient `::1` sur le meme port, sans aucune erreur. Le port lie, et non le port demande, garde l'URL juste avec `port: 0`.
+
+### `openBrowser` et `exec` neutralise
+
+`startProgress(title, { port?, openBrowser? })`. `openBrowser: false` saute l'appel `exec` (`start`, `open` ou `xdg-open`) apres le log de demarrage. Le defaut est inchange et `global-init` ne passe aucune option.
+
+Le test ne s'en remet pas a cette option : si elle sautait ou changeait de nom, le vrai navigateur partirait et le test resterait vert. Le processus enfant remplace `child_process.exec` sur l'export par defaut, appelle `syncBuiltinESMExports()` de `node:module` avant d'importer le module, puis exige zero appel. Le mutant 6 mesure que l'import nomme `{ exec }` du module compile voit bien ce stub.
+
+### Tests
+
+`tests/progress-port-in-use.test.js`, 2 tests, chaque scenario dans son propre processus enfant, puisqu'une exception non capturee tue le processus qui l'emet :
+- **Port tenu** par un temoin lie sur le port 0 : exit 0, `isProgressRunning()` a `false` tout de suite et apres l'echec, une seconde tentative qui retente reellement le bind (2 echecs logues), zero appel `exec`.
+- **Port libre**, `port: 0` passe directement, sans reservation puis relache donc sans TOCTOU : log exact `[Progress] Server started at http://127.0.0.1:<port>` extrait par une regex ancree, port qui accepte une connexion TCP, `isProgressRunning()` a `true` puis `false` apres `stopProgress()`, zero appel `exec`.
+
+Les attentes se declenchent sur les logs du module, avec un plafond de 5 s qui nomme l'attente non resolue.
+
+Mutations sur le source, `npm run build` avant chaque run (les tests importent `build/`), restauration verifiee par md5, toutes rouges :
+1. Handler `'error'` neutralise : `status: 1`.
+2. `isProgressRunning()` sur `progressServer !== null` : `immediate: true`.
+3. Handler sans remise a null : `bindFailuresReported: 1`.
+4. URL en `localhost` : `loggedPortAccepts: false`, attente `started log` expiree.
+5. `isProgressRunning()` qui rend toujours `false` : `running: false`.
+6. Garde `openBrowser === false` retire : `execCalls: ["start http://127.0.0.1:55842"]`, sans navigateur ouvert.
+7. URL construite sur le port demande au lieu du port lie : `loggedPortAccepts: false`.
+
+Le mutant 3 survivait a la premiere version du test, qui ne lisait que `isProgressRunning()`. Les mutants 4 et 5 ont ete signales en revue : le test d'alors n'executait jamais le chemin de succes et n'affirmait que `false`.
+
+### Hors perimetre
+
+`src/viewer/server.ts` logue et ouvre toujours `http://localhost:3333`, et son HTML embarque des URLs `http://localhost:3335` vers le Log Hub : meme piege `::1`, carte `bad1ac0d`.
+
+### Ce qu'il ne faut pas reintroduire en rebasant
+
+- Un `listen()` sans handler `'error'` sur un serveur du processus MCP.
+- Un `isProgressRunning()` qui teste la nullite de l'objet plutot que `listening`.
+- Un test du chemin de succes qui compte sur `openBrowser: false` sans neutraliser `exec`.
+
+### Reference
+
+Hypothese agent-forge `hyp_ae392915`.
