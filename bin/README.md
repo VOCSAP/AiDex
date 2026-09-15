@@ -17,4 +17,4 @@ Set `AIDEX_NODE` to select the Node executable used by either launcher. When it 
 AIDEX_NODE=/path/to/node aidex settings --help
 ```
 
-See the `Fork changes` table in the root `README.md` for CLI behavior and usage. `aidex can --help` treats `--help` as a pattern. Running `aidex` without a subcommand starts the MCP server on standard input and output.
+See the `Fork changes` table in the root `README.md` for CLI behavior and usage. `aidex coverage` is an alias for `aidex can`, and `aidex can --help` treats `--help` as a pattern. Running `aidex` without a subcommand starts the MCP server on standard input and output. An unknown first subcommand exits with status 2 and lists the available subcommands on stderr.

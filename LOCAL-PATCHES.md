@@ -963,3 +963,31 @@ Les mutations qui retirent le plafonnement en millisecondes, remplacent le delai
 ### Reference
 
 Specs agent-forge `spec_8162418c` et `spec_31736819`.
+
+---
+
+## 29. Dispatch CLI explicite pour les sous-commandes inconnues -- carte 1823213d
+
+### Contrat
+
+Sans sous-commande, `aidex` continue de demarrer le serveur MCP sur stdin et stdout. Si le premier argument est present mais ne correspond a aucune sous-commande connue, la CLI ecrit le nom inconnu et la liste des sous-commandes disponibles sur stderr, puis sort en `2`.
+
+`coverage` est un alias de `can`, avant tout routage. L'alias ne normalise pas les underscores : `global_status` reste une sous-commande inconnue. `aidex can --help` conserve `--help` comme pattern de coverage. Les gardes existantes de `setup` et `unsetup` restent executees avant le rejet generique.
+
+### Tests
+
+`tests/cli-tool-subcommands.test.js` couvre deux premiers arguments inconnus, qui doivent sortir en `2` sans jamais ecrire `AiDex MCP server started`. Il couvre aussi la parite exacte entre `can` et `coverage`, et le demarrage MCP quand stdin se ferme sans argument, dont le marqueur doit apparaitre. La liste rendue sur stderr est comparee a un ensemble derive de `src/index.ts` et non a une liste figee : union des litteraux `args[0] === '...'` et des cles de `toolSubcommands`. Une route ecrite sous une autre forme (`switch`, guillemets doubles, `.includes`) echapperait a cette derivation. Deux mutants rougissent : la garde neutralisee fait repasser les inconnus en `0`, et une sous-commande retiree de la liste rendue apparait dans la difference d'ensembles.
+
+### Documentation
+
+La table des outils retires documente `aidex coverage` comme alias de `aidex can`. La documentation des sous-commandes indique que l'absence d'argument demarre MCP et que le premier argument inconnu sort en `2` avec la liste disponible. `bin/README.md` reprend ce contrat pour les lanceurs.
+
+### Ce qu'il ne faut pas reintroduire en rebasant
+
+- Ne pas faire tomber un premier argument inconnu dans le fallback MCP.
+- Ne pas transformer les underscores en tirets avant le routage.
+- Ne pas traiter `--help` comme une option de `can`.
+
+### Reference
+
+Spec agent-forge `spec_ec125b31`.

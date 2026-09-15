@@ -75,6 +75,7 @@ async function runCliViewer(
 
 async function main() {
     const args = process.argv.slice(2);
+    if (args[0] === 'coverage') args[0] = 'can';
 
     // CLI mode: can -- the coverage oracle. FIRST branch, and it imports exactly
     // one module, so the latency floor stays the Node process itself.
@@ -500,6 +501,11 @@ async function main() {
         const { unsetupMcpClients } = await import('./commands/setup.js');
         unsetupMcpClients();
         return;
+    }
+
+    if (args[0] !== undefined) {
+        console.error(`Unknown subcommand: ${args[0]}\nAvailable subcommands: can, coverage, outline, scan, init, rebuild-index, global-init, viewer, update, settings, remove, session, global-status, global-refresh, setup, unsetup`);
+        process.exit(2);
     }
 
     // Default: Start MCP server

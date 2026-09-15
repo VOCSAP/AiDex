@@ -874,7 +874,7 @@ Ten index-administration and session-tracking MCP tools are dropped from the adv
 | `aidex_init` | `aidex init <path> [options]` | `--exclude`, `--store-bodies`, `--embeddings`, `--llm-endpoint`, `--llm-model`, `--llm-send-code` |
 | *(no MCP tool)* | `aidex rebuild-index <path> [options]` | Full rebuild ignoring the per-file hash skip; CLI-only on purpose, so an AI cannot trigger it from a normal flow |
 | `aidex_global_init` | `aidex global-init <path> [options]` | `--tags`, `--exclude`, `--index-unindexed`, `--show-progress` |
-| `aidex_coverage` | `aidex can <pattern> [--project <dir>] [--path <file>]` | Different CLI name (`can`, not `coverage`); exit `0` means a verdict is on stdout (even a negative one), any other exit code means no verdict -- treat that as fail-open |
+| `aidex_coverage` | `aidex can <pattern> [--project <dir>] [--path <file>]` | `aidex coverage` is an alias; exit `0` means a verdict is on stdout (even a negative one), any other exit code means no verdict -- treat that as fail-open |
 | `aidex_settings` | `aidex settings <path> [--open]` | `--open` also starts the Viewer, on the Settings tab |
 | `aidex_global_status` | `aidex global-status [--tag-filter <t>] [--sort name\|size\|recent]` | |
 | `aidex_scan` | `aidex scan <path> [--max-depth <n>]` | |
@@ -883,7 +883,7 @@ Ten index-administration and session-tracking MCP tools are dropped from the adv
 | `aidex_remove` | `aidex remove <path> <file>` | |
 | `aidex_session` | `aidex session <path>` | |
 
-Every subcommand above except `can` prints its options with `--help`; `can` reads `--help` as the pattern to classify, and prints its usage when run without arguments. The filter is purely subtractive on `tools/list`: an AI that calls a hidden tool by its exact name still gets an answer, whether or not a CLI form exists.
+Every subcommand above except `can` prints its options with `--help`; `can` reads `--help` as the pattern to classify, and prints its usage when run without arguments. Running `aidex` without a subcommand starts the MCP server on standard input and output. An unknown first subcommand exits `2` and writes the available subcommands to stderr. The filter is purely subtractive on `tools/list`: an AI that calls a hidden tool by its exact name still gets an answer, whether or not a CLI form exists.
 
 The other 11 tools dropped by default -- `aidex_task`, `aidex_tasks`, `aidex_log`, `aidex_note`, `aidex_describe`, `aidex_link`, `aidex_unlink`, `aidex_links`, `aidex_global_query`, `aidex_global_signatures`, `aidex_global_guideline` -- have no CLI subcommand; they were measured at zero or near-zero real calls across four months of usage and are redundant with tooling most operators already have. Call them by their MCP name (they still work), or set `AIDEX_TOOLS_DISABLE` in your server config to change what `tools/list` advertises: unset uses the fork's default (12 tools); `none` or an empty value advertises all 33; an explicit comma-separated list of tool names (with or without the `aidex_` prefix) replaces the default set entirely.
 

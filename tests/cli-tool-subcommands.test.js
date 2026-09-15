@@ -1,5 +1,5 @@
 import { spawnSync } from 'child_process';
-import { mkdtempSync, mkdirSync, readdirSync, writeFileSync, rmSync } from 'fs';
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync } from 'fs';
 import { join, dirname } from 'path';
 import { tmpdir } from 'os';
 import { fileURLToPath, pathToFileURL } from 'url';
@@ -85,6 +85,47 @@ function sourceTree(root) {
     writeFileSync(join(root, 'src', 'widget.ts'), 'export function widget(): number { return 1; }\n', 'utf-8');
     return root;
 }
+
+function sourceSubcommands() {
+    const source = readFileSync(join(REPO_ROOT, 'src', 'index.ts'), 'utf-8');
+    const direct = [...source.matchAll(/args\[0\] === '([^']+)'/g)].map((match) => match[1]);
+    const tool = [...source.matchAll(/^\s*'([^']+)': \{ tool:/gm)].map((match) => match[1]);
+    return new Set([...direct, ...tool]);
+}
+
+function availableSubcommands(stderr) {
+    const prefix = 'Available subcommands: ';
+    const rendered = stderr.split('\n').find((line) => line.startsWith(prefix));
+    return new Set(rendered?.slice(prefix.length).split(', ').filter(Boolean));
+}
+
+describe('CLI entrypoint dispatch', () => {
+    test.each(['unknown-subcommand', 'global_status'])('rejects unknown first argument %s without starting MCP', (subcommand) => {
+        const r = cli([subcommand], tempDir('aidex-sub-home-'));
+        expect(r.status).toBe(2);
+        expect(r.stderr).toContain(`Unknown subcommand: ${subcommand}`);
+        expect(r.stderr).toContain('Available subcommands:');
+        expect(r.stderr).not.toContain('AiDex MCP server started');
+        expect(availableSubcommands(r.stderr)).toEqual(sourceSubcommands());
+    });
+
+    test('coverage is an alias for can', () => {
+        const home = tempDir('aidex-sub-home-');
+        const project = sourceTree(tempDir('aidex-sub-project-'));
+        expect(cli(['init', project], home).status).toBe(0);
+
+        const canResult = cli(['can', 'widget', '--project', project], home);
+        const coverageResult = cli(['coverage', 'widget', '--project', project], home);
+        expect(coverageResult).toEqual(canResult);
+    });
+
+    test('starts MCP when stdin closes without a first argument', () => {
+        const r = cli([], tempDir('aidex-sub-home-'));
+        expect(r.status).toBe(0);
+        expect(r.stderr).not.toContain('Unknown subcommand');
+        expect(r.stderr).toContain('AiDex MCP server started');
+    });
+});
 
 describe.each([
     ['remove', ['<dir>', 'src/widget.ts']],
