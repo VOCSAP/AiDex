@@ -32,6 +32,8 @@ export type CoverageReason =
     | 'literal_coverage_absent'
     /** Index has literals, but built under a different rule than this build. */
     | 'literal_rule_outdated'
+    /** Pattern passes coverage guards but is absent from the recommended index kind. */
+    | 'absent_from_index'
     /** Identifier-shaped, but under the literal indexing rule. */
     | 'pattern_below_literal_rule'
     /** Whitespace, interpolation, oversized: never held by any dimension. */
@@ -124,6 +126,7 @@ export function can(params: CoverageParams): CoverageVerdict {
         // ---- path scoping, before anything else -------------------------
         // An out-of-scope or stale file makes every other answer moot: the
         // index simply has nothing to say about that file.
+        let targetPath: string | undefined;
         if (params.target) {
             const abs = resolve(params.target);
             const rel = normalizePath(relative(resolve(params.path), abs));
@@ -146,6 +149,7 @@ export function can(params: CoverageParams): CoverageVerdict {
                     advice: `${rel} changed since indexing. Run aidex_update on it, or use grep.`,
                 };
             }
+            targetPath = rel;
             v.scope = 'in_scope';
         }
 
@@ -188,6 +192,16 @@ export function can(params: CoverageParams): CoverageVerdict {
             return {
                 ...v, reason: 'pattern_below_literal_rule',
                 advice: 'Single lowercase word: indexed as a literal only in type/JSX/object-value position. Use grep to prove an absence.',
+            };
+        }
+
+        if (!hasRecommendedKind(queries, pattern, cls.dimension, targetPath)) {
+            return {
+                ...v,
+                reason: 'absent_from_index',
+                advice: targetPath
+                    ? `No exact ${cls.dimension} match for this pattern exists in ${targetPath}. Use grep.`
+                    : `No exact ${cls.dimension} match for this pattern is indexed. Use grep.`,
             };
         }
 
@@ -234,8 +248,52 @@ function hashFile(absPath: string): string {
         .substring(0, 16);
 }
 
-function hasSymbol(queries: { searchItems: (t: string, m: 'exact', l: number) => Array<unknown> }, term: string): boolean {
+function hasSymbol(
+    queries: {
+        searchItems: (
+            term: string,
+            mode: 'exact',
+            limit: number,
+            offset?: number,
+            includeLiteralOnly?: boolean
+        ) => Array<unknown>;
+    },
+    term: string
+): boolean {
     return queries.searchItems(term, 'exact', 1).length > 0;
+}
+
+function hasRecommendedKind(
+    queries: {
+        searchItems: (
+            term: string,
+            mode: 'exact',
+            limit: number,
+            offset?: number,
+            includeLiteralOnly?: boolean
+        ) => Array<{ id: number }>;
+        getOccurrencesByItems: (itemIds: number[]) => Array<{
+            path: string;
+            kind: 'symbol' | 'literal' | 'both';
+        }>;
+    },
+    term: string,
+    dimension: PatternClass['dimension'],
+    targetPath?: string
+): boolean {
+    if (dimension === 'none') return false;
+
+    const item = queries.searchItems(term, 'exact', 1, 0, dimension !== 'symbol')[0];
+    if (!item) return false;
+    if (!targetPath) return dimension === 'symbol' || queries.getOccurrencesByItems([item.id])
+        .some(({ kind }) => kind === 'literal' || kind === 'both');
+
+    return queries.getOccurrencesByItems([item.id]).some(({ path, kind }) =>
+        path === targetPath
+        && (dimension === 'symbol'
+            ? kind === 'symbol' || kind === 'both'
+            : kind === 'literal' || kind === 'both')
+    );
 }
 
 /** Location of a project index, for callers that only have a file path. */

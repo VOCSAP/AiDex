@@ -22,6 +22,7 @@
  */
 
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'fs';
+import { spawnSync } from 'child_process';
 import { join, isAbsolute, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { tmpdir, homedir } from 'os';
@@ -62,6 +63,8 @@ function send(channel: string, payload: Record<string, unknown>): void {
     void channel; void payload;
 }
 
+// comment-only-anchor
+
 // A template literal whose interpolation holds a real symbol: the literal pass
 // must skip the TEXT of a string without skipping what is embedded in it.
 export function greetUser(userName: string): string {
@@ -80,6 +83,10 @@ export const DEFAULTS = {
     platform: 'linux',
     settingsKey: 'settings.restoreSessions',
 };
+export const LITERAL_ONLY = 'literalOnlySymbolName';
+`,
+    'docs/coverage.md': `
+This documentation-only marker is docs-only-anchor.
 `,
 };
 
@@ -280,29 +287,86 @@ describe('coverage oracle differential', () => {
         expect(falseBlocks).toEqual([]);
     });
 
-    /**
-     * The other direction: a covered verdict on a pattern the source does NOT
-     * contain has to be TRUE, because that verdict is what licenses a caller to
-     * read the zero as proof of absence.
-     *
-     * This assertion used to forbid coverage on absent patterns outright. That
-     * only ever held while no index had literal coverage: on a 1.3 index,
-     * `roadmap:search` being absent AND covered is not a defect, it is the
-     * entire payoff of the feature. What must be checked is that the claim
-     * holds -- query both dimensions and find nothing -- not that it is never
-     * made.
-     */
-    test('a covered verdict on an absent pattern is backed by an empty index', () => {
+    test('an absent pattern receives an explicit negative verdict', () => {
         const wrong = [];
         for (const pattern of absent) {
+            if (classifyPattern(pattern).literalRule === 'below') continue;
             const verdict = can({ path: dir, pattern });
-            if (!verdict.covered) continue;
-            const result = query({ path: dir, term: pattern, kinds: ['symbol', 'literal'] });
-            if (result.totalMatches > 0) {
-                wrong.push({ pattern, reason: verdict.reason, matches: result.totalMatches });
+            if (verdict.covered || verdict.reason !== 'absent_from_index') {
+                wrong.push({ pattern, covered: verdict.covered, reason: verdict.reason });
             }
         }
         expect(wrong).toEqual([]);
+    });
+
+    test('a term only in an unindexed extension receives an explicit negative verdict', () => {
+        const pattern = 'docs-only-anchor';
+        expect(groundTruthCount(dir, pattern)).toBeGreaterThan(0);
+        expect(query({ path: dir, term: pattern, kinds: ['literal'] }).totalMatches).toBe(0);
+        expect(can({ path: dir, pattern })).toMatchObject({
+            covered: false,
+            reason: 'absent_from_index',
+        });
+    });
+
+    test('a symbol-shaped literal requires a symbol match', () => {
+        const pattern = 'literalOnlySymbolName';
+        expect(query({ path: dir, term: pattern }).totalMatches).toBe(0);
+        expect(query({ path: dir, term: pattern, kinds: ['literal'] }).totalMatches).toBeGreaterThan(0);
+        expect(can({ path: dir, pattern })).toMatchObject({
+            covered: false,
+            reason: 'absent_from_index',
+        });
+    });
+
+    test('a comment-only marker receives an explicit negative verdict', () => {
+        const pattern = 'comment-only-anchor';
+        expect(groundTruthCount(dir, pattern)).toBeGreaterThan(0);
+        expect(query({ path: dir, term: pattern, kinds: ['literal'] }).totalMatches).toBe(0);
+        expect(can({ path: dir, pattern })).toMatchObject({
+            covered: false,
+            reason: 'absent_from_index',
+        });
+    });
+
+    test('a symbol match must be inside the target file', () => {
+        const pattern = 'restoreWorkspace';
+        expect(can({ path: dir, target: join(dir, 'src/config.ts'), pattern })).toMatchObject({
+            covered: false,
+            reason: 'absent_from_index',
+            advice: 'No exact symbol match for this pattern exists in src/config.ts. Use grep.',
+        });
+        expect(can({ path: dir, target: join(dir, 'src/channels.ts'), pattern })).toMatchObject({
+            covered: true,
+            reason: 'covered',
+        });
+    });
+
+    test('a literal match must be inside the target file', () => {
+        const pattern = 'settings.restoreSessions';
+        expect(can({ path: dir, target: join(dir, 'src/channels.ts'), pattern })).toMatchObject({
+            covered: false,
+            reason: 'absent_from_index',
+            advice: 'No exact literal match for this pattern exists in src/channels.ts. Use grep.',
+        });
+        expect(can({ path: dir, target: join(dir, 'src/config.ts'), pattern })).toMatchObject({
+            covered: true,
+            reason: 'covered',
+        });
+    });
+
+    test('CLI returns an explicit negative verdict for an absent pattern', () => {
+        const result = spawnSync(
+            process.execPath,
+            [fileURLToPath(new URL('../build/index.js', import.meta.url)), 'can', `missingPattern${SEED}`, '--project', dir],
+            { encoding: 'utf-8' }
+        );
+        expect(result.status).toBe(0);
+        expect(JSON.parse(result.stdout)).toMatchObject({
+            covered: false,
+            reason: 'absent_from_index',
+            advice: 'No exact symbol match for this pattern is indexed. Use grep.',
+        });
     });
 
     /**
@@ -627,6 +691,19 @@ describe('coverage oracle differential', () => {
             expect(result.success).toBe(true);
             expect(result.totalMatches).toBeGreaterThan(0);
             expect(result.literalDimensionAvailable).toBe(false);
+        });
+
+        test('uses default item visibility for undeclared literal coverage reasons', () => {
+            for (const pattern of ['settings.restoreSessions', 'restoreWorkspace']) {
+                expect(can({ path: undeclared, pattern })).toMatchObject({
+                    covered: false,
+                    reason: 'covered_symbols_only',
+                });
+            }
+            expect(can({ path: undeclared, pattern: `missingPattern${SEED}` })).toMatchObject({
+                covered: false,
+                reason: 'literal_coverage_absent',
+            });
         });
 
         test('an index built under a foreign rule is refused too', () => {

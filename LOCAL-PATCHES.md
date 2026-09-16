@@ -39,9 +39,10 @@ Un point d'entree qui repond a **"peux-tu repondre a ceci ?"** : MCP `aidex_cove
 
 - Exit `0` = **un verdict a ete produit, verdicts negatifs compris**. Non nul = aucun verdict, l'appelant doit laisser passer.
 - Un verdict negatif ne doit **jamais** etre encode dans le code de sortie, sinon il devient indistinguable d'un oracle casse.
-- Dix raisons enumerees ; **seule `covered` autorise un blocage**.
+- Onze raisons enumerees ; **seule `covered` autorise un blocage**.
+- Apres les gardes de forme, `covered` exige un match exact dans le kind recommande (`symbol` ou `literal`) et dans la portee effective, projet ou fichier `target`. Un motif de forme admissible mais absent de ce kind rend `absent_from_index` avec exit `0`.
 
-`src/coverage/rule.ts` est le **producteur unique** : l'indexeur y appelle `literalQualifies()` pour decider ce qu'il indexe, l'oracle y appelle `classifyPattern()` pour predire ce qu'une requete rendra. Deux predicats separes -- un qui decide ce qui entre, un qui predit ce qui sort -- auraient derive, et la derive se serait vue comme un index ne contenant pas ce que l'oracle promet.
+`src/coverage/rule.ts` est le **producteur unique** : l'indexeur y appelle `literalQualifies()` pour decider ce qu'il indexe, l'oracle y appelle `classifyPattern()` pour appliquer les gardes de forme puis confirme le match exact dans la dimension recommandee. Deux predicats separes -- un qui decide ce qui entre, un qui predit ce qui sort -- auraient derive, et la derive se serait vue comme un index ne contenant pas ce que l'oracle promet.
 
 **A ne pas casser en rebasant** : la separation des deux dimensions dans `classifyPattern`. Un mot minuscule nu est A LA FOIS un symbole valide et un candidat litteral dont le cote litteral n'est indexe qu'en certaines positions ; les evaluer ensemble a produit de faux `covered` sur `ok` et `field`.
 
@@ -155,7 +156,9 @@ Il interroge l'oracle et **ne bloque que sur `covered: true`**. Tout le reste pa
 - **Le pre-filtre est un second devineur, tolere sous une seule condition** : il decide uniquement s'il faut INTERROGER l'oracle, jamais s'il faut bloquer. Direction obligatoire de toute evolution : **elargir ce qu'il laisse passer vers l'oracle, jamais ce qu'il tranche seul.**
 - **Aucun chemin en dur**, pas meme en commentaire : l'interpreteur et le point d'entree sont derives de la declaration `mcpServers.aidex` que l'utilisateur a deja ecrite dans sa configuration Claude. `AIDEX_NODE` / `AIDEX_ENTRY` restent prioritaires.
 
-Tests dans `tests/hooks/` : motifs (29), decisions de bout en bout (12), fail-open (6), portabilite (6). Ils ciblent la copie **versionnee** du depot, pas celle installee dans le profil.
+Tests dans `tests/hooks/` : extraction des motifs Bash (`find_bash_search` -- lookup simple, preuve d'absence via `-c`/`-l`/`wc -l`, split d'alternation BRE/ERE/`fgrep`, resolution de `cd`, passage en clair d'un metacaractere regex), contrat du texte de refus (`refusal_text`, forme et champs), ascension vers l'index (`find_index_root` depuis un fichier ou un repertoire imbrique), delegation et fail-open cote outil `Grep` natif (appel de `collect_verdicts`, passage sans oracle sur une preuve d'absence), portabilite (aucun chemin ou marqueur de machine dans la source). Ils ciblent la copie **versionnee** du depot, pas celle installee dans le profil.
+
+**Lot D** : la garantie fausse qu'un zero `aidex_query` prouve l'absence a ete retiree du texte de refus ; il oriente desormais vers `aidex_query` en mode exact puis, pour prouver une absence, un `Grep` en `output_mode` `count` ou `files_with_matches`. L'artefact versionne a ete resynchronise avec le hook installe. L'absence de chemin local, meme en commentaire, est desormais gardee par un test (`portability_markers`).
 
 ---
 

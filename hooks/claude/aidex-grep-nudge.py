@@ -100,12 +100,11 @@ def discover_aidex():
 _discovered_node, _discovered_entry = discover_aidex()
 
 # The interpreter matters. AiDex loads native addons (better-sqlite3,
-# tree-sitter), so a `node` from a different major aborts on
-# NODE_MODULE_VERSION before producing anything -- on this machine the PATH
-# `node` is exactly that, which is why the configured one comes first. An
-# explicit override wins over discovery; `node` is the last resort, useful when
-# only AIDEX_ENTRY is set. Candidates are tried in order, and if none yields a
-# verdict the search passes.
+# tree-sitter), so a `node` from a different major can abort on
+# NODE_MODULE_VERSION before producing anything. The configured interpreter
+# therefore comes first. An explicit override wins over discovery; `node` is the
+# last resort, useful when only AIDEX_ENTRY is set. Candidates are tried in
+# order, and if none yields a verdict the search passes.
 NODE_CANDIDATES = [
     os.environ.get("AIDEX_NODE"),
     _discovered_node,
@@ -137,8 +136,36 @@ except ValueError:
 CANDIDATE_RE = re.compile(r"^[A-Za-z0-9_:./\-]{2,64}$")
 HAS_LETTER_RE = re.compile(r"[A-Za-z]")
 
+# Leading words that turn a two-word branch into a CONSTRUCTION SEARCH rather
+# than prose -- the identifier after one of these is what normalize_branch
+# reduces the branch to, below.
+KEYWORD_HEADS = {
+    "new", "class", "function", "def", "interface", "type", "struct", "enum",
+    "extends", "implements", "import", "export", "const", "let", "var",
+    "async", "await",
+}
+
+# An alternation (`tailKeep\|summaryKeep\|countKeep`) is not one pattern: each
+# branch is asked about separately, otherwise a batch of indexed symbols
+# joined by `\|` reads as free regex and never reaches the oracle (5 greps out
+# of 5 escaped that way on one measured session). One uncovered branch lets
+# the whole search run: that branch is work only grep can do. A branch
+# carrying a regex metacharacter means a real regex, so the search passes
+# untouched. A plain literal AiDex does not index (`id: "`) is a residue the
+# refusal names, not a reason to give up on the covered branches.
+REGEX_META_RE = re.compile(r"[*+?\[\]{}^$\\()]")
+
+# Past this, it is not a list of identifiers any more, and each branch costs one
+# process spawn.
+MAX_BRANCHES = 12
+
 # Search commands we recognise when run through the Bash tool.
 GREP_CMDS = {"grep", "egrep", "fgrep", "rg", "ripgrep"}
+
+# Commands whose default dialect is extended, where `|` alone means OR. For a
+# bare `grep` the dialect is basic, where OR is `\|` and a lone `|` is literal --
+# splitting on the wrong one would invent branches that do not exist.
+ERE_CMDS = {"egrep", "rg", "ripgrep"}
 
 # Tokens that introduce a new command position (a grep right after one counts).
 CONNECTORS = {"|", "||", "&&", ";", "&", "|&"}
@@ -181,10 +208,45 @@ def noop():
     sys.exit(0)
 
 
-def has_index(search_path):
+def find_index_root(search_path, cwd):
+    """Nearest ancestor of `search_path` carrying .aidex/index.db, or None.
+
+    Both branches ascend, and neither ever did before. The Bash branch used to
+    test the session cwd for an index directly -- true only when that cwd IS a
+    project root, and blind both to a session opened one directory down and to a
+    grep whose target a `cd` moved elsewhere. The Grep branch had it worse: the
+    native Grep tool almost always scopes its search with a `path` pointing at a
+    subdirectory or at a single file, and that same flat test then looked for an
+    index inside the subdirectory -- or, for a file, inside its immediate parent
+    -- where one was never going to be. The branch bailed out before reaching
+    the oracle, so the hook was inert for that whole shape.
+
+    Measured on 62 native Grep calls from one day of real transcripts: 54 of
+    them, 87%, carried a `path` below the project root and were let through
+    with no opinion, 42 of those in output_mode=content, which is exactly the
+    lookup this hook exists to divert. Only 3 of 62 ever reached the oracle.
+    What proves these were LOST blocks rather than correct passes: the oracle,
+    asked directly about one of them, answered covered: true.
+
+    Ascending is also what makes the file-scoped branch below reachable at all.
+    """
     if os.path.isfile(search_path):
         search_path = os.path.dirname(search_path)
-    return os.path.isfile(os.path.join(search_path, ".aidex", "index.db"))
+    if not os.path.isabs(search_path):
+        # abspath() below would resolve a relative path against the HOOK
+        # PROCESS's own cwd, not the session's cwd carried in the PreToolUse
+        # payload -- those two differ whenever the hook runs under a
+        # different working directory than the agent's session. Anchor on
+        # the payload's cwd first so the two never disagree.
+        search_path = os.path.join(cwd, search_path)
+    search_path = os.path.abspath(search_path)
+    while True:
+        if os.path.isfile(os.path.join(search_path, ".aidex", "index.db")):
+            return search_path
+        parent = os.path.dirname(search_path)
+        if parent == search_path:
+            return None          # reached the filesystem root, no index above
+        search_path = parent
 
 
 def is_candidate_pattern(pattern):
@@ -194,6 +256,124 @@ def is_candidate_pattern(pattern):
         and CANDIDATE_RE.match(pattern)
         and HAS_LETTER_RE.search(pattern)
     )
+
+
+def normalize_branch(branch):
+    """`topN(` is a search for the CALL SITES of topN, not for another term.
+
+    Stripping the trailing parenthesis is what makes the branch askable, and
+    asking is the point: on the witness command it turned an opaque branch into
+    `covered: true`, while on another grep of the same session it turned
+    `prune(` into `prune`, `covered: false` -- which let that search through.
+    Normalising made the hook MORE accurate in both directions, not just more
+    aggressive.
+
+    Same reasoning for `new Database`: a two-word branch shaped exactly
+    `<keyword> <identifier>` is a search for the CONSTRUCTIONS of Database,
+    not free-text prose, so it reduces to the identifier alone. Any other
+    shape -- one word, three or more, or a leading word outside
+    KEYWORD_HEADS -- is returned unchanged and falls through the existing
+    non-candidate path downstream, exactly like any other pattern this
+    function does not recognise.
+    """
+    branch = branch.strip()
+    if branch.endswith("("):
+        return branch[:-1]
+    words = branch.split()
+    if len(words) == 2 and words[0] in KEYWORD_HEADS:
+        return words[1]
+    return branch
+
+
+def alternation_sep(base, tail):
+    """Which token means OR in this invocation, or None when nothing does."""
+    fixed = base == "fgrep"
+    ere = base in ERE_CMDS
+    for tok in tail:
+        if tok in CONNECTORS:
+            break
+        if not tok.startswith("-") or tok == "-":
+            continue
+        if tok.startswith("--"):
+            if tok == "--fixed-strings":
+                fixed = True
+            elif tok in ("--extended-regexp", "--perl-regexp"):
+                ere = True
+            continue
+        letters = set(tok[1:])
+        if "F" in letters:
+            fixed = True
+        if letters & {"E", "P"}:
+            ere = True
+    if fixed:
+        return None          # -F: every character is literal, nothing to split
+    return "|" if ere else "\\|"
+
+
+def split_alternation(pattern, sep):
+    """Branches of an alternation, or None when the split cannot be trusted.
+
+    None is not "one branch": it means the shape is ambiguous, and the caller
+    must let the search through.
+    """
+    if not pattern:
+        return None
+    if sep is None or sep not in pattern:
+        return [pattern]
+    parts = pattern.split(sep)
+    if len(parts) > MAX_BRANCHES:
+        return None
+    if any(not part for part in parts):
+        return None          # leading, trailing or doubled separator
+    return parts
+
+
+def classify_branches(branches):
+    """Split branches into (askable, benign).
+
+    `askable` holds the normalised branches the oracle can be asked about.
+    `benign` is False as soon as ANY non-askable branch carries a regex
+    metacharacter, which means the caller wrote a real regex and the search must
+    run untouched.
+    """
+    askable = []
+    for raw in branches:
+        branch = normalize_branch(raw)
+        if is_candidate_pattern(branch):
+            askable.append(branch)
+        elif REGEX_META_RE.search(branch):
+            return [], False
+    return askable, True
+
+
+def enough_askable(branches, askable):
+    """A single pattern only needs itself. An alternation needs at least two
+    covered branches before a block is worth its risk: with one, the grep is
+    mostly doing something else."""
+    return len(askable) >= (1 if len(branches) == 1 else 2)
+
+
+def resolve_cd(tokens, i, current_dir, cwd):
+    """Where does this `cd` land? None when that is not statically knowable.
+
+    `cd <path> && grep ...` was the shape suspected of defeating this hook, and
+    it does not: `cd` is an ordinary command word and the `&&` after it puts the
+    scan back at command position, so the grep was always seen. What WAS wrong
+    is quieter -- the Bash branch judged the search against the session cwd, so
+    a grep whose real target is another project got measured against the wrong
+    index, or against none.
+    """
+    if i + 1 >= len(tokens):
+        return None          # bare `cd`: goes home, and saying so is guessing
+    target = tokens[i + 1]
+    if target in CONNECTORS or target.startswith("-"):
+        return None          # `cd -` and friends: unknowable from here
+    if "$" in target or "`" in target:
+        return None          # expansion: resolved by the shell, not by us
+    target = os.path.expanduser(target)
+    if not os.path.isabs(target):
+        target = os.path.join(current_dir or cwd, target)
+    return os.path.abspath(target)
 
 
 def is_proof_of_absence(args):
@@ -269,32 +449,74 @@ def ask_oracle(pattern, project_dir, target=None):
     return None
 
 
-def refusal_text(pattern, verdict, source_hint):
+def collect_verdicts(patterns, project_dir, target=None):
+    """Verdicts for every pattern, or [] as soon as one is not covered.
+
+    The short-circuit is not just an optimisation: one uncovered branch is work
+    that only grep can do, so there is nothing left to decide. It also keeps the
+    cost of the common case down, since each pattern costs one process spawn.
+    """
+    verdicts = []
+    for pattern in patterns:
+        verdict = ask_oracle(pattern, project_dir, target)
+        if not (verdict and verdict.get("covered")):
+            return []
+        verdicts.append((pattern, verdict))
+    return verdicts
+
+
+def refusal_text(verdicts, residual, source_hint):
     """Build the refusal FROM THE INDEX, never from numbers typed in here.
 
-    The previous version quoted a measurement copied by hand from a session on
+    An older version quoted a measurement copied by hand from a session on
     another repository. It was accurate the day it was written and unfalsifiable
     afterwards: nothing tied it to the index doing the refusing. Everything below
-    comes from the verdict the index just produced.
+    comes from the verdicts the index just produced.
+
+    `residual` matters as much as the block itself. Refusing a multi-term grep
+    without saying which branches AiDex cannot answer would leave the caller
+    with no way forward but to fight the tooling -- the exact outcome this whole
+    mechanism exists to avoid. Naming them turns the refusal into instructions.
     """
-    dimension = verdict.get("dimension")
-    rule = verdict.get("rule") or {}
-    kinds_hint = (
-        'kinds: ["literal"]' if dimension == "literal" else "the default kinds"
+    lines = []
+    if len(verdicts) == 1:
+        pattern, verdict = verdicts[0]
+        rule = verdict.get("rule") or {}
+        lines.append(
+            f"AiDex can answer this search, so the grep is redundant: "
+            f"'{pattern}' ({source_hint}) is covered by this project's index in "
+            f"the {verdict.get('dimension')} dimension (schema "
+            f"{verdict.get('schemaVersion')}, rule "
+            f"{rule.get('id')}@{rule.get('version')})."
+        )
+    else:
+        covered = ", ".join(
+            f"'{p}' ({v.get('dimension')})" for p, v in verdicts
+        )
+        lines.append(
+            f"AiDex can answer this search, so the grep is redundant: every "
+            f"indexable branch of this alternation ({source_hint}) is covered "
+            f"by this project's index -- {covered}."
+        )
+    for pattern, verdict in verdicts:
+        kinds_hint = (
+            'kinds: ["literal"]' if verdict.get("dimension") == "literal"
+            else "the default kinds"
+        )
+        lines.append(
+            f"Use mcp__aidex__aidex_query (term: '{pattern}', {kinds_hint})."
+        )
+    if residual:
+        lines.append(
+            "These branches are NOT indexable and stay yours: "
+            + ", ".join(f"'{r}'" for r in residual)
+            + " -- re-run the grep with those alone."
+        )
+    lines.append(
+        "To check presence or absence, Grep with output_mode count or "
+        "files_with_matches (grep -c or -l via Bash) is never blocked."
     )
-    return (
-        f"AiDex can answer this search, so the grep is redundant: '{pattern}' "
-        f"({source_hint}) is covered by this project's index in the "
-        f"{dimension} dimension (schema {verdict.get('schemaVersion')}, rule "
-        f"{rule.get('id')}@{rule.get('version')}).\n"
-        f"Use mcp__aidex__aidex_query (term: '{pattern}', {kinds_hint}).\n"
-        f"This index DECLARES coverage for this pattern, which is what makes a "
-        f"zero from it meaningful: it means absent, not unindexed. That is the "
-        f"only case where this hook blocks -- every other verdict, and every "
-        f"failure to obtain one, lets the search run.\n"
-        f"To prove an absence rather than find an occurrence, use grep with -c, "
-        f"-l or a trailing `wc -l`: those are never blocked."
-    )
+    return "\n".join(lines)
 
 
 def extract_grep_pattern(args):
@@ -338,12 +560,15 @@ def extract_grep_pattern(args):
     return None
 
 
-def find_bash_search(command):
+def find_bash_search(command, cwd):
     """Scan a Bash command line for a grep/rg invocation worth asking about.
 
-    Returns the pattern, or None when there is nothing to ask -- including when
-    the invocation is a proof of absence, which is a legitimate use of grep that
-    AiDex cannot replace.
+    Returns {"patterns", "residual", "dir"} or None when there is nothing to
+    ask -- including when the invocation is a proof of absence, which is a
+    legitimate use of grep that AiDex cannot replace.
+
+    `dir` is where the grep will actually RUN, which is the session cwd only
+    until a `cd` says otherwise.
     """
     try:
         tokens = shlex.split(command)
@@ -352,6 +577,7 @@ def find_bash_search(command):
 
     counts_lines = pipeline_counts(tokens)
 
+    current_dir = cwd
     at_command_pos = True
     i = 0
     n = len(tokens)
@@ -367,13 +593,31 @@ def find_bash_search(command):
                 # wrapper or leading VAR=val assignment -> stay at command pos
                 i += 1
                 continue
+            if base == "cd":
+                moved = resolve_cd(tokens, i, current_dir, cwd)
+                if moved is None:
+                    return None      # unknown target -> judge nothing
+                current_dir = moved
+                i += 2
+                at_command_pos = False
+                continue
             if base in GREP_CMDS:
                 tail = tokens[i + 1:]
                 if is_proof_of_absence(tail) or counts_lines:
                     return None
                 pattern = extract_grep_pattern(tail)
-                if is_candidate_pattern(pattern):
-                    return pattern
+                branches = split_alternation(
+                    pattern, alternation_sep(base, tail)
+                )
+                if branches:
+                    askable, benign = classify_branches(branches)
+                    if benign and enough_askable(branches, askable):
+                        residual = [
+                            b for b in branches
+                            if normalize_branch(b) not in askable
+                        ]
+                        return {"patterns": askable, "residual": residual,
+                                "dir": current_dir}
                 # a grep we could not pin to a candidate -> keep scanning the
                 # rest of the pipeline for another search
                 at_command_pos = False
@@ -407,22 +651,40 @@ def main():
         if tool_input.get("output_mode") in ("count", "files_with_matches"):
             noop()
         search_path = tool_input.get("path") or cwd
-        if not has_index(search_path):
-            noop()  # no AiDex index here -- leave the search alone
-        if not is_candidate_pattern(pattern):
+        # The index lives at the PROJECT ROOT, while `path` scopes the search
+        # anywhere below it. Ascend to find the one from the other; None means
+        # this search happens outside any indexed project, so leave it alone.
+        project_dir = find_index_root(search_path, cwd)
+        if not project_dir:
+            noop()  # no AiDex index above this path -- leave the search alone
+        # The native Grep tool runs ripgrep, so its alternation separator is a
+        # bare `|`. Same policy as the Bash branch: split, ask about every
+        # indexable branch, block only when none of them is missing.
+        branches = split_alternation(pattern, "|")
+        if not branches:
+            noop()
+        askable, benign = classify_branches(branches)
+        if not benign or not enough_askable(branches, askable):
             noop()  # free text / regex -> legitimate Grep, never intercept
-        # When the search is scoped to a FILE, hand that file to the oracle: it
-        # answers `path_out_of_scope` for a file the index never saw and
-        # `index_stale_on_file` for one that changed since. Both are verdicts
-        # that must not block, and neither is knowable from the pattern alone.
+        residual = [b for b in branches if normalize_branch(b) not in askable]
+        # A FILE scope is handed to the oracle: it answers `path_out_of_scope`
+        # or `index_stale_on_file`, neither of which may block. A DIRECTORY
+        # scope is not: the oracle matches indexed FILES and would answer
+        # `path_out_of_scope` for every directory. A search scoped to an
+        # excluded subtree is therefore judged against the whole project
+        # (0 of 62 calls on the reference corpus). No exclusion list is copied
+        # here: AiDex derives its own from DEFAULT_EXCLUDE plus each project's
+        # .gitignore/.aidexignore, and a copy would drift. The fix belongs in
+        # the oracle: accept a directory as a path PREFIX.
         is_file = os.path.isfile(search_path)
-        project_dir = os.path.dirname(search_path) if is_file else search_path
-        verdict = ask_oracle(pattern, project_dir, search_path if is_file else None)
-        if verdict and verdict.get("covered"):
+        target = search_path if is_file else None
+        verdicts = collect_verdicts(askable, project_dir, target)
+        if verdicts:
             emit({
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "deny",
-                "permissionDecisionReason": refusal_text(pattern, verdict, "Grep tool"),
+                "permissionDecisionReason": refusal_text(
+                    verdicts, residual, "Grep tool"),
             })
         noop()  # no verdict, or a verdict that does not justify a block
 
@@ -430,17 +692,23 @@ def main():
         command = tool_input.get("command")
         if not isinstance(command, str) or not command:
             noop()
-        if not has_index(cwd):
-            noop()  # session cwd has no index -- leave Bash alone
-        pattern = find_bash_search(command)
-        if not pattern:
+        found = find_bash_search(command, cwd)
+        if not found:
             noop()
-        verdict = ask_oracle(pattern, cwd)
-        if verdict and verdict.get("covered"):
+        # Ascend from where the grep will RUN, not from the session cwd: those
+        # differ as soon as the command starts with a `cd`, and they also differ
+        # for a session opened in a subdirectory of its own project -- a case
+        # the old has_index(cwd) silently dropped.
+        project_dir = find_index_root(found["dir"], cwd)
+        if not project_dir:
+            noop()  # no AiDex index above the target -- leave the search alone
+        verdicts = collect_verdicts(found["patterns"], project_dir)
+        if verdicts:
             emit({
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "deny",
-                "permissionDecisionReason": refusal_text(pattern, verdict, "grep/rg via Bash"),
+                "permissionDecisionReason": refusal_text(
+                    verdicts, found["residual"], "grep/rg via Bash"),
             })
         noop()
 
