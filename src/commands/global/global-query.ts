@@ -8,6 +8,7 @@ import type Database from 'better-sqlite3';
 import type { GlobalProject } from '../../db/global-database.js';
 import { withGlobalDb } from './global-shared.js';
 import { escapeLikeTerm } from '../shared.js';
+import { normalizeLiteralWhitespace } from '../../coverage/rule.js';
 
 // ============================================================
 // Types
@@ -62,7 +63,10 @@ const queryCache = new Map<string, CacheEntry>();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 function getCacheKey(term: string, mode: string, projectFilter?: string, tagFilter?: string): string {
-    return `${mode}:${term}:${projectFilter ?? ''}:${tagFilter ?? ''}`;
+    // Normalized the same way buildItemSearch normalizes below (f08aeeb1 gate
+    // fix): two whitespace-variant spellings of the same query must share one
+    // cache entry, or the second spelling pays a full scan for nothing.
+    return `${mode}:${normalizeLiteralWhitespace(term)}:${projectFilter ?? ''}:${tagFilter ?? ''}`;
 }
 
 /**
@@ -217,6 +221,12 @@ export function globalQuery(params: GlobalQueryParams): GlobalQueryResult {
 // ============================================================
 
 function buildItemSearch(alias: string, term: string, mode: GlobalQueryMode): { sql: string; param: string } {
+    // f08aeeb1 gate fix: single-project query.ts (db/queries.ts countItems/
+    // searchItems) normalizes whitespace before matching; this global-search
+    // path did not, so a query whose spacing differed from the indexed term
+    // (double space, tab, padding) silently missed here while succeeding
+    // mono-project. Same normalization, same choke point discipline.
+    term = normalizeLiteralWhitespace(term);
     switch (mode) {
         case 'exact':
             return {

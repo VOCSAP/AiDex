@@ -26,6 +26,7 @@ function getFileSize(absPath: string): number {
 }
 
 import { readAidexEmbedIgnore } from '../commands/init.js';
+import { cliCommand } from '../commands/shared.js';
 import { chunkCode } from './chunker.js';
 import { chunkMarkdown } from './chunker-docs.js';
 import { chunkNote, chunkTask, chunkTaskLog } from './chunker-workspace.js';
@@ -183,15 +184,14 @@ class RealEmbeddings implements EmbeddingsModule {
         const project = getProjectInfo(projectPath);
         if (!project) {
             throw new Error(
-                `Project not enabled: ${projectPath}. Call enable() first ` +
-                    `(or pass embeddings:true / aidex_global_init).`
+                `Project not enabled: ${projectPath}. Call enable() first.`
             );
         }
 
         const handle = openProjectIndexDb(projectPath);
         if (!handle) {
             throw new Error(
-                `No index.db at ${projectPath}/.aidex. Run aidex_init first.`
+                `No index.db at ${projectPath}/.aidex. Index it first: ${cliCommand('init', [projectPath])}`
             );
         }
 
