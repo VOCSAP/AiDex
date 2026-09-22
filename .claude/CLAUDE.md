@@ -324,6 +324,20 @@ Le seul `overrides` du fork est `protobufjs: ^7.5.8`. Il force protobufjs 7.6.5 
 
 Hardening candidat (npm audit fix sur `ws`/`simple-git`, overrides `glob`/`rimraf`/`minimatch`, veille CVE tree-sitter/better-sqlite3) pas urgent, aucun warning ne casse le build : a traiter en session dediee, jamais pendant un fix fonctionnel ni un merge upstream.
 
+## Agent skills
+
+### Issue tracker
+
+Les issues vivent dans le backlog roadmap partage `claude-peers` (outils `roadmap_*`), pas dans GitHub Issues, desactivees sur ce depot. Voir `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Les cinq roles canoniques sont le champ `triage` natif des cartes, mapping identite. Voir `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context : `CONTEXT.md` et `docs/adr/` a la racine, crees paresseusement quand un terme ou une decision se resout. Voir `docs/agents/domain.md`.
+
 ## Documentation complementaire
 
 | Fichier | Contenu |
@@ -332,6 +346,7 @@ Hardening candidat (npm audit fix sur `ws`/`simple-git`, overrides `glob`/`rimra
 | `MCP-API-REFERENCE.md` | API MCP complete : tous les outils, leurs parametres et exemples d'appel, y compris le Log Hub (endpoints HTTP, exemples client par langage) |
 | `docs/loghub-panel-dashboard.md` | Guide detaille du dashboard Live du Log Hub (widgets, endpoints `/panel` et `/control`, piege du compteur `button`) |
 | `CHANGELOG.md` | Historique des versions |
+| `docs/agents/` | Configuration lue par les engineering skills : tracker d'issues, roles de triage, docs de domaine |
 | `docs/dev-notes/` | Notes privees au fork VOCSAP (exclues de git) -- index dans `.claude/CLAUDE.local.md` |
 
 ## Configuration locale (optionnelle, hors git)
