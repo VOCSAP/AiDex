@@ -1,6 +1,7 @@
 # Etude : `mex-memory/mex`, ce qui peut servir a AiDex
 
-Date : 2026-10-03. Statut : **etude, aucun code**. Version etudiee : `mex`
+Date : 2026-10-03. Statut : **etude, aucun code produit**, scripts de
+mesure sous `scripts/eval/`. Version etudiee : `mex`
 0.8.3 (clone `main`, depth 50).
 
 Etiquetage : MESURE (commande + sortie), DEDUIT (lecture de code), SUPPOSE.
@@ -119,37 +120,105 @@ A/B headless mesure directement la grandeur pour laquelle AiDex existe.
 
 ## 4. Comment mesurer
 
-Source trace : `.claude/CLAUDE.local.md` (absente du conteneur cloud ou cette
-etude a ete faite ; a executer sur le poste).
+Script : `scripts/eval/trace_measure.py` (stdlib Python, lecture seule).
+Regles de lecture des transcripts (decoupage des messages, appariement
+`tool_use.id` / `tool_use_id`, debut de tour, fenetre, sous-agents,
+chemins, denominateurs) : `sem-entity-diff-study.md`, section 4.1. Elles
+valent ici a l'identique.
 
-**M1, `Read` apres recherche (pour 3.1).** Pour chaque `aidex_query` /
-`aidex_signature` de la trace, regarder les 3 `tool_use` suivants. Compter
-les `Read` d'un fichier present dans le resultat, et ventiler : fichier
-entier vs `offset/limit` ; taille du `tool_result` du `Read` (octets).
-Rendre separement le nombre d'appels, de sessions, la mediane et la somme.
-Puis : la plage lue recouvre-t-elle une methode presente dans `methods` ? Si
-oui, `body_text` aurait pu la servir. C'est la borne haute du gain.
+```
+python scripts/eval/trace_measure.py --project AiDex --json trace-report.json
+```
 
-**M2, `body_text` utilisable (pour 3.1).** Sur l'index du poste : part des
-methodes avec `body_truncated = 1`, distribution de `body_lines`. Un corps
-tronque ne supprime pas le `Read`.
+Les seuils sont **PROPOSES, a valider par l'operateur avant la mesure**.
+Chaque bloc du JSON porte un `random_sample` (20, `--seed` fixe) a lire
+verbatim avant de conclure.
 
-**M3, fraicheur (pour 3.2).** Pour chaque `aidex_query` de la trace,
-le fichier du resultat a-t-il ete `Edit` / `Write` plus tot dans le meme
-tour, sans Stop intermediaire ? Compter les cas. Si quasi nul, fermer.
+Formats de sortie AiDex parses (`src/server/tools.ts`) :
+- `aidex_query` : ligne `<fichier>` puis lignes `  :<n> (<type>)` ;
+- `aidex_signature` : `# Signature: <fichier>` puis `(line A-B)` par type et
+  methode ;
+- `aidex_signatures` : `## <fichier>` puis `  - <prototype> :A-B`.
+Les transcripts anciens peuvent porter un format anterieur : un resultat
+non parse donne zero fichier, donc sous-compte M1 et M3 sans les fausser.
+Verifier sur le `random_sample` que `files` n'est pas vide.
 
-**M4, routes (pour 3.4).** Compter les `Grep` / `Bash grep` dont le motif
-ressemble a une route (`^/` ou `'/api`). Puis la question binaire
-`kinds: ["literal"]` ci-dessus.
+**M1, `Read` apres recherche (pour 3.1)** -- bloc `mex_read_after_search`.
+- `calls_by_tool` : appels `aidex_query` / `signature` / `signatures` /
+  `search`.
+- `calls_followed_by_read_of_returned_file` : appels suivis, dans la
+  fenetre, d'un `Read` d'un fichier rendu par cet appel.
+- `reads_whole_file` contre `reads_partial` (`offset` / `limit` presents).
+- `partial_inside_returned_method_span` : la plage lue tient dans un span
+  de methode (marge 3 lignes) rendu PLUS TOT DANS LA MEME SESSION par
+  `aidex_signature(s)`. C'est le cas que `body_text` aurait servi. Pas de
+  biais temporel : le span vient du transcript, pas de l'index actuel.
+- `partial_covering_a_returned_hit_line` : la plage lue contient une ligne
+  rendue par l'appel. Indice plus faible (le hit ne dit pas ou finit la
+  methode).
+- `followup_read_bytes` : mediane ET somme. C'est la borne haute du gain.
 
-**M5, harnais A/B (pour 3.5).** Reprendre la methode, pas le code : 10 a 20
-taches reelles tirees de la trace (pas ecrites a la main), deux bras
-"AiDex desactive" (`AIDEX_TOOLS_DISABLE` sur tous les outils, ou serveur non
-monte) contre "AiDex monte", ordre alterne, au moins 2 repetitions, delta
-apparie de `cache_creation_input_tokens + input_tokens + output_tokens`,
-`cache_read_input_tokens` rendu a part. Attention au piege de
-`ENABLE_TOOL_SEARCH` : le schema d'un outil differe est paye quand meme
-(CLAUDE.md, section Outils).
+Seuil PROPOSE : poursuivre si `calls_followed_by_read_of_returned_file`
+>= 20 pourcent des appels ET si `partial_inside_returned_method_span +
+partial_covering_a_returned_hit_line` >= 30 pourcent des `Read` qui suivent.
+Si la majorite des `Read` sont des fichiers entiers, le corps d'UNE methode
+ne les remplace pas : fermer.
+
+**M2, `body_text` utilisable (pour 3.1)** -- hors trace, sur l'index du
+poste (`<projet>/.aidex/index.db`) :
+
+```sql
+SELECT COUNT(*), SUM(body_truncated), SUM(body_text IS NULL),
+       AVG(body_lines) FROM methods;
+```
+
+Troncature au-dela de `MAX_BODY_CHARS` = 8000 caracteres
+(`src/parser/extractor.ts:52`), tete + queue. Seuil PROPOSE : `body_text`
+exploitable tel quel si la part tronquee ou nulle est <= 20 pourcent.
+
+**M3, fraicheur (pour 3.2)** -- bloc `mex_stale`.
+- `calls_hitting_file_edited_earlier_same_turn` sur `aidex_query_calls` :
+  le resultat cite un fichier passe par `Edit` / `Write` / `MultiEdit` /
+  `NotebookEdit` plus tot dans le MEME tour (le hook Stop n'a pas encore
+  reindexe).
+- Limites : une edition faite par un sous-agent n'est pas visible depuis
+  la session parente (sous-compte) ; avant l'installation des hooks
+  `aidex-queue-*`, la peremption depassait le tour (sous-compte aussi) ;
+  les changements hors Claude Code (`git pull`, editeur) sont invisibles.
+  Le chiffre est donc une borne BASSE.
+
+Seuil PROPOSE : fermer si < 2 pourcent des `aidex_query`.
+
+**M4, routes (pour 3.4)** -- bloc `mex_routes`.
+- `distinct_patterns` ET `occurrences`, jamais un seul (piege
+  d'echantillonnage du 2026-08-13). `patterns` donne la liste complete.
+- Puis question binaire, sans compte : sur un projet Express ou FastAPI du
+  poste, `aidex_query` d'une route connue avec `kinds: ["literal"]`. Si
+  elle repond, la dimension `literal` couvre deja le besoin.
+
+Seuil PROPOSE : fermer si < 10 motifs distincts sur toute la trace, ou si
+la question binaire repond oui.
+
+**M5, harnais A/B (pour 3.5)** -- pas de script a ce stade, protocole :
+1. 10 a 20 taches tirees des transcripts (premier message utilisateur de
+   sessions de navigation dans le code), pas ecrites a la main.
+2. Deux bras : AiDex non monte contre AiDex monte. Ne pas utiliser
+   `ENABLE_TOOL_SEARCH` pour "desactiver" : un outil differe est paye quand
+   meme (CLAUDE.md, section Outils).
+3. `claude -p "<tache>" --output-format stream-json --verbose`, ordre des
+   bras alterne, au moins 2 repetitions par tache et par bras.
+4. Tokens lus dans `usage`, dedupliques par `message.id` (section 4.1 de
+   l'etude `sem`) : `input_tokens + cache_creation_input_tokens +
+   output_tokens` d'un cote, `cache_read_input_tokens` rendu A PART.
+5. Comparaison en **delta apparie par tache** (mediane des deltas), jamais
+   en total absolu, a cause des caches de prompt cote fournisseur.
+6. Reponses anonymisees, notees contre le source avant de savoir quel bras
+   les a produites. Un gain de tokens avec perte de justesse n'est pas un
+   gain.
+
+Seuil PROPOSE pour qu'une feature soit retenue via ce harnais : mediane
+des deltas apparies <= -10 pourcent, sans baisse du nombre de reponses
+justes.
 
 ## 5. Quoi faire, par ordre de priorite
 
