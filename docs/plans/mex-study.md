@@ -127,8 +127,15 @@ chemins, denominateurs) : `sem-entity-diff-study.md`, section 4.1. Elles
 valent ici a l'identique.
 
 ```
-python scripts/eval/trace_measure.py --project AiDex --json trace-report.json
+python scripts/eval/trace_measure.py --json docs/dev-notes/trace-report.json
 ```
+
+Sans `--project` : AiDex est monte dans tous les projets du poste, la trace
+utile est l'ensemble de `~/.claude/projects`, pas le seul depot AiDex.
+`--project` ne sert qu'a isoler un sous-ensemble pour verification. Le JSON
+complet contient des extraits verbatim de sessions privees
+(`random_sample`) : il va sous `docs/dev-notes/` (exclu de git), jamais
+ailleurs dans le depot.
 
 Les seuils sont **PROPOSES, a valider par l'operateur avant la mesure**.
 Chaque bloc du JSON porte un `random_sample` (20, `--seed` fixe) a lire

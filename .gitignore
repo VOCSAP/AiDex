@@ -86,3 +86,8 @@ docs/reference/
 findings.md
 task_plan.md
 progress.md
+
+# Python bytecode (the operator excludes it globally on the workstation;
+# cloud clones do not see that global ignore).
+__pycache__/
+*.pyc
