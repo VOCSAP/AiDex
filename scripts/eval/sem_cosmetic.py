@@ -31,7 +31,9 @@ def main():
     ap.add_argument('--repo', required=True)
     ap.add_argument('--sem', default='sem')
     ap.add_argument('-n', type=int, default=50)
+    ap.add_argument('--dump', help='write every cosmetic change (JSON) here, for verbatim review')
     a = ap.parse_args()
+    cosmetic_cases = []
 
     shas = run(['git', 'log', '--format=%h', '-n', str(a.n), '--no-merges'], a.repo).split()
     pairs = cosmetic_pairs = 0
@@ -51,11 +53,16 @@ def main():
             distinct.add(eid)
             if ch.get('structuralChange') is False:
                 cosmetic_pairs += 1
+                cosmetic_cases.append(dict(ch, commit=sha))
             else:
                 distinct_structural.add(eid)
         plain_lines.append(run([a.sem, 'diff', '--commit', sha, '--format', 'plain'],
                                a.repo).count('\n'))
         git_lines.append(run(['git', 'diff', f'{sha}~1', sha], a.repo).count('\n'))
+
+    if a.dump:
+        with open(a.dump, 'w', encoding='utf-8') as fh:
+            json.dump(cosmetic_cases, fh, indent=1)
 
     # An entity is "only ever cosmetic" if no commit changed it structurally.
     only_cosmetic = len(distinct - distinct_structural)

@@ -170,8 +170,14 @@ def read_range(c):
     off, lim = c.input.get('offset'), c.input.get('limit')
     if off is None and lim is None:
         return None  # whole file (or the tool's default cap)
-    start = int(off or 1)
-    return (start, start + int(lim or 2000) - 1)
+    # Model-emitted inputs are not always numeric (e.g. offset "195, 340").
+    start = _first_int(off, 1)
+    return (start, start + _first_int(lim, 2000) - 1)
+
+
+def _first_int(v, default):
+    m = re.search(r'\d+', str(v)) if v is not None else None
+    return int(m.group()) if m else default
 
 
 def summarize(values):
@@ -183,6 +189,8 @@ def summarize(values):
 SECTION_RE = re.compile(r'^(?:# Signature: |## )(.+)$', re.M)
 NON_FILE_HEADINGS = ('Header Comments', 'Types', 'Methods')
 SPAN_RES = [SIG_SPAN_RE, re.compile(r' :(\d+)(?:-(\d+))?$', re.M)]
+# aidex_search: "N. [kind] name" then an indented "<file>:<line>" line.
+SEARCH_HIT_RE = re.compile(r'^\s+(\S[^\n:]*?):(\d+)\s*$', re.M)
 
 
 def parse_aidex_files(c):
@@ -208,6 +216,9 @@ def parse_aidex_files(c):
             continue
         for ln in QUERY_LINE_RE.findall(m.group(2)):
             out[f]['hits'].add(int(ln))
+    if t.startswith('# Search results'):
+        for f, ln in SEARCH_HIT_RE.findall(t):
+            out[f.strip()]['hits'].add(int(ln))
     if not out and c.input.get('file'):
         out[str(c.input['file'])]['hits']  # file named in the input, no span parsed
     return out
@@ -220,7 +231,7 @@ def measure(files, window, samples, seed):
            'follow_read': 0, 'follow_read_whole': 0, 'follow_read_bytes': [], 'samples': []}
     rd = {'calls': 0, 'by_tool': Counter(), 'sessions': set(), 'with_read': 0,
           'reads_whole': 0, 'reads_partial': 0, 'partial_in_span': 0,
-          'partial_on_hit': 0, 'read_bytes': [], 'samples': []}
+          'partial_on_hit': 0, 'partial_in_span_or_hit': 0, 'read_bytes': [], 'samples': []}
     st = {'queries': 0, 'stale_queries': 0, 'samples': []}
     rt = {'occurrences': 0, 'distinct': Counter()}
 
@@ -315,11 +326,13 @@ def measure(files, window, samples, seed):
                     rd['reads_partial'] += 1
                     fp = r.input.get('file_path', '')
                     spans = [s for k, v in spans_seen.items() if same_file(fp, k) for s in v]
-                    if any(a <= rng_[0] + 3 and rng_[1] - 3 <= b for a, b in spans):
-                        rd['partial_in_span'] += 1
+                    in_span = any(a <= rng_[0] + 3 and rng_[1] - 3 <= b for a, b in spans)
                     hits = [h for k, v in found.items() if same_file(fp, k) for h in v['hits']]
-                    if any(rng_[0] <= h <= rng_[1] for h in hits):
-                        rd['partial_on_hit'] += 1
+                    on_hit = any(rng_[0] <= h <= rng_[1] for h in hits)
+                    rd['partial_in_span'] += int(in_span)
+                    rd['partial_on_hit'] += int(on_hit)
+                    # The two flags overlap; their sum can exceed reads_partial.
+                    rd['partial_in_span_or_hit'] += int(in_span or on_hit)
                 rd['samples'].append({'session': sid, 'tool': name, 'input': c.input,
                                       'files': list(found)[:5],
                                       'reads': [(r.input.get('file_path'), read_range(r))
@@ -364,6 +377,7 @@ def measure(files, window, samples, seed):
             'reads_partial': rd['reads_partial'],
             'partial_inside_returned_method_span': rd['partial_in_span'],
             'partial_covering_a_returned_hit_line': rd['partial_on_hit'],
+            'partial_in_span_or_hit': rd['partial_in_span_or_hit'],
             'followup_read_bytes': summarize(rd['read_bytes']),
             'random_sample': sample(rd['samples']),
         },
