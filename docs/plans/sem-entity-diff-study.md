@@ -270,3 +270,23 @@ Voir `mex-study.md` : `mex` stocke aussi un hash de corps par symbole (derive
 de doc). Une colonne de hash par entite servirait les deux usages. Le harnais
 A/B decrit en section 4 / M5 de `mex-study.md` est l'instrument a construire
 avant toute implementation ici.
+
+## 7. Resultats de mesure (2026-10-04)
+
+Seuils de la section 4 valides par l'operateur avant la mesure. Trace du
+poste : 3360 sessions dont 796 sidechain. Rapport detaille (prive) :
+`docs/dev-notes/sem-mex-measure-report.md`. Toutes les valeurs sont MESUREES.
+
+| Id | Resultat | Seuil | Verdict |
+|---|---|---|---|
+| S1 | 1110 / 3360 sessions = 33,0 pourcent | >= 10 pourcent | passe |
+| S2 | 3,63 pourcent des octets rendus (non pipes) | >= 3 pourcent | passe |
+| S3 | 359 / 7191 diffs suivis d'un `Read` = 5,0 pourcent | >= 30 pourcent | echoue |
+| S4 | distinct cosmetique brut 150 / 2323 = 6,5 pourcent (AiDex, koryphaios, Kleos) ; AiDex apres relecture <= 4,2 pourcent | >= 10 pourcent apres relecture | echoue |
+| S5 | 29 / 150 commits au-dela de 100 lignes = 19,3 pourcent | <= 10 pourcent | echoue |
+
+Relecture des 35 paires cosmetiques d'AiDex : 25 fausses (71 pourcent), toutes
+des ajouts de `export` ou des listes `export { ... }` qui gagnent des symboles.
+
+Decision proposee : fermer la piste (en attente de l'accord operateur pour
+l'ajout aux pistes closes de CLAUDE.md).

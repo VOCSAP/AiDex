@@ -243,3 +243,30 @@ justes.
 5. **Ne pas importer** : memoire d'equipe (section 2), recherche langage
    naturel (contredite par la mesure `aidex_search`), graphe / flots (piste
    close 8).
+
+## 6. Resultats de mesure (2026-10-04)
+
+Seuils de la section 4 valides par l'operateur avant la mesure. Trace du
+poste : 3360 sessions dont 796 sidechain, 6655 appels de recherche AiDex.
+Rapport detaille (prive) : `docs/dev-notes/sem-mex-measure-report.md`. Toutes
+les valeurs sont MESUREES.
+
+| Id | Resultat | Seuil | Verdict |
+|---|---|---|---|
+| M1a | 3597 / 6655 recherches suivies d'un `Read` d'un fichier rendu = 54,0 pourcent | >= 20 pourcent | passe |
+| M1b | 3369 / 5698 `Read` partiels sur un span ou un hit rendu = 59,1 pourcent (union, pas somme) | >= 30 pourcent | passe |
+| M2 | 373 / 68001 `body_text` tronques ou NULL = 0,55 pourcent, 19 index | <= 20 pourcent | passe |
+| M3 | 318 / 5258 `aidex_query` sur un fichier edite plus tot dans le tour sans `aidex_update` intercale = 6,0 pourcent (brut 16,3) | < 2 pourcent pour fermer | ne ferme pas |
+| M4a | 39 routes HTTP distinctes, 91 occurrences, apres relecture | < 10 pour fermer | ne ferme pas |
+| M4b | `aidex_query` en `kinds: ["literal"]` trouve les routes et leur handler | oui pour fermer | ferme |
+
+`Read` apres recherche : mediane 2881 octets, somme 23 643 990 (borne haute du
+gain de 3.1).
+
+Contrainte trouvee par M2 : `body_text` n'est rempli que si le reglage par
+projet `store_bodies` vaut 1 (un index en `store_bodies = 0` rend 100 pourcent
+de NULL). Une exposition de `body_text` doit traiter ce cas.
+
+Decisions proposees : poursuivre 3.1 (corps de methode) et 3.2 (fraicheur),
+fermer 3.4 (routes), en attente de l'accord operateur pour l'ajout aux pistes
+closes de CLAUDE.md. M5 hors perimetre de cette session.

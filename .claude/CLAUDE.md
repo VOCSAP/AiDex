@@ -173,6 +173,25 @@ Chacune a ete fermee par une mesure, pas par une opinion.
    code Rust. Les 18 termes viennent de sessions CLI et debug, corpus faible et
    probablement non representatif ; c'est la seule reserve qui empeche de fermer
    definitivement.
+9. **Diff au niveau entite, inspire de `sem`** (`docs/plans/sem-entity-diff-study.md`).
+   Mesure le 2026-10-04 sur la trace reelle (3360 sessions dont 796 sidechain) et sur
+   les 50 derniers commits d'AiDex, koryphaios et Kleos, seuils fixes AVANT la mesure.
+   Le besoin existe : `git diff/show/log` apparait dans 33,0 pourcent des sessions et
+   pese 3,6 pourcent des octets rendus. Mais la solution n'y repond pas : un diff
+   n'est suivi d'un `Read` du fichier que dans 5,0 pourcent des cas (seuil 30), donc
+   il n'y a presque aucun `Read` a supprimer ; les changements purement cosmetiques
+   pesent au plus 6,5 pourcent des entites distinctes (seuil 10), et le drapeau
+   cosmetique de `sem` est faux sur 25 des 35 cas relus en TypeScript (listes
+   `export { ... }`) ; la sortie par entite depasse 100 lignes sur 19,3 pourcent des
+   commits (seuil 10). **Condition de reouverture** : une forme qui remplace la
+   LECTURE du patch lui-meme, pas `--stat`, mesuree sur la meme trace.
+10. **Resolveurs de routes de frameworks, inspire de `mex`** (`docs/plans/mex-study.md`).
+   Le besoin est reel mais faible (39 routes HTTP distinctes cherchees par grep,
+   91 occurrences, apres relecture : le comptage brut de 4534 motifs etait des chemins
+   de fichiers). Ferme par la question binaire : `aidex_query` en
+   `kinds: ["literal"]` rend deja les routes et leur handler (18 resultats pour
+   `/roadmap/upsert`, 30 pour `/approval/list` sur koryphaios). Reouverture
+   uniquement si une route cherchee n'est PAS rendue par la dimension `literal`.
 
 ### Pieges d'environnement, a recopier dans tout brief d'execution
 
