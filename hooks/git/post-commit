@@ -1,0 +1,16 @@
+#!/bin/sh
+# AiDex global git hook -- post-commit.
+#
+# Fires after every commit on every repo on the machine (see README.md in
+# this directory for how it gets installed into core.hooksPath). Reindexes
+# the files that changed in the commit that just landed, but only if the
+# repo has an .aidex index; everything else is a same-line no-op.
+
+. "$(dirname "$0")/aidex-reindex-common.sh"
+
+repo_root="$(aidex_repo_root)"
+aidex_has_index "$repo_root" || exit 0
+
+git diff-tree --no-commit-id --name-only -r HEAD 2>/dev/null | aidex_queue_files "$repo_root"
+
+exit 0

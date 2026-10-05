@@ -1,0 +1,23 @@
+#!/bin/sh
+# AiDex global git hook -- post-checkout.
+#
+# git calls this with: <old-ref-sha> <new-ref-sha> <branch-checkout-flag>
+# flag=1 means an actual branch/ref switch; flag=0 means a plain file-level
+# checkout (`git checkout -- path`), which this hook deliberately ignores --
+# it has no well-defined "old vs new tree" scope for a partial file restore,
+# and a real branch switch is the case that actually leaves the index stale.
+
+. "$(dirname "$0")/aidex-reindex-common.sh"
+
+old_ref="$1"
+new_ref="$2"
+branch_flag="$3"
+
+[ "$branch_flag" = "0" ] && exit 0
+
+repo_root="$(aidex_repo_root)"
+aidex_has_index "$repo_root" || exit 0
+
+git diff --name-only "$old_ref" "$new_ref" 2>/dev/null | aidex_queue_files "$repo_root"
+
+exit 0

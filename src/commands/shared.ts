@@ -4,7 +4,8 @@
 
 import { existsSync } from 'fs';
 import { join } from 'path';
-import { PRODUCT_NAME, INDEX_DIR, TOOL_PREFIX } from '../constants.js';
+import { fileURLToPath } from 'url';
+import { PRODUCT_NAME, PRODUCT_NAME_LOWER, INDEX_DIR } from '../constants.js';
 import { openDatabase, createQueries, type AiDexDatabase } from '../db/index.js';
 import type { Queries } from '../db/queries.js';
 
@@ -32,11 +33,38 @@ export function validateIndex(projectPath: string): string | null {
     return existsSync(dbPath) ? dbPath : null;
 }
 
+const CLI_ENTRY = fileURLToPath(new URL('../index.js', import.meta.url));
+
+/**
+ * A shell command running the AiDex CLI, runnable as-is: this process's Node
+ * binary and the entry point of this build, every argument quoted. The entry
+ * is located from this module, not from process.argv[1], which names the
+ * caller's script whenever AiDex is loaded as a library.
+ *
+ * Path arguments get forward slashes and lose trailing ones: a quoted `D:\proj\`
+ * ends in an escaped quote under Git Bash. `<placeholder>` arguments are kept.
+ *
+ * When the entry file is missing, returns the short `aidex` form, labelled
+ * before the command so it still pastes into a shell.
+ */
+export function cliCommand(subcommand: string, args: string[] = [], entry: string = CLI_ENTRY): string {
+    const quoted = args.map((a) => ` "${cliArgument(a)}"`).join('');
+    if (existsSync(entry)) {
+        return `"${normalizePath(process.execPath)}" "${normalizePath(entry)}" ${subcommand}${quoted}`;
+    }
+    return `${PRODUCT_NAME} CLI: ${PRODUCT_NAME_LOWER} ${subcommand}${quoted}`;
+}
+
+function cliArgument(arg: string): string {
+    if (arg.startsWith('<') && arg.endsWith('>')) return arg;
+    return normalizePath(arg).replace(/([^:/])\/+$/, '$1');
+}
+
 /**
  * Standard error message when no index is found.
  */
 export function noIndexError(projectPath: string): string {
-    return `No ${PRODUCT_NAME} index found at ${projectPath}. Run ${TOOL_PREFIX}init first.`;
+    return `No ${PRODUCT_NAME} index found at ${projectPath}. Index it first: ${cliCommand('init', [projectPath])}`;
 }
 
 /**

@@ -7,7 +7,8 @@ import { resolveLlmCreds, type LlmCreds } from './config.js';
 import { createProvider, type Provider } from './providers.js';
 import { expandQuery, translateQuery } from './translate.js';
 import { rerankCandidates } from './rerank.js';
-import { safeCandidates } from './safety.js';
+import { readRerankerConfig, rerankViaEndpoint } from './reranker.js';
+import { assertNoLeak, safeCandidates } from './safety.js';
 import type {
     LlmContext,
     LlmModule,
@@ -67,8 +68,28 @@ class RealLlm implements LlmModule {
     }
 
     async rerank(query: string, candidates: RerankCandidate[], ctx: LlmContext): Promise<RerankResult> {
+        if (candidates.length === 0) {
+            return { orderedIds: [], invoked: false };
+        }
+
+        // Dedicated cross-encoder reranker takes over the whole rerank stage
+        // when enabled — the chat LLM keeps translation/expansion only.
+        const reranker = readRerankerConfig();
+        if (reranker && reranker.enabled) {
+            const safe = safeCandidates(candidates, ctx.sendCode);
+            assertNoLeak(safe, ctx.sendCode);
+            try {
+                const orderedIds = await rerankViaEndpoint(reranker, query, safe);
+                return { orderedIds, invoked: true };
+            } catch {
+                // Endpoint down/misbehaving — keep the RRF-fused order rather
+                // than silently paying for a second (LLM-as-judge) pass.
+                return { orderedIds: candidates.map(c => c.id), invoked: false };
+            }
+        }
+
         const { provider } = await this.resolve(ctx.projectPath);
-        if (!provider || candidates.length === 0) {
+        if (!provider) {
             return { orderedIds: candidates.map(c => c.id), invoked: false };
         }
         const safe = safeCandidates(candidates, ctx.sendCode);

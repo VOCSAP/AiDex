@@ -1,0 +1,16 @@
+#!/bin/sh
+# AiDex global git hook -- post-merge.
+#
+# Fires after `git merge` (including the merge half of `git pull`).
+# ORIG_HEAD is where the branch was before the merge; diffing it against
+# HEAD gives exactly the files the merge touched. Same .aidex gate and
+# debounced batched update as every other hook in this set.
+
+. "$(dirname "$0")/aidex-reindex-common.sh"
+
+repo_root="$(aidex_repo_root)"
+aidex_has_index "$repo_root" || exit 0
+
+git diff --name-only ORIG_HEAD HEAD 2>/dev/null | aidex_queue_files "$repo_root"
+
+exit 0

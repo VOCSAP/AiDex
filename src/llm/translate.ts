@@ -11,19 +11,12 @@
  */
 
 import type { Provider } from './providers.js';
-
-const SYSTEM = `You translate code-search queries into English.
-Output STRICT JSON with this shape: {"queries": ["...", "..."]}.
-Rules:
-- Up to 3 queries, lowercase, English.
-- Keep the original meaning, prefer short phrases (3-8 words).
-- If the input is already a clean English search phrase, return just one item.
-- No prose, no code fences, no commentary — just the JSON.`;
+import { loadLlmPrompts } from './prompts.js';
 
 export async function translateQuery(provider: Provider, query: string): Promise<string[]> {
     try {
         const res = await provider.call({
-            system: SYSTEM,
+            system: loadLlmPrompts().prompts.translateSystem,
             user: query,
             maxTokens: 200,
             temperature: 0.1,
@@ -37,18 +30,10 @@ export async function translateQuery(provider: Provider, query: string): Promise
     }
 }
 
-const EXPAND_SYSTEM = `You expand a vague code-search query into concrete English search phrases.
-Output STRICT JSON: {"queries": ["...", "..."]}.
-Rules:
-- 2 to 4 phrases, complementary not redundant.
-- Each phrase 3-10 words, English, lowercase.
-- Concrete: include likely identifier-style words ("retry backoff exponential" beats "how to retry").
-- No prose, no code fences.`;
-
 export async function expandQuery(provider: Provider, query: string): Promise<string[]> {
     try {
         const res = await provider.call({
-            system: EXPAND_SYSTEM,
+            system: loadLlmPrompts().prompts.expandSystem,
             user: query,
             maxTokens: 250,
             temperature: 0.2,
