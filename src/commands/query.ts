@@ -2,7 +2,12 @@
  * query command - Search for terms in the index
  */
 
+import { existsSync, readFileSync } from 'fs';
+import { join } from 'path';
+
 import { withProjectDb } from './shared.js';
+import { createExcludedPathFilter, shortHash } from './init.js';
+import { update, remove } from './update.js';
 import { globToRegex } from '../utils/glob.js';
 import { readCoverage, LITERAL_RULE_ID, LITERAL_RULE_VERSION } from '../coverage/rule.js';
 // `coverage.ts` does not import this module, so the remedy string can be shared
@@ -100,7 +105,21 @@ export interface QueryResult {
      * "nothing else HERE", which is the same failure as an unqualified zero.
      */
     itemsTruncated: boolean;
+    /** Returned files whose disk content still differs from the index. */
+    staleFiles: string[];
     error?: string;
+}
+
+/**
+ * Stale files reindexed per call. One reindex costs 40 to 360 ms, so without a
+ * cap a `contains` query over a freshly pulled tree would stall.
+ */
+const MAX_STALE_REINDEX = 3;
+
+interface StaleFile {
+    path: string;
+    missing: boolean;
+    unreadable: boolean;
 }
 
 // ============================================================
@@ -108,6 +127,61 @@ export interface QueryResult {
 // ============================================================
 
 export function query(params: QueryParams): QueryResult {
+    const indexedHashes = new Map<string, string>();
+    const first = runQuery(params, indexedHashes);
+    const stale = first.success ? findStaleFiles(params.path, indexedHashes) : [];
+    if (stale.length === 0) {
+        return { ...first, staleFiles: [] };
+    }
+
+    // Runs after `runQuery` has closed its read connection, so `update` and
+    // `remove` never write under an open read on the same database.
+    let isExcluded: ((relativePath: string) => boolean) | undefined;
+    let attempts = 0;
+    let reindexed = 0;
+    for (const file of stale) {
+        if (attempts === MAX_STALE_REINDEX) break;
+        if (file.unreadable) continue;
+        attempts++;
+        isExcluded ??= createExcludedPathFilter(params.path);
+        const done = file.missing || isExcluded(file.path)
+            ? remove({ path: params.path, file: file.path }).removed
+            : update({ path: params.path, file: file.path }).success;
+        if (done) reindexed++;
+    }
+    if (reindexed === 0) {
+        return { ...first, staleFiles: stale.map(f => f.path) };
+    }
+
+    indexedHashes.clear();
+    const second = runQuery(params, indexedHashes);
+    const stillStale = second.success ? findStaleFiles(params.path, indexedHashes) : [];
+    return { ...second, staleFiles: stillStale.map(f => f.path) };
+}
+
+function findStaleFiles(projectPath: string, indexedHashes: Map<string, string>): StaleFile[] {
+    const stale: StaleFile[] = [];
+    for (const [path, hash] of indexedHashes) {
+        const absolutePath = join(projectPath, path);
+        if (!existsSync(absolutePath)) {
+            stale.push({ path, missing: true, unreadable: false });
+            continue;
+        }
+        try {
+            // Hashed as decoded text because that is what init and update
+            // store: the raw bytes of a non-UTF-8 file would never match.
+            if (shortHash(readFileSync(absolutePath, 'utf-8')) !== hash) {
+                stale.push({ path, missing: false, unreadable: false });
+            }
+        } catch {
+            stale.push({ path, missing: false, unreadable: true });
+        }
+    }
+    return stale;
+}
+
+/** Fills `indexedHashes` with the index hash of every file it returns. */
+function runQuery(params: QueryParams, indexedHashes: Map<string, string>): Omit<QueryResult, 'staleFiles'> {
     const mode = params.mode ?? 'exact';
     const limit = params.limit ?? 100;
     const kinds: QueryKind[] = (params.kinds && params.kinds.length > 0)
@@ -284,6 +358,12 @@ export function query(params: QueryParams): QueryResult {
 
                 if (truncated) {
                     allMatches = allMatches.slice(0, limit);
+                }
+
+                for (const match of allMatches) {
+                    if (indexedHashes.has(match.file)) continue;
+                    const file = queries.getFileByPath(match.file);
+                    if (file) indexedHashes.set(match.file, file.hash);
                 }
 
                 return {

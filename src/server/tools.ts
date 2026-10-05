@@ -1482,6 +1482,10 @@ function handleQuery(args: Record<string, unknown>): { content: Array<{ type: st
         message += `\nTerms ${from}-${to} of ${result.itemsTotal} examined`
             + ` -- re-run with item_offset: ${to} for the next slice.`;
     }
+    const stale = new Set(result.staleFiles);
+    if (stale.size > 0) {
+        message += `\n${stale.size} file(s) changed on disk since indexing, line numbers may be off: re-run, or ${TOOL_PREFIX}update them.`;
+    }
     message += '\n\n';
 
     // Group by file
@@ -1494,7 +1498,7 @@ function handleQuery(args: Record<string, unknown>): { content: Array<{ type: st
     }
 
     for (const [file, lines] of byFile) {
-        message += `${file}\n`;
+        message += `${file}${stale.has(file) ? ' [stale]' : ''}\n`;
         for (const line of lines) {
             message += `  :${line.lineNumber} (${line.lineType})\n`;
         }
