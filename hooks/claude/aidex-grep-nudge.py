@@ -186,7 +186,7 @@ VALUE_OPTS = {
     "-f", "--file", "-m", "--max-count", "-A", "--after-context",
     "-B", "--before-context", "-C", "--context", "-d", "--devices",
     "-D", "--binary-files", "--include", "--exclude", "--exclude-dir",
-    "--color", "--colour", "--group-separator", "--label",
+    "--group-separator", "--label",
     # ripgrep extras
     "-g", "--glob", "--iglob", "-t", "--type", "--type-not",
     "-M", "--max-columns", "--threads", "-j", "--colors", "--max-depth",
@@ -194,9 +194,10 @@ VALUE_OPTS = {
     "--field-context-separator", "--field-match-separator",
 }
 
-# Value-taking for ripgrep (--replace, --encoding, --type-not), booleans for
-# grep (--recursive, --extended-regexp, --initial-tab).
-RG_VALUE_OPTS = {"-r", "-E", "-T"}
+# Value-taking for ripgrep (--replace, --encoding, --type-not, --color WHEN),
+# booleans for grep (--recursive, --extended-regexp, --initial-tab), where
+# --color's optional value must be glued with `=`.
+RG_VALUE_OPTS = {"-r", "-E", "-T", "--color", "--colour"}
 
 # A shell redirection token: fd digits or `&`, then `>`, `>>` or `<`. Its
 # target is glued (`2>/dev/null`) or is the next token (`2> /dev/null`). The

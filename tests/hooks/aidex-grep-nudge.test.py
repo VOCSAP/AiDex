@@ -236,6 +236,12 @@ def main():
          "-T of grep is a boolean"),
         ("rg -T js handleToolCall src/server/tools.ts", expected_search,
          "-T of rg takes a value"),
+        ("grep --color handleToolCall src/server/tools.ts", expected_search,
+         "--color of grep takes no detached value"),
+        ("grep --color=auto handleToolCall src/server/tools.ts", expected_search,
+         "--color=auto of grep keeps its glued value"),
+        ("rg --color never handleToolCall src/server/tools.ts", expected_search,
+         "--color of rg takes a value"),
     ]
     for command, expected, label in bash_cases:
         failures += check(label, module.find_bash_search(command, REPO_ROOT), expected)
