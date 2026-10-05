@@ -121,7 +121,7 @@ def main():
          "restoreSessions", "a later -v does not disarm this stage"),
     ]
     for args, expected, label in extract_grep_pattern_cases:
-        failures += check(label, module.extract_grep_pattern(args), expected)
+        failures += check(label, module.extract_grep_pattern("grep", args), expected)
 
     candidate_pattern_cases = [
         ("restoreSessions", True, "bare identifier stays a candidate"),
@@ -204,6 +204,38 @@ def main():
          "a redirection before the flags keeps the count exemption"),
         ("echo 'x; grep -n handleToolCall src/server/tools.ts'", None,
          "a quoted semicolon is not a separator"),
+        ("grep -o handleToolCall src/server/tools.ts", expected_search,
+         "-o is a boolean flag"),
+        ("grep -o '\"provenance\":\"[a-z]*\"' queries.jsonl", None,
+         "-o before a regex leaves nothing to ask"),
+        ("grep -r handleToolCall src/server/tools.ts", expected_search,
+         "-r of grep is the boolean recursive flag"),
+        ("rg -r X handleToolCall src/server/tools.ts", expected_search,
+         "-r of rg takes a value"),
+        ("grep 2>/dev/null -n handleToolCall src/server/tools.ts", expected_search,
+         "a glued redirection before the flags is skipped"),
+        ("grep -n 2>/dev/null handleToolCall src/server/tools.ts", expected_search,
+         "a glued redirection after the flags is skipped"),
+        ("grep -n 2> /dev/null handleToolCall src/server/tools.ts", expected_search,
+         "a redirection and its separate target are skipped"),
+        ("grep -on handleToolCall src/server/tools.ts", expected_search,
+         "bundled -on keeps the pattern"),
+        ("grep '<div' src/viewer/index.html", None,
+         "a quoted pattern starting with < is not a redirection"),
+        ("grep -n '>handleToolCall' src/server/tools.ts", None,
+         "a quoted pattern starting with > is not a redirection"),
+        ("grep -n >| out.txt handleToolCall src/server/tools.ts", None,
+         "a redirection without a descriptor is not skipped"),
+        ("grep -E handleToolCall src/server/tools.ts", expected_search,
+         "-E of grep is a boolean"),
+        ("grep -E 'handleToolCall|DEFAULT_DISABLED_TOOLS' src/server/tools.ts", two_symbols,
+         "-E of grep keeps the ERE alternation"),
+        ("rg -E utf8 handleToolCall src/server/tools.ts", expected_search,
+         "-E of rg takes a value"),
+        ("grep -T handleToolCall src/server/tools.ts", expected_search,
+         "-T of grep is a boolean"),
+        ("rg -T js handleToolCall src/server/tools.ts", expected_search,
+         "-T of rg takes a value"),
     ]
     for command, expected, label in bash_cases:
         failures += check(label, module.find_bash_search(command, REPO_ROOT), expected)

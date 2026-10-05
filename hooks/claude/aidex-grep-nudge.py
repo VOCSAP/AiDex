@@ -188,11 +188,21 @@ VALUE_OPTS = {
     "-D", "--binary-files", "--include", "--exclude", "--exclude-dir",
     "--color", "--colour", "--group-separator", "--label",
     # ripgrep extras
-    "-g", "--glob", "--iglob", "-t", "--type", "-T", "--type-not",
+    "-g", "--glob", "--iglob", "-t", "--type", "--type-not",
     "-M", "--max-columns", "--threads", "-j", "--colors", "--max-depth",
-    "-E", "--encoding", "-r", "--replace", "--sort", "--sortr", "--pre",
-    "--field-context-separator", "--field-match-separator", "-o",
+    "--encoding", "--replace", "--sort", "--sortr", "--pre",
+    "--field-context-separator", "--field-match-separator",
 }
+
+# Value-taking for ripgrep (--replace, --encoding, --type-not), booleans for
+# grep (--recursive, --extended-regexp, --initial-tab).
+RG_VALUE_OPTS = {"-r", "-E", "-T"}
+
+# A shell redirection token: fd digits or `&`, then `>`, `>>` or `<`. Its
+# target is glued (`2>/dev/null`) or is the next token (`2> /dev/null`). The
+# fd prefix is required: a quoted pattern such as '<div' looks the same once
+# split.
+REDIRECT_RE = re.compile(r"^(?:[0-9]+|&)(?:>>?|<)")
 
 # Flags that turn a search into a MEASUREMENT of presence or absence.
 ABSENCE_LONG = {"--count", "--files-with-matches", "--files-without-match",
@@ -623,9 +633,10 @@ def refusal_text(verdicts, residual, source_hint):
     return "\n".join(lines)
 
 
-def extract_grep_pattern(args):
+def extract_grep_pattern(base, args):
     """Given the argv tail after a grep/rg command word, return the search
-    pattern (string) or None. Honours -e/--regexp, skips option values."""
+    pattern (string) or None. Honours -e/--regexp, skips option values and
+    redirections."""
     i = 0
     n = len(args)
     # An INVERTED match is an exclusion filter, never a symbol lookup: the
@@ -653,11 +664,15 @@ def extract_grep_pattern(args):
                 return val
             i += 1
             continue
-        if tok in VALUE_OPTS:
+        if tok in VALUE_OPTS or (tok in RG_VALUE_OPTS and base in ("rg", "ripgrep")):
             i += 2  # skip the option and its value
             continue
         if tok.startswith("-") and tok != "-":
             i += 1  # boolean / bundled flag
+            continue
+        redirect = REDIRECT_RE.match(tok)
+        if redirect:
+            i += 1 if redirect.end() < len(tok) else 2
             continue
         # First bare positional argument is the search pattern.
         return tok
@@ -709,7 +724,7 @@ def find_bash_search(command, cwd):
                     at_command_pos = False
                     i = end
                     continue
-                pattern = extract_grep_pattern(tail)
+                pattern = extract_grep_pattern(base, tail)
                 branches = split_alternation(
                     pattern, alternation_sep(base, tail)
                 )
