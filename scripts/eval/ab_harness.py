@@ -179,9 +179,14 @@ def cmd_run(a):
                 prompt = f"{t['prompt']}\n\n(run id {nonce})"
                 with open(dest, 'w', encoding='utf-8') as fo, \
                         open(out / f'{stem}.err', 'w', encoding='utf-8') as fe:
-                    rc = subprocess.run(build_cmd(prompt, arm, a.model, a.max_budget_usd),
-                                        cwd=t.get('cwd') or a.cwd, stdout=fo, stderr=fe,
-                                        timeout=a.timeout).returncode
+                    # A timeout still writes its meta: without one, report never
+                    # sees the run and a rerun skips the partial stream.
+                    try:
+                        rc = subprocess.run(build_cmd(prompt, arm, a.model, a.max_budget_usd),
+                                            cwd=t.get('cwd') or a.cwd, stdout=fo, stderr=fe,
+                                            timeout=a.timeout).returncode
+                    except subprocess.TimeoutExpired:
+                        rc = 'timeout'
                 (out / f'{stem}.meta.json').write_text(json.dumps(
                     {'task': t['id'], 'arm': arm['name'], 'rep': rep, 'nonce': nonce,
                      'exit': rc}), encoding='utf-8')
