@@ -8,10 +8,9 @@
 
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
-import { minimatch } from 'minimatch';
 
 import { extract } from '../parser/index.js';
-import { DEFAULT_EXCLUDE, readGitignore, shortHash } from './init.js';
+import { createExcludedPathFilter, shortHash } from './init.js';
 import { validateIndex, noIndexError, withDatabase, withProjectDb, cliCommand } from './shared.js';
 import { readCoverage } from '../coverage/rule.js';
 import { invalidateGlobalCache } from './global/global-query.js';
@@ -98,12 +97,7 @@ export function update(params: UpdateParams): UpdateResult {
     }
 
     // Check if file is excluded (build/, node_modules/, .gitignore patterns, etc.)
-    const gitignorePatterns = readGitignore(projectPath);
-    const excludePatterns = [...DEFAULT_EXCLUDE, ...gitignorePatterns];
-    const isExcluded = excludePatterns.some(pattern =>
-        minimatch(relativePath, pattern, { dot: true })
-    );
-    if (isExcluded) {
+    if (createExcludedPathFilter(projectPath)(relativePath)) {
         return {
             success: false,
             file: relativePath,

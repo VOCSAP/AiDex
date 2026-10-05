@@ -11,11 +11,10 @@ import { existsSync, readFileSync } from 'fs';
 import { homedir } from 'os';
 import { join, resolve } from 'path';
 import Database from 'better-sqlite3';
-import { minimatch } from 'minimatch';
 import { createQueries } from '../db/index.js';
 import { openDatabase } from '../db/index.js';
 import { remove, update } from './update.js';
-import { DEFAULT_EXCLUDE, readGitignore, shortHash } from './init.js';
+import { createExcludedPathFilter, shortHash } from './init.js';
 import { validateIndex, noIndexError, withProjectDb, cliCommand } from './shared.js';
 import { PRODUCT_VERSION } from '../constants.js';
 import { checkScheduledTasks, type SchedulerResult } from './global/global-scheduler.js';
@@ -288,19 +287,14 @@ function detectExternalChanges(projectPath: string, queries: ReturnType<typeof c
     const changes: ChangedFile[] = [];
     const projectRoot = resolve(projectPath);
 
-    // Build exclude patterns (same logic as init/update)
-    const gitignorePatterns = readGitignore(projectPath);
-    const excludePatterns = [...DEFAULT_EXCLUDE, ...gitignorePatterns];
+    const isExcluded = createExcludedPathFilter(projectPath);
 
     // Get all indexed files
     const indexedFiles = queries.getAllFiles();
 
     for (const file of indexedFiles) {
         // Skip excluded files - remove them from index silently
-        const isExcluded = excludePatterns.some(pattern =>
-            minimatch(file.path, pattern, { dot: true })
-        );
-        if (isExcluded) {
+        if (isExcluded(file.path)) {
             queries.clearFileData(file.id);
             queries.deleteFile(file.id);
             continue;

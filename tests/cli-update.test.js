@@ -35,6 +35,8 @@ import { jest, describe, test, beforeAll, afterAll, expect } from '@jest/globals
 import Database from 'better-sqlite3';
 
 import { init } from '../build/commands/init.js';
+import { update } from '../build/commands/update.js';
+import { session } from '../build/commands/session.js';
 import { resolveAidexNode, isNativeAbiMismatch, nodeAbiGuardMessage } from './helpers/node-interpreter-guard.js';
 
 jest.setTimeout(60000);
@@ -418,5 +420,83 @@ describe('pure case-only rename', () => {
         const paths = readFilesTable(dir);
         expect(paths).toHaveLength(1);
         expect(paths[0].toLowerCase()).toBe('src/widget.ts');
+    });
+});
+
+// ============================================================
+// 12. Hidden paths: update and session agree with what init enumerates.
+// ============================================================
+
+describe('hidden paths are excluded like init excludes them', () => {
+    test('init never enumerates a file under a dot-directory', async () => {
+        const dir = makeProjectDir();
+        writeProjectFile(dir, 'src/a.ts', SAMPLE_TS('a'));
+        writeProjectFile(dir, '.worktrees/w/src/a.ts', SAMPLE_TS('a'));
+        await seedIndex(dir);
+
+        expect(readFilesTable(dir)).toEqual(['src/a.ts']);
+    });
+
+    test('update refuses a file under a dot-directory and adds nothing', async () => {
+        const dir = makeProjectDir();
+        writeProjectFile(dir, 'src/a.ts', SAMPLE_TS('a'));
+        writeProjectFile(dir, '.worktrees/w/src/a.ts', SAMPLE_TS('a'));
+        await seedIndex(dir);
+
+        const res = update({ path: dir, file: '.worktrees/w/src/a.ts' });
+
+        expect(res.success).toBe(false);
+        expect(res.error).toMatch(/excluded/);
+        expect(readFilesTable(dir)).toEqual(['src/a.ts']);
+    });
+
+    test('update refuses a file whose own name starts with a dot', async () => {
+        const dir = makeProjectDir();
+        writeProjectFile(dir, 'src/a.ts', SAMPLE_TS('a'));
+        writeProjectFile(dir, 'src/.hidden.ts', SAMPLE_TS('hidden'));
+        await seedIndex(dir);
+
+        const res = update({ path: dir, file: 'src/.hidden.ts' });
+
+        expect(res.success).toBe(false);
+        expect(res.error).toMatch(/excluded/);
+        expect(readFilesTable(dir)).toEqual(['src/a.ts']);
+    });
+
+    test('update still accepts a visible file', async () => {
+        const dir = makeProjectDir();
+        writeProjectFile(dir, 'src/a.ts', SAMPLE_TS('a'));
+        await seedIndex(dir);
+        writeProjectFile(dir, 'src/b.ts', SAMPLE_TS('b'));
+
+        const res = update({ path: dir, file: 'src/b.ts' });
+
+        expect(res.success).toBe(true);
+        expect(readFilesTable(dir)).toEqual(['src/a.ts', 'src/b.ts']);
+    });
+
+    test('a new session drops a hidden file already present in the index', async () => {
+        const dir = makeProjectDir();
+        writeProjectFile(dir, 'src/a.ts', SAMPLE_TS('a'));
+        writeProjectFile(dir, '.worktrees/w/src/a.ts', SAMPLE_TS('a'));
+        await seedIndex(dir);
+
+        const db = new Database(dbPathFor(dir));
+        try {
+            db.prepare('INSERT INTO files (path, hash, last_indexed) VALUES (?, ?, ?)')
+                .run('.worktrees/w/src/a.ts', 'stale', Date.now());
+            const expired = (Date.now() - 10 * 60 * 1000).toString();
+            db.prepare('UPDATE metadata SET value = ? WHERE key = ?').run(expired, 'current_session_start');
+            db.prepare('UPDATE metadata SET value = ? WHERE key = ?').run(expired, 'last_session_end');
+        } finally {
+            db.close();
+        }
+        expect(readFilesTable(dir)).toEqual(['.worktrees/w/src/a.ts', 'src/a.ts']);
+
+        const res = session({ path: dir });
+
+        expect(res.success).toBe(true);
+        expect(res.isNewSession).toBe(true);
+        expect(readFilesTable(dir)).toEqual(['src/a.ts']);
     });
 });

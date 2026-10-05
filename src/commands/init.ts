@@ -335,6 +335,23 @@ export function readGitignore(projectPath: string): string[] {
         });
 }
 
+/**
+ * Returns a predicate that is true for every project-relative path init would
+ * never index. A segment starting with '.' counts as excluded because init's
+ * glob runs without `dot` and so never enumerates hidden files or anything
+ * under a hidden directory. `.gitignore` is read once, when the predicate is built.
+ */
+export function createExcludedPathFilter(projectPath: string): (relativePath: string) => boolean {
+    const excludePatterns = [...DEFAULT_EXCLUDE, ...readGitignore(projectPath)];
+    return (relativePath) => {
+        const normalized = relativePath.replace(/\\/g, '/');
+        if (normalized.split('/').some(segment => segment.startsWith('.') && segment !== '.' && segment !== '..')) {
+            return true;
+        }
+        return excludePatterns.some(pattern => minimatch(normalized, pattern, { dot: true }));
+    };
+}
+
 function parseIgnoreFile(filePath: string): string[] {
     if (!existsSync(filePath)) return [];
     const content = readFileSync(filePath, 'utf-8');
