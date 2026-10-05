@@ -39,7 +39,6 @@ Wired in settings.json with matcher "Grep|Bash" so it covers BOTH:
 import json
 import os
 import re
-import shlex
 import subprocess
 import sys
 
@@ -169,6 +168,9 @@ ERE_CMDS = {"egrep", "rg", "ripgrep"}
 
 # Tokens that introduce a new command position (a grep right after one counts).
 CONNECTORS = {"|", "||", "&&", ";", "&", "|&"}
+
+# The connectors that end a whole pipeline, not just one of its stages.
+LIST_SEPARATORS = {"||", "&&", ";", "&"}
 
 # Wrappers that precede a real command without changing "command position".
 WRAPPERS = {"git", "sudo", "env", "time", "nice", "xargs", "command", "builtin",
@@ -400,6 +402,17 @@ def is_proof_of_absence(args):
     return False
 
 
+def pipeline_bounds(tokens, i):
+    """[start, end) of the pipeline holding tokens[i]."""
+    start = i
+    while start > 0 and tokens[start - 1] not in LIST_SEPARATORS:
+        start -= 1
+    end = i
+    while end < len(tokens) and tokens[end] not in LIST_SEPARATORS:
+        end += 1
+    return start, end
+
+
 def pipeline_counts(tokens):
     """Does the pipeline end up counting lines? `... | wc -l` is a proof of
     absence assembled from two commands instead of one flag."""
@@ -407,6 +420,96 @@ def pipeline_counts(tokens):
         if os.path.basename(tok) == "wc" and "-l" in tokens[i + 1:i + 3]:
             return True
     return False
+
+
+def split_command(command):
+    """`shlex.split` in POSIX mode, except that `;`, `&`, `&&`, `|`, `||`,
+    `|&` and newlines outside quotes are tokens of their own even when glued
+    to a word, a newline becoming `;`. None where shlex raises ValueError.
+
+    shlex alone keeps `file.ts;` as one word, hiding the command after it.
+    Its `punctuation_chars` mode also isolates `<`, `>`, `(` and `)`, so
+    `2>/dev/null` before the pattern would read as the pattern `2`.
+    An `&` or `|` right after an unquoted `>` or `<`, and an `&` right before
+    `>`, belong to a redirection (`2>&1`, `>|`, `&>`) and stay in the word.
+    """
+    tokens = []
+    current = []
+    in_token = False
+    prev_redirect = False
+    i = 0
+    n = len(command)
+
+    def flush():
+        nonlocal in_token
+        if in_token:
+            tokens.append("".join(current))
+            current.clear()
+            in_token = False
+
+    while i < n:
+        c = command[i]
+        nxt = command[i + 1] if i + 1 < n else ""
+        redirect = prev_redirect
+        prev_redirect = False
+        if c in " \t\r":
+            flush()
+        elif c in "\n;":
+            flush()
+            tokens.append(";")
+        elif c == "|" and not redirect:
+            flush()
+            if nxt in ("|", "&"):
+                tokens.append("|" + nxt)
+                i += 1
+            else:
+                tokens.append("|")
+        elif c == "&" and not redirect and nxt != ">":
+            flush()
+            if nxt == "&":
+                tokens.append("&&")
+                i += 1
+            else:
+                tokens.append("&")
+        elif c == "'":
+            in_token = True
+            end = command.find("'", i + 1)
+            if end < 0:
+                return None
+            current.append(command[i + 1:end])
+            i = end
+        elif c == '"':
+            in_token = True
+            i += 1
+            while True:
+                if i >= n:
+                    return None
+                ch = command[i]
+                if ch == '"':
+                    break
+                if ch == "\\":
+                    if i + 1 >= n:
+                        return None
+                    i += 1
+                    if command[i] not in '"\\':
+                        current.append("\\")
+                    current.append(command[i])
+                else:
+                    current.append(ch)
+                i += 1
+        elif c == "\\":
+            if not nxt:
+                return None
+            in_token = True
+            current.append(nxt)
+            i += 1
+        else:
+            in_token = True
+            current.append(c)
+            prev_redirect = c in "<>"
+        i += 1
+    flush()
+    return tokens
 
 
 def ask_oracle(pattern, project_dir, target=None):
@@ -570,12 +673,9 @@ def find_bash_search(command, cwd):
     `dir` is where the grep will actually RUN, which is the session cwd only
     until a `cd` says otherwise.
     """
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
+    tokens = split_command(command)
+    if tokens is None:
         return None  # unbalanced quotes etc. -- leave it alone
-
-    counts_lines = pipeline_counts(tokens)
 
     current_dir = cwd
     at_command_pos = True
@@ -603,8 +703,11 @@ def find_bash_search(command, cwd):
                 continue
             if base in GREP_CMDS:
                 tail = tokens[i + 1:]
-                if is_proof_of_absence(tail) or counts_lines:
-                    return None
+                start, end = pipeline_bounds(tokens, i)
+                if is_proof_of_absence(tail) or pipeline_counts(tokens[start:end]):
+                    at_command_pos = False
+                    i = end
+                    continue
                 pattern = extract_grep_pattern(tail)
                 branches = split_alternation(
                     pattern, alternation_sep(base, tail)

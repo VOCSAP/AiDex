@@ -178,6 +178,31 @@ def main():
         }, "cd changes the search directory"),
         ("grep -n handleToolCall src/server/tools.ts | grep -v test", expected_search,
          "a later -v stage does not disarm the first"),
+        ("echo hi; grep -n handleToolCall src/server/tools.ts", expected_search,
+         "a semicolon glued to the previous word separates commands"),
+        ('echo "hi"&& grep -n handleToolCall src/server/tools.ts', expected_search,
+         "an && glued to a quoted word separates commands"),
+        ("echo hi\ngrep -n handleToolCall src/server/tools.ts", expected_search,
+         "a newline separates commands"),
+        ("cd src; grep -n handleToolCall server/tools.ts", {
+            "patterns": ["handleToolCall"], "residual": [], "dir": os.path.join(REPO_ROOT, "src")
+        }, "a cd ended by a glued semicolon changes the search directory"),
+        ("grep -c handleToolCall src/server/tools.ts ; grep -n handleToolCall src/server/tools.ts",
+         expected_search, "a proof of absence does not exempt the next command"),
+        ("grep -c handleToolCall src/server/tools.ts; grep -n handleToolCall src/server/tools.ts",
+         expected_search, "a proof of absence glued to its separator does not exempt the next command"),
+        ("echo a | wc -l; grep -n handleToolCall src/server/tools.ts", expected_search,
+         "a line count in another pipeline does not exempt the search"),
+        ("grep -n handleToolCall src/server/tools.ts | wc -l; echo done", None,
+         "a line count still exempts its own pipeline"),
+        ("grep -n handleToolCall src/server/tools.ts 2>/dev/null | wc -l", None,
+         "a redirection before the line count keeps the exemption"),
+        ("grep -n handleToolCall src/server/tools.ts 2>&1 | wc -l", None,
+         "the ampersand of a descriptor duplication is not a separator"),
+        ("grep 2>/dev/null -c handleToolCall src/server/tools.ts", None,
+         "a redirection before the flags keeps the count exemption"),
+        ("echo 'x; grep -n handleToolCall src/server/tools.ts'", None,
+         "a quoted semicolon is not a separator"),
     ]
     for command, expected, label in bash_cases:
         failures += check(label, module.find_bash_search(command, REPO_ROOT), expected)
