@@ -616,8 +616,9 @@ def refusal_text(verdicts, residual, source_hint):
             + " -- re-run the grep with those alone."
         )
     lines.append(
-        "To check presence or absence, Grep with output_mode count or "
-        "files_with_matches (grep -c or -l via Bash) is never blocked."
+        "Try aidex_query first. An empty result is not proof of absence: "
+        "Grep with output_mode count or files_with_matches "
+        "(grep -c or -l via Bash) is never blocked."
     )
     return "\n".join(lines)
 

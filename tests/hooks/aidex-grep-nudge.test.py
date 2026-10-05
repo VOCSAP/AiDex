@@ -20,7 +20,8 @@ spec.loader.exec_module(module)
 SYMBOL = {"dimension": "symbol", "schemaVersion": "1.5", "rule": {"id": "strict", "version": 2}}
 LITERAL = dict(SYMBOL, dimension="literal")
 GREP_LINE = (
-    "To check presence or absence, Grep with output_mode count or files_with_matches "
+    "Try aidex_query first. An empty result is not proof of absence: "
+    "Grep with output_mode count or files_with_matches "
     "(grep -c or -l via Bash) is never blocked."
 )
 
