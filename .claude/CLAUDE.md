@@ -192,6 +192,20 @@ Chacune a ete fermee par une mesure, pas par une opinion.
    `kinds: ["literal"]` rend deja les routes et leur handler (18 resultats pour
    `/roadmap/upsert`, 30 pour `/approval/list` sur koryphaios). Reouverture
    uniquement si une route cherchee n'est PAS rendue par la dimension `literal`.
+11. **Renvoyer le corps de methode pour supprimer le `Read` qui suit une
+   recherche** (carte `93b4ace0`, `wont`). Mesure le 2026-10-05 sur la trace
+   (2584 sessions principales). Le besoin existe : 54 pourcent des `aidex_query`
+   sont suivis d'un `Read` partiel d'un fichier rendu. Mais la moitie de ces
+   `Read` visent un hit hors methode (1209 sur 2505), ou aucun corps n'aide.
+   Sur les autres, au plafond optimal de 2000 octets, le gain borne haute vaut
+   environ 60 tokens par session, contre 22 a 35 tokens de schema `include_body`
+   payes a CHAQUE session, et il suppose que l'agent ne demande le corps que
+   lorsqu'il allait lire : chaque demande inutile coute 1311 octets en moyenne,
+   le gain s'annule a 662 demandes inutiles sur 3431 requetes non suivies de
+   `Read`. La variante sans parametre (corps joint d'office sur un seul hit) ne
+   touche que 102 requetes. **Condition de reouverture** : une mesure de la
+   precision de choix de l'agent, impossible hors ligne tant que le harnais A/B
+   n'est pas viable.
 
 ### Pieges d'environnement, a recopier dans tout brief d'execution
 
