@@ -1,7 +1,7 @@
 # Issue tracker: shared roadmap (claude-peers)
 
 Issues and specs for this repo live in the shared roadmap backlog exposed by the
-`claude-peers` MCP server, not in GitHub Issues (disabled on this repository).
+`kory-roadmap` MCP server, not in GitHub Issues (disabled on this repository).
 The backlog is scoped to this repository and shared across every agent session
 working on it, now and later.
 

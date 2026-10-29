@@ -361,7 +361,7 @@ Hardening candidat (npm audit fix sur `ws`/`simple-git`, overrides `glob`/`rimra
 
 ### Issue tracker
 
-Les issues vivent dans le backlog roadmap partage `claude-peers` (outils `roadmap_*`), pas dans GitHub Issues, desactivees sur ce depot. Voir `docs/agents/issue-tracker.md`.
+Les issues vivent dans le backlog roadmap partage `claude-peers` (outils `roadmap_*` du serveur MCP `kory-roadmap`), pas dans GitHub Issues, desactivees sur ce depot. Voir `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
