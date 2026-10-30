@@ -4,7 +4,7 @@
  */
 
 import { withProjectDb } from './shared.js';
-import type { Queries } from '../db/queries.js';
+import type { MethodRow, Queries } from '../db/queries.js';
 import { globToRegex } from '../utils/glob.js';
 
 // ============================================================
@@ -26,11 +26,13 @@ export interface SignatureResult {
         name: string;
         kind: string;
         lineNumber: number;
+        endLine: number | null;
     }>;
     methods: Array<{
         name: string;
         prototype: string;
         lineNumber: number;
+        endLine: number | null;
         visibility: string | null;
         isStatic: boolean;
         isAsync: boolean;
@@ -57,6 +59,10 @@ export interface SignaturesResult {
 // ============================================================
 // Implementation
 // ============================================================
+
+function methodEndLine(m: MethodRow): number | null {
+    return m.body_lines ? m.line_number + m.body_lines - 1 : null;
+}
 
 /**
  * Get signature for a single file
@@ -97,11 +103,13 @@ export function signature(params: SignatureParams): SignatureResult {
                         name: t.name,
                         kind: t.kind,
                         lineNumber: t.line_number,
+                        endLine: t.end_line ?? null,
                     })),
                     methods: methodRows.map(m => ({
                         name: m.name,
                         prototype: m.prototype,
                         lineNumber: m.line_number,
+                        endLine: methodEndLine(m),
                         visibility: m.visibility,
                         isStatic: m.is_static === 1,
                         isAsync: m.is_async === 1,
@@ -150,11 +158,13 @@ function getSignatureFromQueries(queries: Queries, file: string): SignatureResul
             name: t.name,
             kind: t.kind,
             lineNumber: t.line_number,
+            endLine: t.end_line ?? null,
         })),
         methods: methodRows.map(m => ({
             name: m.name,
             prototype: m.prototype,
             lineNumber: m.line_number,
+            endLine: methodEndLine(m),
             visibility: m.visibility,
             isStatic: m.is_static === 1,
             isAsync: m.is_async === 1,

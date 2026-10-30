@@ -9,25 +9,7 @@
 import type { Provider } from './providers.js';
 import type { SafeCandidate } from './safety.js';
 import { assertNoLeak } from './safety.js';
-
-const RERANK_SYSTEM_FULL = `You rerank code-search results by relevance to the user's query.
-You see snippets, names, paths.
-Output STRICT JSON: {"order": ["id1", "id2", ...]}.
-Rules:
-- Best match first.
-- Include only the ids that are actually relevant — drop noise.
-- IDs are exactly the strings provided in the input items.
-- No commentary.`;
-
-const RERANK_SYSTEM_METADATA = `You rerank code-search results by relevance using ONLY metadata.
-You will NOT see source code, doc bodies, or task descriptions — by user policy.
-You see: kind, type, name, anchor, path, line.
-Output STRICT JSON: {"order": ["id1", "id2", ...]}.
-Rules:
-- Lean on names, anchors, and paths to judge relevance.
-- Best match first; drop irrelevant items.
-- IDs are exactly the strings provided in the input items.
-- No commentary.`;
+import { loadLlmPrompts } from './prompts.js';
 
 export async function rerankCandidates(
     provider: Provider,
@@ -52,8 +34,9 @@ export async function rerankCandidates(
     const userMsg = JSON.stringify({ query, items });
 
     try {
+        const { prompts } = loadLlmPrompts();
         const res = await provider.call({
-            system: sendCode ? RERANK_SYSTEM_FULL : RERANK_SYSTEM_METADATA,
+            system: sendCode ? prompts.rerankSystemFull : prompts.rerankSystemMetadata,
             user: userMsg,
             // Output tokens proportional to candidate count.
             maxTokens: Math.min(2000, 50 + candidates.length * 12),

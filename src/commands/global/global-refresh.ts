@@ -6,7 +6,7 @@
  */
 
 import { existsSync } from 'fs';
-import { join } from 'path';
+import { join, isAbsolute } from 'path';
 import { INDEX_DIR } from '../../constants.js';
 import { readProjectStats } from '../../db/global-database.js';
 import { normalizePath } from '../shared.js';
@@ -96,6 +96,19 @@ export function globalRefresh(params: GlobalRefreshParams): GlobalRefreshResult 
             projects = [...seen.values()];
 
             for (const project of projects) {
+                // A relative path in a registry is not a location, it is a
+                // location plus a forgotten cwd. `existsSync('.')` is true from
+                // anywhere, so such an entry would survive every refresh while
+                // pointing at whatever directory the caller happened to be in.
+                // One reached this machine, as a project named '.' shadowing the
+                // real one, before init started resolving its input.
+                if (!isAbsolute(project.path)) {
+                    globalDb.unregisterProject(project.path);
+                    removedPaths.push(project.path);
+                    removed++;
+                    continue;
+                }
+
                 const dbPath = join(project.path, INDEX_DIR, 'index.db');
 
                 if (!existsSync(dbPath)) {

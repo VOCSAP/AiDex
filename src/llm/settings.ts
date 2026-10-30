@@ -20,14 +20,17 @@ import {
     type LlmBackend,
     type LlmConfigFile,
     type LlmCreds,
+    MAX_EMBEDDING_TIMEOUT_MINUTES,
     isEnvVarName,
     isLlmEnabled,
     llmConfigPath,
     readLlmConfigFile,
+    resolveEmbeddingTimeoutMinutes,
     resolveLlmCreds,
     writeLlmConfigFile,
 } from './config.js';
 import { createProvider } from './providers.js';
+import { llmPromptsPath, loadLlmPrompts } from './prompts.js';
 import {
     countProjectEmbeddings,
     ensureEmbeddingsSchema,
@@ -82,7 +85,7 @@ export const PROVIDER_OPTIONS: ProviderOption[] = [
         backend: 'ollama',
         label: 'Ollama (local, no key)',
         defaultEndpoint: 'http://localhost:11434',
-        suggestedModels: ['llama3.1:8b', 'llama3.2:3b', 'qwen2.5:7b', 'mistral:7b'],
+        suggestedModels: ['llama3.1:8b', 'llama3.2:3b', 'qwen3:8b', 'qwen2.5:7b', 'mistral:7b'],
         needsKey: false,
     },
     {
@@ -122,6 +125,7 @@ export interface EmbeddingsSettings {
     modelCached: boolean;
     /** Available models from the registry. */
     availableModels: Array<{ id: string; description: string; dim: number; license: string }>;
+    timeoutMinutes: number;
 }
 
 export interface LlmSettings {
@@ -149,6 +153,21 @@ export interface LlmSettings {
     };
     /** Per-project privacy switch. */
     sendCode: boolean;
+    /** Dedicated cross-encoder reranker (stored in ~/.aidex/llm.json). */
+    reranker: {
+        enabled: boolean;
+        endpoint: string | null;
+        model: string | null;
+        hasKey: boolean;
+    };
+    /** System-prompt overrides from ~/.aidex/llm-prompts.json. */
+    prompts: {
+        path: string;
+        /** File keys (snake_case) that override a default prompt. */
+        overridden: string[];
+        /** True when the file exists but is not valid JSON — defaults apply. */
+        parseError: boolean;
+    };
     providers: ProviderOption[];
 }
 
@@ -191,6 +210,7 @@ export async function getSettings(projectPath: string): Promise<ProjectSettings>
                 dim: m.dim,
                 license: m.license,
             })),
+            timeoutMinutes: resolveEmbeddingTimeoutMinutes(file),
         },
         llm: {
             enabled: isLlmEnabled(),
@@ -214,6 +234,20 @@ export async function getSettings(projectPath: string): Promise<ProjectSettings>
                 keyEnvName: file.api_key_env ?? null,
             },
             sendCode,
+            reranker: {
+                enabled: file.reranker?.enabled === true,
+                endpoint: file.reranker?.endpoint ?? null,
+                model: file.reranker?.model ?? null,
+                hasKey: !!file.reranker?.api_key,
+            },
+            prompts: (() => {
+                const loaded = loadLlmPrompts();
+                return {
+                    path: llmPromptsPath(),
+                    overridden: loaded.overridden,
+                    parseError: loaded.parseError,
+                };
+            })(),
             providers: PROVIDER_OPTIONS,
         },
         lastSeenVersion: lastSeen,
@@ -228,12 +262,18 @@ export async function getSettings(projectPath: string): Promise<ProjectSettings>
 export interface SetSettingsPayload {
     enableEmbeddings?: boolean;
     embeddingModel?: string;
+    embeddingTimeoutMinutes?: number;
     /** Master switch for the LLM layer. When false, no provider is resolved. */
     llmEnabled?: boolean;
     llmEndpoint?: string | null;
     llmModel?: string | null;
     llmApiKey?: string | null;
     llmSendCode?: boolean;
+    /** Dedicated reranker: toggle + endpoint/model/key (null clears a field). */
+    rerankerEnabled?: boolean;
+    rerankerEndpoint?: string | null;
+    rerankerModel?: string | null;
+    rerankerApiKey?: string | null;
 }
 
 const MAX_STRING_LEN = 2048;
@@ -268,6 +308,12 @@ export function validateSetSettingsPayload(raw: unknown): SetSettingsPayload {
         if (src.embeddingModel.length > MAX_MODEL_LEN) throw new Error(`embeddingModel exceeds max length ${MAX_MODEL_LEN}`);
         out.embeddingModel = src.embeddingModel;
     }
+    if ('embeddingTimeoutMinutes' in src) {
+        if (typeof src.embeddingTimeoutMinutes !== 'number' || !Number.isFinite(src.embeddingTimeoutMinutes) || src.embeddingTimeoutMinutes <= 0) {
+            throw new Error('embeddingTimeoutMinutes must be a positive number');
+        }
+        out.embeddingTimeoutMinutes = Math.min(src.embeddingTimeoutMinutes, MAX_EMBEDDING_TIMEOUT_MINUTES);
+    }
     if ('llmEndpoint' in src) {
         out.llmEndpoint = checkStr('llmEndpoint', src.llmEndpoint, MAX_STRING_LEN);
     }
@@ -285,6 +331,19 @@ export function validateSetSettingsPayload(raw: unknown): SetSettingsPayload {
     if ('llmEnabled' in src) {
         if (typeof src.llmEnabled !== 'boolean') throw new Error('llmEnabled must be boolean');
         out.llmEnabled = src.llmEnabled;
+    }
+    if ('rerankerEnabled' in src) {
+        if (typeof src.rerankerEnabled !== 'boolean') throw new Error('rerankerEnabled must be boolean');
+        out.rerankerEnabled = src.rerankerEnabled;
+    }
+    if ('rerankerEndpoint' in src) {
+        out.rerankerEndpoint = checkStr('rerankerEndpoint', src.rerankerEndpoint, MAX_STRING_LEN);
+    }
+    if ('rerankerModel' in src) {
+        out.rerankerModel = checkStr('rerankerModel', src.rerankerModel, MAX_MODEL_LEN);
+    }
+    if ('rerankerApiKey' in src) {
+        out.rerankerApiKey = checkStr('rerankerApiKey', src.rerankerApiKey, MAX_API_KEY_LEN);
     }
 
     return out;
@@ -305,13 +364,21 @@ export async function setSettings(
     try {
         // 1. Update LLM config file (~/.aidex/llm.json) — only fields explicitly given.
         if (
+            payload.embeddingTimeoutMinutes !== undefined ||
             payload.llmEnabled !== undefined ||
             payload.llmEndpoint !== undefined ||
             payload.llmModel !== undefined ||
-            payload.llmApiKey !== undefined
+            payload.llmApiKey !== undefined ||
+            payload.rerankerEnabled !== undefined ||
+            payload.rerankerEndpoint !== undefined ||
+            payload.rerankerModel !== undefined ||
+            payload.rerankerApiKey !== undefined
         ) {
             const current = readLlmConfigFile() ?? {};
             const next = { ...current };
+            if (payload.embeddingTimeoutMinutes !== undefined) {
+                next.embedding_timeout_minutes = payload.embeddingTimeoutMinutes;
+            }
             if (payload.llmEnabled !== undefined) {
                 next.enabled = payload.llmEnabled;
             }
@@ -337,12 +404,41 @@ export async function setSettings(
                 }
             }
 
+            if (
+                payload.rerankerEnabled !== undefined ||
+                payload.rerankerEndpoint !== undefined ||
+                payload.rerankerModel !== undefined ||
+                payload.rerankerApiKey !== undefined
+            ) {
+                const reranker = { ...(next.reranker ?? {}) };
+                if (payload.rerankerEnabled !== undefined) {
+                    reranker.enabled = payload.rerankerEnabled;
+                }
+                if (payload.rerankerEndpoint !== undefined) {
+                    if (payload.rerankerEndpoint) reranker.endpoint = payload.rerankerEndpoint;
+                    else delete reranker.endpoint;
+                }
+                if (payload.rerankerModel !== undefined) {
+                    if (payload.rerankerModel) reranker.model = payload.rerankerModel;
+                    else delete reranker.model;
+                }
+                if (payload.rerankerApiKey !== undefined) {
+                    const trimmed = payload.rerankerApiKey?.trim() ?? '';
+                    if (trimmed) reranker.api_key = trimmed;
+                    else delete reranker.api_key;
+                }
+                next.reranker = reranker;
+            }
+
             // Validate ONLY when LLM layer is on. Off means the user wants no
             // provider resolved at all — no key required.
             if (next.enabled !== false) {
                 const validation = validateLlmConfigKey(next);
                 if (!validation.ok) {
                     return { success: false, error: validation.error };
+                }
+                if (next.reranker?.enabled === true && !next.reranker.endpoint?.trim()) {
+                    return { success: false, error: 'Dedicated reranker is enabled but has no endpoint URL' };
                 }
             }
 

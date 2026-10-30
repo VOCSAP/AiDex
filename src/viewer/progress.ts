@@ -9,10 +9,12 @@
 
 import express from 'express';
 import { createServer, type Server } from 'http';
+import type { AddressInfo } from 'net';
 import { exec } from 'child_process';
 import type { Response } from 'express';
 
 const PROGRESS_PORT = 3334;
+const PROGRESS_HOST = '127.0.0.1';
 
 let progressServer: Server | null = null;
 let sseClients: Set<Response> = new Set();
@@ -28,8 +30,9 @@ export interface ProgressEvent {
 /**
  * Start the progress server and open browser
  */
-export function startProgress(title: string): void {
+export function startProgress(title: string, options: { port?: number; openBrowser?: boolean } = {}): void {
     if (progressServer) return;  // Already running
+    const port = options.port ?? PROGRESS_PORT;
 
     const app = express();
 
@@ -52,11 +55,19 @@ export function startProgress(title: string): void {
     });
 
     progressServer = createServer(app);
-    progressServer.listen(PROGRESS_PORT, '127.0.0.1', () => {
-        const url = `http://localhost:${PROGRESS_PORT}`;
-        console.error(`[Progress] Server started at ${url}`);
 
-        // Open browser
+    progressServer.on('error', (err: NodeJS.ErrnoException) => {
+        progressServer = null;
+        const reason = err.code === 'EADDRINUSE' ? `port ${port} is already in use` : err.message;
+        console.error(`[Progress] Server not started (${reason}), progress UI disabled`);
+    });
+
+    progressServer.listen(port, PROGRESS_HOST, () => {
+        const boundPort = (progressServer?.address() as AddressInfo | null)?.port ?? port;
+        const url = `http://${PROGRESS_HOST}:${boundPort}`;
+        console.error(`[Progress] Server started at ${url}`);
+        if (options.openBrowser === false) return;
+
         const cmd = process.platform === 'win32' ? `start ${url}`
             : process.platform === 'darwin' ? `open ${url}`
             : `xdg-open ${url}`;
@@ -105,7 +116,8 @@ export function stopProgress(summary?: string): void {
  * Check if progress server is running
  */
 export function isProgressRunning(): boolean {
-    return progressServer !== null;
+    // listen() fails asynchronously: a server object exists before the port is actually bound.
+    return progressServer?.listening ?? false;
 }
 
 // ============================================================

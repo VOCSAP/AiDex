@@ -50,6 +50,19 @@ AiDex is an MCP server that gives AI coding assistants a memory, semantic search
 | **Screenshots** | `screenshot`, `windows` | Cross-platform screen capture with LLM optimization — scale + color reduction saves up to 95% tokens |
 | **Viewer** | `viewer` | Interactive browser UI with file tree, signatures, tasks, logs, search, and live reload |
 
+> **Fork default: 12 of these 33 tools are advertised.** The `tools/list` payload lands in the context of
+> every session, so a tool nobody calls is a permanent tax. Measured on 1923 Claude Code transcripts
+> (70 projects, 3941 real calls), 11 tools carried 38 percent of the ~10800-token payload for 5 calls in
+> total, and are dropped from the advertised list: `task`, `tasks`, `log`, `note`, `describe`, `link`,
+> `unlink`, `links`, `global_query`, `global_signatures`, `global_guideline`. Ten index-administration
+> and session tools follow, replaced by a CLI subcommand where one exists: `init`, `global_init`, `coverage`,
+> `settings`, `global_status`, `scan`, `global_refresh`, `viewer`, `remove`, `session`. All of them stay fully implemented
+> and still answer if a client invokes them by name.
+>
+> Set `AIDEX_TOOLS_DISABLE` in the MCP server config to change this. `none` or an empty value advertises
+> all 33; an explicit comma-separated list replaces the default set. The `aidex_note`, `aidex_task` and
+> `aidex_global_query` examples below need one of those.
+
 **14 languages** — C#, TypeScript, JavaScript, Rust, Python, C, C++, Java, Go, PHP, Ruby, HCL/Terraform, Kotlin, Swift — plus Astro frontmatter
 
 <details>
@@ -139,7 +152,9 @@ aidex_search({ query: "how do we batch requests to the LLM", path: "." })
 aidex_search({ query: "retry with backoff", scope: "all" })  // across every embedded project
 ```
 
-Or use the **Settings tab** in the Viewer (`aidex_settings({ path: ".", open: true })`) — toggles for embeddings, LLM provider, model, and the privacy switch.
+Or use the **Settings tab** in the Viewer (`aidex_settings({ path: ".", open: true })`) -- toggles for embeddings, LLM provider, model, the privacy switch, and the embedding worker timeout.
+
+Set `embedding_timeout_minutes` in `~/.aidex/llm.json` to a positive finite number of minutes. The default is `10`; missing, non-numeric, zero, negative, or non-finite values fall back to `10`. Values above the Node timer maximum of `2,147,483,647` milliseconds (about `35,791.394` minutes) are clamped to that maximum.
 
 ### Optional LLM layer
 
@@ -325,131 +340,34 @@ To re-run setup manually: `aidex setup` | To unregister: `aidex unsetup` | To sk
 
 ### 3. Make your AI actually use it
 
-Add to your AI's instructions (e.g., `~/.claude/CLAUDE.md` for Claude Code, or the equivalent for your AI client). This tells the AI **when and how** to use AiDex instead of grepping:
+`aidex setup` (step 1) already installs this automatically into your AI's instructions file (e.g. `~/.claude/CLAUDE.md`). To copy it manually, here is the exact block AiDex installs (`CLAUDE_MD_BLOCK` in `src/commands/setup.ts`):
 
 ```markdown
-## AiDex - Persistent Code Index (MCP Server)
+<!-- AIDEX-START -->
+## AiDex - Persistent Code Index
 
-AiDex provides fast, precise code search through a pre-built index.
-**Always prefer AiDex over Grep/Glob for code searches.**
+In a project that has a `.aidex/` directory, search code with AiDex instead of Grep/Glob/Read:
+- Known identifier: `aidex_query term="X"` (`mode="contains"`, `modified_since="2h"`, `file_filter="src/**"`)
+- File structure with line ranges: `aidex_signature file="Y"`, then Read only that range; many files: `aidex_signatures pattern="src/**"`
+- Intent without a known name: `aidex_search query="..."`
+- Files importing a JS/TS file: `aidex_edges`
+- Overview: `aidex_summary`, `aidex_tree`, `aidex_files`, `aidex_status`
+- After editing a file: `aidex_update`
+- Screenshots: `aidex_screenshot` (start with `scale: 0.5, colors: 2`); window titles: `aidex_windows`
 
-### REQUIRED: Before using Grep/Glob/Read for code searches
+Grep and Read stay fine for config, logs and free text.
 
-```
-Do I want to search code?
-├── .aidex/ exists    → STOP! Use AiDex instead
-├── .aidex/ missing   → run aidex_init (don't ask), THEN use AiDex
-└── Config/Logs/Text  → Grep/Read is fine
-```
-
-**NEVER do this when .aidex/ exists:**
-- ❌ `Grep pattern="functionName"` → ✅ `aidex_query term="functionName"`
-- ❌ `Grep pattern="class.*Name"` → ✅ `aidex_query term="Name" mode="contains"`
-- ❌ `Read file.cs` to see methods → ✅ `aidex_signature file="file.cs"`
-- ❌ `Glob pattern="**/*.cs"` + Read → ✅ `aidex_signatures pattern="**/*.cs"`
-
-### Session-Start Rule (REQUIRED — every session, no exceptions)
-
-1. Call `aidex_session({ path: "<project>" })` — detects external changes, auto-reindexes
-2. If `.aidex/` does NOT exist → run `aidex_init` automatically (don't ask)
-3. If a session note exists → **show it to the user** before continuing
-4. **Before ending a session:** always leave a note about what to do next
-
-### Question → Right Tool
-
-| Question | Tool |
-|----------|------|
-| "Where is X defined?" | `aidex_query term="X"` |
-| "Find anything containing X" | `aidex_query term="X" mode="contains"` |
-| "All functions starting with X" | `aidex_query term="X" mode="starts_with"` |
-| "What methods does file Y have?" | `aidex_signature file="Y"` |
-| "Explore all files in src/" | `aidex_signatures pattern="src/**"` |
-| "Project overview" | `aidex_summary` + `aidex_tree` |
-| "What changed recently?" | `aidex_query term="X" modified_since="2h"` |
-| "What files changed today?" | `aidex_files path="." modified_since="8h"` |
-| "Have I ever written X?" | `aidex_global_query term="X" mode="contains"` |
-| "Which project has class Y?" | `aidex_global_signatures term="Y" kind="class"` |
-| "All indexed projects?" | `aidex_global_status` |
-
-### Search Modes
-
-- **`exact`** (default): Finds only the exact identifier — `log` won't match `catalog`
-- **`contains`**: Finds identifiers containing the term — `render` matches `preRenderSetup`
-- **`starts_with`**: Finds identifiers starting with the term — `Update` matches `UpdatePlayer`, `UpdateUI`
-
-### All Tools (30)
-
-| Category | Tools | Purpose |
-|----------|-------|---------|
-| Search & Index | `aidex_init`, `aidex_query`, `aidex_update`, `aidex_remove`, `aidex_status` | Index project, search identifiers (exact/contains/starts_with), time filter |
-| Signatures | `aidex_signature`, `aidex_signatures` | Get classes + methods without reading files |
-| Overview | `aidex_summary`, `aidex_tree`, `aidex_describe`, `aidex_files` | Entry points, file tree, file listing by type |
-| Cross-Project | `aidex_link`, `aidex_unlink`, `aidex_links`, `aidex_scan` | Link dependencies, discover projects |
-| Global Search | `aidex_global_init`, `aidex_global_query`, `aidex_global_signatures`, `aidex_global_status`, `aidex_global_refresh` | Search across ALL projects |
-| Guidelines | `aidex_global_guideline` | Persistent AI instructions & conventions (key-value, global) |
-| Sessions | `aidex_session`, `aidex_note` | Track sessions, leave notes (with searchable history) |
-| Tasks | `aidex_task`, `aidex_tasks` | Built-in backlog with priorities, tags, summaries, auto-logged history, scheduled/recurring tasks |
-| Log Hub | `aidex_log` | Universal log receiver — any program sends logs via HTTP, AI queries them, live in Viewer |
-| Screenshots | `aidex_screenshot`, `aidex_windows` | Screen capture with LLM optimization (scale + color reduction, no index needed) |
-| Viewer | `aidex_viewer` | Interactive browser UI with file tree, signatures, tasks, and live logs |
-
-**14 languages:** C#, TypeScript, JavaScript, Rust, Python, C, C++, Java, Go, PHP, Ruby, HCL/Terraform, Kotlin, Swift — plus Astro frontmatter
-
-### Session Notes
-
-Leave notes for the next session — they persist in the database:
-```
-aidex_note({ path: ".", note: "Test the fix after restart" })        # Write
-aidex_note({ path: ".", note: "Also check edge cases", append: true }) # Append
-aidex_note({ path: "." })                                              # Read
-aidex_note({ path: ".", search: "parser" })                            # Search history
-aidex_note({ path: ".", clear: true })                                 # Clear
-```
-- **Before ending a session:** automatically leave a note about next steps
-- **User says "remember for next session: ..."** → write it immediately
-
-### Task Backlog
-
-Track TODOs, bugs, and features right next to your code index:
-```
-aidex_task({ path: ".", action: "create", title: "Fix bug", priority: 1, tags: "bug" })
-aidex_task({ path: ".", action: "update", id: 1, status: "done" })
-aidex_task({ path: ".", action: "log", id: 1, note: "Root cause found" })
-aidex_tasks({ path: ".", status: "active" })
-
-# Scheduled & recurring tasks
-aidex_task({ path: ".", action: "create", title: "Check PR status", due: "3d", interval: "3d", task_action: "gh pr list" })
-```
-Priority: 1=high, 2=medium, 3=low | Status: `backlog → active → done | cancelled`
-
-### Global Search (across all projects)
-
-```
-aidex_global_init({ path: "/path/to/all/repos" })                     # Scan & register
-aidex_global_init({ path: "...", index_unindexed: true })              # + auto-index small projects
-aidex_global_query({ term: "TransparentWindow", mode: "contains" })   # Search everywhere
-aidex_global_signatures({ term: "Render", kind: "method" })           # Find methods everywhere
-aidex_global_status({ sort: "recent" })                                # List all projects
+`aidex` is the AiDex command-line interface; it covers the rest:
+- No `.aidex/` yet: `aidex init <path>`
+- Session start (external changes, session note): `aidex session <path>`
+- Drop a file from the index: `aidex remove <path> <file>`
+- All projects: `aidex global-init <path>`, `aidex global-status`, `aidex global-refresh`
+- Viewer and settings: `aidex viewer <path>`, `aidex settings <path> --open`
+- Every subcommand lists its options with `--help`, except `can`, which reads it as the pattern.
+<!-- AIDEX-END -->
 ```
 
-### Screenshots
-
-```
-aidex_screenshot()                                             # Full screen
-aidex_screenshot({ mode: "active_window" })                    # Active window
-aidex_screenshot({ mode: "window", window_title: "VS Code" }) # Specific window
-aidex_screenshot({ scale: 0.5, colors: 2 })                   # B&W, half size (ideal for LLM)
-aidex_screenshot({ colors: 16 })                               # 16 colors (UI readable)
-aidex_windows({ filter: "chrome" })                            # Find window titles
-```
-No index needed. Returns file path → use `Read` to view immediately.
-
-**LLM optimization strategy:** Always start with aggressive settings, then retry if unreadable:
-1. First try: `scale: 0.5, colors: 2` (B&W, half size — smallest possible)
-2. If unreadable: retry with `colors: 16` (adds shading for UI elements)
-3. If still unclear: `scale: 0.75` or omit `colors` for full quality
-4. **Remember** what works for each window/app during the session — don't retry every time.
-```
+This block only names the 12 tools advertised by default (see "What's Inside" above). The other 21 tools -- `aidex_note`, `aidex_task`/`aidex_tasks`, `aidex_global_query`, `aidex_global_signatures`, `aidex_global_guideline`, `aidex_log`, `aidex_describe`, `aidex_link`/`aidex_unlink`/`aidex_links`, `aidex_coverage` among them -- still answer when an AI calls them by name; see "Fork changes: CLI subcommands replace admin tools" further down to change what gets advertised.
 
 ### 4. Index your project
 
@@ -462,10 +380,13 @@ aidex_init({ path: "/path/to/your/project" })
 
 ## Available Tools
 
+> This fork's `tools/list` advertises only 12 of the tools below by default (see "What's Inside" above). The rest still answer when called by name, or can be re-advertised via `AIDEX_TOOLS_DISABLE`; ten of them also have a CLI subcommand -- see "Fork changes: CLI subcommands replace admin tools" under CLI Usage.
+
 | Tool | Description |
 |------|-------------|
 | `aidex_init` | Index a project (creates `.aidex/`) |
 | `aidex_query` | Search by term (exact/contains/starts_with) |
+| `aidex_edges` | Query syntax-derived candidate imports and direct calls |
 | `aidex_signature` | Get one file's classes + methods |
 | `aidex_signatures` | Get signatures for multiple files (glob) |
 | `aidex_update` | Re-index a single changed file |
@@ -527,6 +448,8 @@ Use `modified_since` to find files changed in this session - perfect for *"What 
 
 ## Session Notes
 
+`aidex_note` is not advertised by default in this fork and has no CLI form (see "Fork changes" under CLI Usage) -- call it by name, or set `AIDEX_TOOLS_DISABLE` to advertise it.
+
 Leave reminders for the next session - no more losing context between chats:
 
 ```
@@ -559,6 +482,8 @@ aidex_note({ path: ".", note: "New focus", summary: "Previous session: finished 
 Notes are stored in the SQLite database (`.aidex/index.db`) and persist indefinitely.
 
 ## Task Backlog
+
+`aidex_task` and `aidex_tasks` are not advertised by default in this fork and have no CLI form (see "Fork changes" under CLI Usage) -- call them by name, or set `AIDEX_TOOLS_DISABLE` to advertise them.
 
 Keep your project tasks right next to your code index - no Jira, no Trello, no context switching:
 
@@ -604,6 +529,8 @@ Your AI assistant can create tasks while working (*"found a bug in the parser, a
 
 Search across ALL your indexed projects at once. Perfect for *"Have I ever written a transparent window?"* or *"Where did I use that algorithm?"*
 
+`aidex_global_init`, `aidex_global_status` and `aidex_global_refresh` are not advertised by default in this fork but each has a CLI subcommand (`aidex global-init`, `aidex global-status`, `aidex global-refresh`); `aidex_global_query` and `aidex_global_signatures` have no CLI form. See "Fork changes" under CLI Usage.
+
 ### Setup
 
 ```
@@ -646,6 +573,8 @@ aidex_global_refresh()                                                 # Update 
 
 Store persistent coding conventions, review checklists, and AI instructions in a single place — shared across all projects.
 
+`aidex_global_guideline` is not advertised by default in this fork and has no CLI form (see "Fork changes" under CLI Usage) -- call it by name, or set `AIDEX_TOOLS_DISABLE` to advertise it.
+
 ```
 aidex_global_guideline({ action: "set", key: "review", value: "Always check: error handling, null safety, no hardcoded strings" })
 aidex_global_guideline({ action: "set", key: "style", value: "Use PascalCase for classes, camelCase for methods, 4-space indent" })
@@ -680,8 +609,8 @@ Your Program ──HTTP POST──→ AiDex Log Hub (port 3335) ──→ Ring B
 
 ### Quick start
 
-1. AI starts the Log Hub: `aidex_log({ action: "init" })`
-2. AI opens the Viewer: `aidex_viewer({ path: "." })` — Logs tab shows live stream
+1. AI starts the Log Hub: `aidex_log({ action: "init" })` -- `aidex_log` is not advertised by default in this fork and has no CLI form; call it by name, or set `AIDEX_TOOLS_DISABLE` to advertise it (see "Fork changes" under CLI Usage)
+2. AI opens the Viewer: `aidex_viewer({ path: "." })` (or `aidex viewer .`); the Logs tab shows the live stream
 3. Add one line to your program:
 
 ```csharp
@@ -877,6 +806,8 @@ Explore your indexed project visually in the browser:
 aidex_viewer({ path: "." })
 ```
 
+`aidex_viewer` is not advertised by default in this fork (see "Fork changes" under CLI Usage) -- call it by name, or run `aidex viewer .` from the command line instead.
+
 Opens `http://localhost:3333` with:
 - **Interactive file tree** - Click to expand directories
 - **File signatures** - Click any file to see its types and methods
@@ -916,16 +847,47 @@ The sliders react in real time — [watch the GIF](docs/loghub-dashboard.gif):
 
 ![AiDex Viewer - Overview](docs/aidex-viewer-overview.png)
 
-Close with `aidex_viewer({ path: ".", action: "close" })`
+Close with `aidex_viewer({ path: ".", action: "close" })`, or `aidex viewer . --action close` from the command line.
 
 ## CLI Usage
 
 ```bash
 aidex scan Q:/develop       # Find all indexed projects
 aidex init ./myproject      # Index a project from command line
+aidex outline src/foo.ts    # Line-ranged plan of one file (code symbols or markdown headings)
 ```
 
+`aidex outline <file> [--project <dir>] [--limit <n>]` prints a plan (symbol/heading, line range, signature) instead of the whole file. Exit codes: `0` plan printed ; `3` no plan available (reason on stderr, e.g. `no outline: stale index (src/foo.ts)`) ; `2` usage error ; `1` unexpected error.
+
 > `aidex-mcp` works as an alias for `aidex`.
+
+### Running `aidex` from your PATH
+
+`bin/aidex` (sh: Git Bash, macOS, Linux) and `bin/aidex.cmd` (cmd, PowerShell) run `build/index.js`, resolved from the launcher's own location, with the interpreter named by `AIDEX_NODE` when it is set and `node` from `PATH` otherwise. Add the repository's `bin` directory to `PATH`: a rebuild is picked up with nothing to reinstall. Set `AIDEX_NODE` when the `node` on your `PATH` is not the one the native addons were built with. Details and symlink caveats: `bin/README.md`.
+
+### Fork changes: CLI subcommands replace admin tools
+
+Ten index-administration and session-tracking MCP tools are dropped from the advertised `tools/list` by default (see "What's Inside" above); each has a CLI subcommand that reads the same options and calls into the same code:
+
+| Hidden tool | CLI subcommand | Notes |
+|-------------|-----------------|-------|
+| `aidex_init` | `aidex init <path> [options]` | `--exclude`, `--store-bodies`, `--embeddings`, `--llm-endpoint`, `--llm-model`, `--llm-send-code` |
+| *(no MCP tool)* | `aidex rebuild-index <path> [options]` | Full rebuild ignoring the per-file hash skip; CLI-only on purpose, so an AI cannot trigger it from a normal flow |
+| `aidex_global_init` | `aidex global-init <path> [options]` | `--tags`, `--exclude`, `--index-unindexed`, `--show-progress` |
+| `aidex_coverage` | `aidex can <pattern> [--project <dir>] [--path <file>]` | `aidex coverage` is an alias; exit `0` means a verdict is on stdout (even a negative one), any other exit code means no verdict -- treat that as fail-open |
+| `aidex_settings` | `aidex settings <path> [--open]` | `--open` also starts the Viewer, on the Settings tab |
+| `aidex_global_status` | `aidex global-status [--tag-filter <t>] [--sort name\|size\|recent]` | |
+| `aidex_scan` | `aidex scan <path> [--max-depth <n>]` | |
+| `aidex_global_refresh` | `aidex global-refresh [--project <p>] [--tag-filter <t>]` | |
+| `aidex_viewer` | `aidex viewer <path> [--action open\|close] [--tab <name>]` | Stops when its last browser tab closes, or Ctrl+C in its terminal |
+| `aidex_remove` | `aidex remove <path> <file>` | |
+| `aidex_session` | `aidex session <path>` | |
+
+Every subcommand above except `can` prints its options with `--help`; `can` reads `--help` as the pattern to classify, and prints its usage when run without arguments. Running `aidex` without a subcommand starts the MCP server on standard input and output. An unknown first subcommand exits `2` and writes the available subcommands to stderr. The filter is purely subtractive on `tools/list`: an AI that calls a hidden tool by its exact name still gets an answer, whether or not a CLI form exists.
+
+The other 11 tools dropped by default -- `aidex_task`, `aidex_tasks`, `aidex_log`, `aidex_note`, `aidex_describe`, `aidex_link`, `aidex_unlink`, `aidex_links`, `aidex_global_query`, `aidex_global_signatures`, `aidex_global_guideline` -- have no CLI subcommand; they were measured at zero or near-zero real calls across four months of usage and are redundant with tooling most operators already have. Call them by their MCP name (they still work), or set `AIDEX_TOOLS_DISABLE` in your server config to change what `tools/list` advertises: unset uses the fork's default (12 tools); `none` or an empty value advertises all 33; an explicit comma-separated list of tool names (with or without the `aidex_` prefix) replaces the default set entirely.
+
+Also new in this fork: `aidex update <project> <file...> [--verbose] [-- <file...>]` reindexes one or more files in a single process spawn, silent on success by default -- meant for a git hook that would otherwise pay Node's native-addon load cost once per changed file.
 
 ## Performance
 

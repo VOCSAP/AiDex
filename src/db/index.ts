@@ -15,6 +15,11 @@ export type {
     DependencyRow,
     TaskRow,
     TaskLogRow,
+    CandidateEdgeKind,
+    CandidateEdgeRow,
+    CandidateEdgeViewRow,
+    CandidateEdgeInput,
+    CandidateEdgeQuery,
 } from './queries.js';
 export { GlobalDatabase, openGlobalDatabase, globalDbExists, getGlobalDbPath, getGlobalDir, readProjectStats } from './global-database.js';
 export type { GlobalProject, ProjectStats } from './global-database.js';

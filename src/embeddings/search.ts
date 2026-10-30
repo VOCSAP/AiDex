@@ -227,7 +227,14 @@ async function maybeRerank(
         telemetry.lastError = err instanceof Error ? err.message : String(err);
         return hits;
     }
-    if (!r.invoked) return hits;
+    // A dedicated-reranker failure is swallowed inside the pipeline (it keeps
+    // the RRF order rather than paying for a second pass), so it surfaces as
+    // invoked=false rather than a throw. Mark it failed here or the telemetry
+    // would report a success the reranker never delivered.
+    if (!r.invoked) {
+        telemetry.rerankFailed = true;
+        return hits;
+    }
 
     const byId = new Map(candidates.map((c, i) => [c.id, hits[i]]));
     const reordered: SearchHit[] = [];

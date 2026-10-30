@@ -173,7 +173,7 @@ export interface EmbeddingsModule {
 // ============================================================
 
 const NOT_LOADED = new Error(
-    'Embeddings module is not loaded. Call enable() first, or set embeddings:true on aidex_init.'
+    'Embeddings module is not loaded. Call enable() first.'
 );
 
 function createStub(): EmbeddingsModule {
