@@ -242,6 +242,44 @@ def main():
          "--color=auto of grep keeps its glued value"),
         ("rg --color never handleToolCall src/server/tools.ts", expected_search,
          "--color of rg takes a value"),
+        ("grep -n 'pub fn handleToolCall' src/server/tools.ts", expected_search,
+         "pub fn X reduces to X"),
+        ("grep -n 'export function handleToolCall' src/server/tools.ts", expected_search,
+         "export function X reduces to X"),
+        ("grep -n 'export async function handleToolCall' src/server/tools.ts", expected_search,
+         "several leading keywords are skipped"),
+        (r"grep -n '\bhandleToolCall\b' src/server/tools.ts", expected_search,
+         "word-boundary anchors are stripped"),
+        (r"grep -n 'handleToolCall\(' src/server/tools.ts", expected_search,
+         "a call-site escaped parenthesis is stripped"),
+        (r"grep -n 'handleToolCall\s*\(' src/server/tools.ts", expected_search,
+         "a call-site spaced parenthesis is stripped"),
+        ("grep -n 'handleToolCall.*' src/server/tools.ts", expected_search,
+         "a trailing .* is stripped"),
+        ("grep -n 'pub fn' src/server/tools.ts", None,
+         "a lone keyword is not a symbol"),
+        ("git -C src grep -n handleToolCall server/tools.ts", {
+            "patterns": ["handleToolCall"], "residual": [], "dir": os.path.join(REPO_ROOT, "src")
+        }, "git -C judges the grep in the target directory"),
+        ("git -C src -C server grep -n handleToolCall tools.ts", {
+            "patterns": ["handleToolCall"], "residual": [],
+            "dir": os.path.join(REPO_ROOT, "src", "server")
+        }, "a repeated relative -C chains on the previous directory"),
+        ("git --no-pager -c core.pager=cat grep -n handleToolCall src/server/tools.ts", expected_search,
+         "git -c and --no-pager are skipped"),
+        ("git --git-dir=x grep -n handleToolCall src/server/tools.ts", None,
+         "git --git-dir is not followed statically"),
+        ("git --work-tree=x grep -n handleToolCall src/server/tools.ts", None,
+         "git --work-tree is not followed statically"),
+        ("git --bare grep -n handleToolCall src/server/tools.ts", None,
+         "git --bare is not followed statically"),
+        ("git -C $SOMEWHERE grep -n handleToolCall src/server/tools.ts", None,
+         "an unresolvable -C is not followed"),
+        ("git -C src status && grep -n handleToolCall server/tools.ts", expected_search,
+         "git -C does not move the following command"),
+        ("git -C src log | grep -n handleToolCall", {
+            "patterns": ["handleToolCall"], "residual": [], "dir": REPO_ROOT
+        }, "git -C does not leak across a connector"),
     ]
     for command, expected, label in bash_cases:
         failures += check(label, module.find_bash_search(command, REPO_ROOT), expected)

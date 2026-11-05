@@ -141,7 +141,7 @@ HAS_LETTER_RE = re.compile(r"[A-Za-z]")
 KEYWORD_HEADS = {
     "new", "class", "function", "def", "interface", "type", "struct", "enum",
     "extends", "implements", "import", "export", "const", "let", "var",
-    "async", "await",
+    "async", "await", "default", "pub", "fn", "static", "readonly",
 }
 
 # An alternation (`tailKeep\|summaryKeep\|countKeep`) is not one pattern: each
@@ -173,7 +173,7 @@ CONNECTORS = {"|", "||", "&&", ";", "&", "|&"}
 LIST_SEPARATORS = {"||", "&&", ";", "&"}
 
 # Wrappers that precede a real command without changing "command position".
-WRAPPERS = {"git", "sudo", "env", "time", "nice", "xargs", "command", "builtin",
+WRAPPERS = {"sudo", "env", "time", "nice", "xargs", "command", "builtin",
             "doas", "nohup", "stdbuf"}
 
 # Options whose VALUE is the search pattern.
@@ -281,20 +281,29 @@ def normalize_branch(branch):
     Normalising made the hook MORE accurate in both directions, not just more
     aggressive.
 
-    Same reasoning for `new Database`: a two-word branch shaped exactly
-    `<keyword> <identifier>` is a search for the CONSTRUCTIONS of Database,
-    not free-text prose, so it reduces to the identifier alone. Any other
-    shape -- one word, three or more, or a leading word outside
-    KEYWORD_HEADS -- is returned unchanged and falls through the existing
-    non-candidate path downstream, exactly like any other pattern this
-    function does not recognise.
+    Same reasoning for `\\bX\\b`, `X.*`, `X\\(`, `X\\s*\\(` and
+    `export async function X`: anchors, suffixes and any run of leading
+    KEYWORD_HEADS words are stripped, and a lone remaining identifier is the
+    result. A branch that keeps several words, or only a keyword, comes back
+    with just its anchors and suffixes stripped and falls through the
+    non-candidate path downstream.
     """
     branch = branch.strip()
-    if branch.endswith("("):
-        return branch[:-1]
+    if branch.startswith("\\b"):
+        branch = branch[2:]
+    if branch.endswith(".*"):
+        branch = branch[:-2]
+    for suffix in ("\\s*\\(", "\\(", "("):
+        if branch.endswith(suffix):
+            branch = branch[:-len(suffix)]
+            break
+    if branch.endswith("\\b"):
+        branch = branch[:-2]
     words = branch.split()
-    if len(words) == 2 and words[0] in KEYWORD_HEADS:
-        return words[1]
+    while len(words) > 1 and words[0] in KEYWORD_HEADS:
+        words = words[1:]
+    if len(words) == 1 and words[0] not in KEYWORD_HEADS:
+        return words[0]
     return branch
 
 
@@ -387,6 +396,40 @@ def resolve_cd(tokens, i, current_dir, cwd):
     if not os.path.isabs(target):
         target = os.path.join(current_dir or cwd, target)
     return os.path.abspath(target)
+
+
+GIT_FLAG_OPTS = {
+    "--no-pager", "-p", "--paginate", "-P", "--no-replace-objects",
+    "--no-optional-locks", "--literal-pathspecs", "--glob-pathspecs",
+    "--noglob-pathspecs", "--icase-pathspecs", "--no-lazy-fetch",
+    "--no-advice",
+}
+
+
+def git_globals(tokens, i, current_dir, cwd):
+    """Global options after `tokens[i] == "git"`: (index of the subcommand,
+    directory `-C` moves it to), or None when an option cannot be followed
+    statically (--git-dir, --work-tree, --bare, an unknown option, a `-C`
+    that does not resolve)."""
+    directory = current_dir
+    j = i + 1
+    while j < len(tokens):
+        tok = tokens[j]
+        if tok == "-C":
+            moved = resolve_cd(tokens, j, directory, cwd)
+            if moved is None:
+                return None
+            directory = moved
+            j += 2
+        elif tok == "-c":
+            j += 2
+        elif tok.startswith("--config-env=") or tok in GIT_FLAG_OPTS:
+            j += 1
+        elif tok.startswith("-"):
+            return None
+        else:
+            return j, directory
+    return None
 
 
 def is_proof_of_absence(args):
@@ -695,6 +738,7 @@ def find_bash_search(command, cwd):
         return None  # unbalanced quotes etc. -- leave it alone
 
     current_dir = cwd
+    command_dir = None   # `git -C` moves only its own command, not the shell
     at_command_pos = True
     i = 0
     n = len(tokens)
@@ -702,10 +746,19 @@ def find_bash_search(command, cwd):
         tok = tokens[i]
         if tok in CONNECTORS:
             at_command_pos = True
+            command_dir = None
             i += 1
             continue
         if at_command_pos:
             base = os.path.basename(tok)
+            if base == "git":
+                globals_ = git_globals(tokens, i, command_dir or current_dir, cwd)
+                if globals_ is None:
+                    at_command_pos = False
+                    i += 1
+                else:
+                    i, command_dir = globals_
+                continue
             if base in WRAPPERS or "=" in tok and tok.split("=", 1)[0].isidentifier():
                 # wrapper or leading VAR=val assignment -> stay at command pos
                 i += 1
@@ -737,7 +790,7 @@ def find_bash_search(command, cwd):
                             if normalize_branch(b) not in askable
                         ]
                         return {"patterns": askable, "residual": residual,
-                                "dir": current_dir}
+                                "dir": command_dir or current_dir}
                 # a grep we could not pin to a candidate -> keep scanning the
                 # rest of the pipeline for another search
                 at_command_pos = False
