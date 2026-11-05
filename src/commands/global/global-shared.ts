@@ -3,6 +3,7 @@
  */
 
 import { openGlobalDatabase, globalDbExists, type GlobalDatabase } from '../../db/global-database.js';
+import { cliCommand } from '../shared.js';
 
 /**
  * Standard totals object for error responses.
@@ -18,7 +19,7 @@ export function withGlobalDb<T>(
     fn: (db: GlobalDatabase) => T
 ): T {
     if (!globalDbExists()) {
-        return onError('No global index found. Run aidex_global_init first.');
+        return onError(`No global index found. Create it first: ${cliCommand('global-init', ['<path>'])}`);
     }
 
     const globalDb = openGlobalDatabase();

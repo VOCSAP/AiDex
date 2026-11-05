@@ -12,6 +12,7 @@ Complete reference for all AiDex MCP tools.
   - [aidex_remove](#aidex_remove)
 - [Querying](#querying)
   - [aidex_query](#aidex_query)
+  - [aidex_edges](#aidex_edges)
   - [aidex_search](#aidex_search) 🆕
   - [aidex_signature](#aidex_signature)
   - [aidex_signatures](#aidex_signatures)
@@ -65,7 +66,7 @@ Initialize or re-index a project. Creates `.aidex/` directory with SQLite databa
 
 **Returns:**
 - Files indexed count
-- Items/methods/types found
+- Term-file pairs (raw case) / methods / types found
 - Duration in ms
 - Warnings (if any)
 
@@ -176,6 +177,46 @@ Search for terms/identifiers in the index. **Primary search tool** - use instead
 
 ---
 
+### aidex_edges
+
+Query syntax-derived, project-local import and direct-call relationships. Use this
+for impact reconnaissance such as likely callers, callees, importers, and imported
+files.
+
+Every returned relationship has `confidence: candidate`. Resolution is intentionally
+conservative: ambiguous or unresolved targets remain `<unresolved>`, and an empty
+result never proves semantic absence.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `path` | string | yes | Path to project with `.aidex` directory |
+| `file` | string | * | Indexed file used as the relationship endpoint |
+| `symbol` | string | * | Exact source or target symbol name |
+| `direction` | string | - | Relative to `file`: `incoming`, `outgoing`, or `both` (default) |
+| `kind` | string | - | Restrict results to `import` or `call` |
+| `limit` | number | - | Maximum results (default: 100, maximum: 1000) |
+
+\* At least one of `file` or `symbol` is required.
+
+**Returns:**
+- Candidate edges with source file/line, optional source symbol, target symbol,
+  resolved target file when unambiguous, and extraction provenance
+- An explicit warning that results are syntax-derived candidates
+
+**Examples:**
+
+```json
+// What does this file likely import or call?
+{ "path": ".", "file": "src/server/tools.ts", "direction": "outgoing" }
+
+// Which indexed files likely call this symbol?
+{ "path": ".", "symbol": "handleQuery", "kind": "call" }
+```
+
+---
+
 ### aidex_search
 
 **(v2.0)** Semantic / exact / hybrid retrieval over embedded code, docs, and workspace items. Best for natural-language questions like *"how do we handle retry with backoff"* — finds the right file even when you don't know the identifier name. Requires `embeddings: true` on `aidex_init` for the project.
@@ -223,8 +264,8 @@ Get the signature of a single file: types, methods, header comments. **Use inste
 
 **Returns:**
 - Header comments (if any)
-- Types: classes, structs, interfaces, enums with line numbers
-- Methods: prototypes with visibility, static/async modifiers, line numbers
+- Types: classes, structs, interfaces, enums, with a line range (`start-end`) when the end is known, otherwise the start line alone
+- Methods: prototypes with visibility, static/async modifiers, and a line range (`start-end`) when the method's body length is indexed, otherwise the start line alone
 
 **Example:**
 ```json
@@ -242,14 +283,16 @@ Get the signature of a single file: types, methods, header comments. **Use inste
 Game engine core implementation
 
 ## Types (2)
-- class Engine (line 15)
-- struct Config (line 8)
+- **class** `Engine` (line 15-120)
+- **struct** `Config` (line 8)
 
 ## Methods (5)
-- [public] void Initialize() :20
-- [public async] Task LoadAsync(string path) :45
-- [private] void Update(float delta) :78
+- [public] `void Initialize()` (line 20-25)
+- [public async] `Task LoadAsync(string path)` (line 45-58)
+- [private] `void Update(float delta)` (line 78)
 ```
+
+The end line is only known once the file has been (re)indexed after this feature shipped, and only for methods whose body length AiDex tracks (`methods.body_lines`, always stored since this patch) and for types whose extractor records an end position (`types.end_line`). A start line alone (no `-end`) means the index has no end for that symbol yet, or start and end coincide.
 
 ---
 
@@ -269,7 +312,7 @@ Get signatures for multiple files at once using glob pattern. Efficient for expl
 
 **Returns:**
 - Compact summary per file: types and method counts
-- Method list with modifiers and line numbers
+- Method list with modifiers and line ranges
 
 **Examples:**
 ```json
@@ -282,6 +325,16 @@ Get signatures for multiple files at once using glob pattern. Efficient for expl
 // Explicit file list
 { "path": ".", "files": ["src/index.ts", "src/server/tools.ts"] }
 ```
+
+**Output example (per file):**
+```
+## src/commands/shared.ts
+Types: class Config :8-42, interface Options | Methods: 3
+  - [public] normalizePath(p: string): string :15-17
+  - [public] withDatabase<T>(...): T :46-58
+```
+
+Line format: `:start-end` when the end line is known. For methods, a start-only value (`:15`) means the index has no end for that method yet (needs a reindex after this feature shipped). For a type with no known end line, the line is omitted entirely from the compact summary (`interface Options` above has none) -- this is the pre-existing compact format, unchanged by adding the end-line column.
 
 ---
 
@@ -299,7 +352,7 @@ Get index statistics for a project.
 
 **Returns:**
 - Schema version
-- Counts: files, lines, items, occurrences, methods, types, dependencies
+- Counts: files, lines, distinctTerms (case-folded, distinct from the raw-case term-file pairs reported by `aidex_init`/`aidex_scan`), occurrences, methods, types, dependencies
 - Database size in bytes
 - Database path
 
@@ -529,7 +582,7 @@ Find all projects with AiDex indexes in a directory tree.
 - List of indexed projects with:
   - Name
   - Path
-  - Statistics (files, items, methods, types)
+  - Statistics (files, distinct terms [case-folded], methods, types)
   - Last indexed timestamp
 
 **Example:**
@@ -667,7 +720,7 @@ Read or write session notes. Persists in the database between sessions.
 | `open` | boolean | - | If true, open the viewer (start it if needed) and switch to the Settings tab |
 
 **Returns (without `open`):**
-- `embeddings` — `{ enabled, modelId, dim, total, byKind, byType }` or `{ enabled: false }`
+- `embeddings` — `{ enabled, modelId, dim, total, byKind, byType, timeoutMinutes }` or `{ enabled: false }`; `timeoutMinutes` is the applied embedding worker limit
 - `llm` — active provider, endpoint, model, key source (env var name / file / none)
 - `llm_send_code` — privacy switch state (default: `false` — only metadata sent)
 - `version` — current AiDex version + last seen version
@@ -681,7 +734,20 @@ Read or write session notes. Persists in the database between sessions.
 { "path": ".", "open": true }
 ```
 
-The Settings tab features a custom combobox for model selection, a live API-key field that auto-detects environment variable names (e.g. `OPENAI_API_KEY`), a master toggle for the LLM layer (LLM only enables when embeddings are enabled), and a "Test connection" button with latency measurement. API keys persist to `~/.aidex/llm.json` (chmod 600).
+The Settings tab features a custom combobox for model selection, a live API-key field that auto-detects environment variable names (e.g. `OPENAI_API_KEY`), a master toggle for the LLM layer (LLM only enables when embeddings are enabled), an embedding worker timeout in minutes, and a "Test connection" button with latency measurement. The timeout persists as `embedding_timeout_minutes` in `~/.aidex/llm.json`: it defaults to `10` minutes when missing, non-numeric, zero, negative, or non-finite, and values above the Node maximum of `2,147,483,647` milliseconds (about `35,791.394` minutes) are clamped. API keys persist to `~/.aidex/llm.json` (chmod 600).
+
+The model combobox is a free-text field: the dropdown entries are only suggestions, any model name your endpoint serves can be typed directly (e.g. a custom Ollama tag like `qwen3:8b-ctx16k`).
+
+**Dedicated reranker (cross-encoder):** the LLM card has a "Use a dedicated reranker" toggle. When enabled, the rerank stage of `aidex_search` POSTs the query + candidate documents to a rerank API and sorts by the returned relevance scores, instead of asking the chat LLM to emit an ordering (LLM-as-judge) — typically more accurate and faster with a real cross-encoder (e.g. `bge-reranker-v2-m3`). The chat LLM keeps query translation/expansion. Compatible endpoints: LiteLLM (`/rerank`, `/v1/rerank`), llama.cpp server (`/v1/rerank`), TEI, Jina — request `{model?, query, documents, top_n}`, response `{results:[{index, relevance_score}]}` or the TEI bare-array variant. Configure the full URL of the rerank route, an optional model name (passed through for servers that route by model), and an optional Bearer token. Stored in `~/.aidex/llm.json` under `reranker`; exposed by `aidex_settings` as `llm.reranker`. The per-project `llm_send_code` privacy switch applies identically: with it off, only names/anchors/paths are sent as documents, never snippets. If the endpoint fails, search keeps the un-reranked (RRF-fused) order — it never falls back to LLM-as-judge, and never breaks the search.
+
+**Prompt overrides (`~/.aidex/llm-prompts.json`):** the four system prompts of the LLM layer can be overridden per-station to tune them for the configured model. Keys (all optional, non-empty strings, max 8192 chars each): `translate_system`, `expand_system`, `rerank_system_full`, `rerank_system_metadata`. Omitted keys keep the built-in defaults (see `src/llm/prompts.ts`); a malformed file falls back to defaults. The resolved state is reported by `aidex_settings` under `llm.prompts` (`overridden` key list + `parseError` flag), so a typo'd file is visible instead of silently ignored. The *user* message of each call is structured data (the raw query, or a JSON `{query, items}` payload for reranking) and is not overridable — the response parsers depend on its shape.
+
+```json
+// ~/.aidex/llm-prompts.json — example: tighter translate prompt for a small local model
+{
+  "translate_system": "Translate the code-search query to English. Reply ONLY with JSON: {\"queries\": [\"...\"]}. Max 3 short lowercase phrases."
+}
+```
 
 ---
 

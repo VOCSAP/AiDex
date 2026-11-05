@@ -146,12 +146,51 @@ export function extractAstroFrontmatter(source: string): string | null {
     const lines = source.split('\n');
     if (lines[0]?.trimEnd() !== '---') return null;
 
-    const closeIdx = lines.indexOf('---', 1);
+    // Both fences are matched with the SAME rule: exact `---` once trailing
+    // whitespace is stripped. That makes the scan tolerate the trailing CR left
+    // by `split('\n')` on a CRLF working tree; a strict `lines.indexOf('---', 1)`
+    // here silently rejected every .astro file checked out with core.autocrlf.
+    // `trimEnd()` and not `trim()` keeps the fence anchored at column 0. That is
+    // a conservative indexer choice, STRICTER than the Astro grammar itself,
+    // not a restatement of it.
+    let closeIdx = -1;
+    for (let i = 1; i < lines.length; i++) {
+        if (lines[i]?.trimEnd() === '---') {
+            closeIdx = i;
+            break;
+        }
+    }
     if (closeIdx === -1) return null;
 
     // Keep frontmatter lines at their original positions; blank out everything else
     const result = lines.map((line, i) => (i === 0 || i >= closeIdx ? '' : line));
     return result.join('\n');
+}
+
+/**
+ * Classification predicate (a9d43516): whether an Astro source has NO
+ * frontmatter fence at all, i.e. is a pure-template component. This is a
+ * NORMAL, fully-supported shape of an Astro file -- there is no TypeScript
+ * frontmatter to extract, not a parse failure.
+ *
+ * `extractAstroFrontmatter` returns `null` for this case AND for a genuinely
+ * broken file (opening fence present, closing fence missing), indistinguishably
+ * by design -- it only answers "is there frontmatter to parse", not "why not".
+ * Callers that need to tell "nothing to index" apart from "failed to parse"
+ * use this predicate instead of re-deriving the fence rule themselves, so the
+ * opening-fence check lives in exactly one place.
+ *
+ * a9d43516 review fix: a leading UTF-8 BOM (EF BB BF) must be stripped before
+ * checking the first line. `trimEnd()` only trims the END of the string, so
+ * an untouched BOM survives on `lines[0]` and makes a file with a VALID
+ * frontmatter fence (BOM + "---") look fenceless -- silently reclassifying a
+ * real, previously-visible error as "normal, nothing to index". Restoring
+ * this file to errors[] is a behavior restoration, not an enhancement; making
+ * BOM-prefixed .astro files actually indexable is a separate, deliberately
+ * out-of-scope follow-up.
+ */
+export function astroHasNoFrontmatterFence(source: string): boolean {
+    return source.replace(/^﻿/, '').split('\n')[0]?.trimEnd() !== '---';
 }
 
 /**

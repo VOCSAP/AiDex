@@ -8,7 +8,7 @@ import { existsSync } from 'fs';
 import { join, basename } from 'path';
 import { INDEX_DIR } from '../constants.js';
 import { openDatabase } from '../db/index.js';
-import { validateIndex, noIndexError, withProjectDb, withDatabase } from './shared.js';
+import { validateIndex, noIndexError, withProjectDb, withDatabase, cliCommand } from './shared.js';
 
 // ============================================================
 // Types
@@ -82,7 +82,7 @@ export function link(params: LinkParams): LinkResult {
             success: false,
             name: '',
             filesAvailable: 0,
-            error: `No AiDex index found at ${dependencyPath}. Run aidex_init on dependency first.`,
+            error: `No AiDex index found at ${dependencyPath}. Index the dependency first: ${cliCommand('init', [dependencyPath])}`,
         };
     }
 

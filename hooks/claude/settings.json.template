@@ -1,0 +1,59 @@
+{
+  "SessionStart": [
+    {
+      "matcher": "startup|clear",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python \"$USERPROFILE/.claude/hooks/aidex-init-nudge.py\"",
+          "timeout": 5
+        }
+      ]
+    }
+  ],
+  "PreToolUse": [
+    {
+      "matcher": "Grep|Bash",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python \"$USERPROFILE/.claude/hooks/aidex-grep-nudge.py\""
+        }
+      ]
+    },
+    {
+      "matcher": "Read|Bash",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python \"$USERPROFILE/.claude/hooks/aidex-read-nudge.py\"",
+          "timeout": 5
+        }
+      ]
+    }
+  ],
+  "PostToolUse": [
+    {
+      "matcher": "Edit|Write",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python \"$USERPROFILE/.claude/hooks/aidex-queue-edit.py\"",
+          "timeout": 5
+        }
+      ]
+    }
+  ],
+  "Stop": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python \"$USERPROFILE/.claude/hooks/aidex-queue-drain.py\"",
+          "timeout": 15
+        }
+      ]
+    }
+  ]
+}
